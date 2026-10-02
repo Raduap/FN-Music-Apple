@@ -40,6 +40,7 @@ export default function Sidebar({ rail }) {
   const userMenu = (e) => {
     const r = e.currentTarget.getBoundingClientRect()
     const theme = ui().theme
+    const motion = ui().motion
     ui().openMenu(rail ? r.right + 8 : r.left, rail ? r.bottom : r.top - 8, [
       { label: `${username} @ ${server.replace(/^https?:\/\//, '').replace(/\/music$/, '')}`, disabled: true },
       '-',
@@ -49,6 +50,14 @@ export default function Sidebar({ rail }) {
           { label: '跟随系统', checked: theme === 'system', onClick: () => ui().setTheme('system') },
           { label: '浅色', checked: theme === 'light', onClick: () => ui().setTheme('light') },
           { label: '深色', checked: theme === 'dark', onClick: () => ui().setTheme('dark') },
+        ],
+      },
+      {
+        label: '动画效果',
+        children: [
+          { label: '开启', checked: motion === 'on', onClick: () => ui().setMotion('on') },
+          { label: '跟随系统', checked: motion === 'system', onClick: () => ui().setMotion('system') },
+          { label: '关闭', checked: motion === 'off', onClick: () => ui().setMotion('off') },
         ],
       },
       { label: '刷新资料库', onClick: () => { clearCache(); ui().loadPlaylists(); window.dispatchEvent(new CustomEvent('fn:refresh')) } },

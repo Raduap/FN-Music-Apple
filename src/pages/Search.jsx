@@ -55,10 +55,10 @@ export default function Search() {
       {data && !none && (
         <>
           {data.artists.length > 0 && (
-            <Shelf title="艺人">{data.artists.map((a) => <ArtistCard key={a.id} artist={a} />)}</Shelf>
+            <Shelf title="艺人">{data.artists.map((a, i) => <ArtistCard key={a.id} index={i} artist={a} />)}</Shelf>
           )}
           {data.albums.length > 0 && (
-            <Shelf title="专辑">{data.albums.map((a) => <AlbumCard key={a.id} album={a} />)}</Shelf>
+            <Shelf title="专辑">{data.albums.map((a, i) => <AlbumCard key={a.id} index={i} album={a} />)}</Shelf>
           )}
           {songs.length > 0 && (
             <section className="section">

@@ -117,6 +117,7 @@ function Main() {
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
+    el.dataset.dir = navType === 'POP' ? 'back' : 'fwd' // 页面转场方向：后退从左侧滑入，其余从右侧
     useUI.getState().closeMenu()
     el.scrollTop = 0
     useUI.getState().setScrolled(false)

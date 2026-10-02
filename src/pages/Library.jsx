@@ -5,7 +5,7 @@ import { useUI } from '../store'
 import { useAsync } from '../lib'
 import { AlbumCard, ArtistCard, PlaylistCard } from '../components/Cards'
 import SongList from '../components/SongList'
-import { Empty, ErrorBox, Loading, PageHeader, PlayButtons, useFavoriteSync, usePageTitle } from '../components/common'
+import { Empty, ErrorBox, Loading, PageHeader, PlayButtons, Seg, useFavoriteSync, usePageTitle } from '../components/common'
 import * as Icon from '../icons'
 
 // 渐进加载全部分页
@@ -41,11 +41,7 @@ export function Albums({ recent = false }) {
     <div className="page">
       <PageHeader title={recent ? '最近添加' : '专辑'}>
         {!recent && (
-          <div className="seg small" role="group" aria-label="排序方式">
-            <button className={mode === 'title' ? 'on' : ''} aria-pressed={mode === 'title'} onClick={() => pick('title')}>标题</button>
-            <button className={mode === 'artist' ? 'on' : ''} aria-pressed={mode === 'artist'} onClick={() => pick('artist')}>艺人</button>
-            <button className={mode === 'recent' ? 'on' : ''} aria-pressed={mode === 'recent'} onClick={() => pick('recent')}>最近添加</button>
-          </div>
+          <Seg small label="排序方式" value={mode} onChange={pick} options={[{ value: 'title', label: '标题' }, { value: 'artist', label: '艺人' }, { value: 'recent', label: '最近添加' }]} />
         )}
       </PageHeader>
       {!list && !error && <Loading />}
@@ -54,7 +50,7 @@ export function Albums({ recent = false }) {
       {list && list.length > 0 && (
         <>
           {!recent && <div className="count-line">{total || list.length} 张专辑{!done && ' · 正在载入…'}</div>}
-          <div className="grid">{list.map((a) => <AlbumCard key={a.id} album={a} />)}</div>
+          <div className="grid">{list.map((a, i) => <AlbumCard key={a.id} index={i} album={a} />)}</div>
         </>
       )}
     </div>
@@ -81,7 +77,7 @@ export function Artists() {
       {loading && <Loading />}
       {error && <ErrorBox error={error} />}
       {list && !list.length && <Empty title={filter ? '没有匹配的艺人' : '还没有艺人'} sub={filter ? '换个关键词试试。' : undefined} icon={Icon.Mic} />}
-      {list && list.length > 0 && <div className="grid artists">{list.map((a) => <ArtistCard key={a.id} artist={a} />)}</div>}
+      {list && list.length > 0 && <div className="grid artists">{list.map((a, i) => <ArtistCard key={a.id} index={i} artist={a} />)}</div>}
     </div>
   )
 }
@@ -149,7 +145,7 @@ export function Playlists() {
       {!playlists.length ? (
         <Empty title="还没有播放列表" sub="点击右上角“新建播放列表”，或在任意歌曲上点按右键选择“添加到播放列表”。" icon={Icon.ListIcon} />
       ) : (
-        <div className="grid">{playlists.map((p) => <PlaylistCard key={p.id} playlist={p} />)}</div>
+        <div className="grid">{playlists.map((p, i) => <PlaylistCard key={p.id} index={i} playlist={p} />)}</div>
       )}
     </div>
   )
@@ -173,7 +169,7 @@ export function Genres() {
               <button
                 key={g.id + i}
                 className="genre-tile"
-                style={{ background: `linear-gradient(135deg, hsl(${h} 75% 58%), hsl(${(h + 35) % 360} 70% 42%))` }}
+                style={{ '--i': i, background: `linear-gradient(135deg, hsl(${h} 75% 58%), hsl(${(h + 35) % 360} 70% 42%))` }}
                 onClick={() => navigate(`/genre/${encodeURIComponent(g.id)}?name=${encodeURIComponent(g.name)}`)}
               >
                 <span className="gt-name">{g.name || '未知'}</span>

@@ -26,7 +26,7 @@ const cardKeys = (open, menu) => (e) => {
   }
 }
 
-export function AlbumCard({ album, sub }) {
+export function AlbumCard({ album, sub, index = 0 }) {
   const navigate = useNavigate()
   const onMenu = (e) => {
     e.preventDefault()
@@ -59,7 +59,7 @@ export function AlbumCard({ album, sub }) {
   }
   const open = () => navigate(`/album/${album.id}`)
   return (
-    <div className="card" role="link" tabIndex={0} aria-label={`${album.name}，${album.artist}`} onClick={open} onKeyDown={cardKeys(open, onMenu)} onContextMenu={onMenu}>
+    <div className="card" style={{ '--i': index }} role="link" tabIndex={0} aria-label={`${album.name}，${album.artist}`} onClick={open} onKeyDown={cardKeys(open, onMenu)} onContextMenu={onMenu}>
       <div className="card-art">
         <Cover coverId={album.coverId} alt="" />
         <div className="card-hover">
@@ -81,11 +81,11 @@ export function AlbumCard({ album, sub }) {
   )
 }
 
-export function ArtistCard({ artist }) {
+export function ArtistCard({ artist, index = 0 }) {
   const navigate = useNavigate()
   const open = () => navigate(`/artist/${artist.id}`)
   return (
-    <div className="card artist-card" role="link" tabIndex={0} aria-label={artist.name} onClick={open} onKeyDown={cardKeys(open)}>
+    <div className="card artist-card" style={{ '--i': index }} role="link" tabIndex={0} aria-label={artist.name} onClick={open} onKeyDown={cardKeys(open)}>
       <div className="card-art round">
         <Cover coverId={artist.coverId} round icon="person" alt="" />
       </div>
@@ -94,7 +94,7 @@ export function ArtistCard({ artist }) {
   )
 }
 
-export function PlaylistCard({ playlist }) {
+export function PlaylistCard({ playlist, index = 0 }) {
   const navigate = useNavigate()
   const [coverId, setCoverId] = useState(playlist.coverId)
   useEffect(() => {
@@ -105,7 +105,7 @@ export function PlaylistCard({ playlist }) {
   }, [playlist.id, playlist.coverId])
   const open = () => navigate(`/playlist/${playlist.id}`)
   return (
-    <div className="card" role="link" tabIndex={0} aria-label={`${playlist.name}，${playlist.trackCount} 首歌曲`} onClick={open} onKeyDown={cardKeys(open)}>
+    <div className="card" style={{ '--i': index }} role="link" tabIndex={0} aria-label={`${playlist.name}，${playlist.trackCount} 首歌曲`} onClick={open} onKeyDown={cardKeys(open)}>
       <div className="card-art">
         <Cover coverId={coverId} icon="note" />
         <div className="card-hover">

@@ -4,7 +4,8 @@ import { useShallow } from 'zustand/react/shallow'
 import { api } from '../api'
 import { usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, parseLrc, useCoverColor, useViewport } from '../lib'
-import { Cover, Spinner, useSongMenu } from './common'
+import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
+import { closeFullPlayer, openFullPlayer } from '../motion'
 import * as Icon from '../icons'
 
 // ---------- 滑块（进度 / 音量）：指针拖动、键盘、滚轮、悬停时间提示 ----------
@@ -112,7 +113,9 @@ export function Transport({ big = false }) {
         <Icon.Prev size={19 * sz} />
       </button>
       <button className="icon-btn tbtn main" onClick={toggle} disabled={!has} title={playing ? '暂停 (空格)' : '播放 (空格)'} aria-label={playing ? '暂停' : '播放'}>
-        {loading && playing ? <Spinner size={20 * sz} /> : playing ? <Icon.Pause size={22 * sz} /> : <Icon.Play size={22 * sz} />}
+        {loading && playing ? <Spinner size={20 * sz} /> : (
+          <span key={playing ? 'pause' : 'play'} className="icon-swap">{playing ? <Icon.Pause size={22 * sz} /> : <Icon.Play size={22 * sz} />}</span>
+        )}
       </button>
       <button className="icon-btn tbtn" onClick={() => next()} disabled={!has} title="下一首" aria-label="下一首">
         <Icon.Next size={19 * sz} />
@@ -169,7 +172,6 @@ export function PlayerBar() {
   const song = useCurrent()
   const panel = useUI((s) => s.panel)
   const togglePanel = useUI((s) => s.togglePanel)
-  const setFull = useUI((s) => s.setFullPlayer)
   const toggleFavorite = usePlayer((s) => s.toggleFavorite)
   const scrub = useScrub()
   const songMenu = useSongMenu()
@@ -179,11 +181,11 @@ export function PlayerBar() {
       <div className="pb-left">
         {song ? (
           <>
-            <button className="pb-cover" onClick={() => setFull(true)} title="展开正在播放" aria-label="展开正在播放">
+            <button key={'c' + song.id} className="pb-cover swap" onClick={openFullPlayer} title="展开正在播放" aria-label="展开正在播放">
               <Cover coverId={song.coverId} size={52} px={160} />
               <span className="pb-expand"><Icon.Expand size={16} /></span>
             </button>
-            <div className="pb-meta">
+            <div key={'m' + song.id} className="pb-meta swap">
               <div className="pb-title" title={song.title}>{song.title}</div>
               <div className="pb-sub">
                 {song.artistId ? <Link to={`/artist/${song.artistId}`}>{song.artist}</Link> : <span>{song.artist}</span>}
@@ -192,7 +194,7 @@ export function PlayerBar() {
             </div>
             <div className="pb-actions">
               <button className={`icon-btn ${song.favorite ? 'on' : ''}`} onClick={() => toggleFavorite(song)} title={song.favorite ? '取消喜欢' : '喜欢'} aria-label={song.favorite ? '取消喜欢' : '喜欢'} aria-pressed={song.favorite}>
-                {song.favorite ? <Icon.HeartFill size={17} /> : <Icon.Heart size={17} />}
+                <HeartIcon on={song.favorite} size={17} />
               </button>
               <button
                 className="icon-btn"
@@ -333,13 +335,16 @@ export function QueueView({ dark = false }) {
   const songMenu = useSongMenu()
   const cur = queue[index]
   const upcoming = queue.slice(index + 1)
+  // 仅在刚打开时依次浮现；之后切歌导致列表整体平移时不再重播动画
+  const [entering, setEntering] = useState(true)
+  useEffect(() => { const t = setTimeout(() => setEntering(false), 900); return () => clearTimeout(t) }, [])
 
   return (
-    <div className={`queue ${dark ? 'dark' : ''}`}>
+    <div className={`queue ${dark ? 'dark' : ''} ${entering ? 'enter' : ''}`}>
       {cur && (
         <>
           <div className="queue-head"><span>正在播放</span></div>
-          <QueueItem song={cur} active playing={playing} />
+          <QueueItem song={cur} active playing={playing} index={0} />
         </>
       )}
       <div className="queue-head">
@@ -354,6 +359,7 @@ export function QueueView({ dark = false }) {
           <QueueItem
             key={s.id + ':' + i}
             song={s}
+            index={k + 1}
             onPlay={() => playIndex(i)}
             onRemove={() => removeFromQueue(i)}
             onMenu={(e) => {
@@ -368,10 +374,11 @@ export function QueueView({ dark = false }) {
   )
 }
 
-function QueueItem({ song, active, playing, onPlay, onRemove, onMenu }) {
+function QueueItem({ song, active, playing, index = 0, onPlay, onRemove, onMenu }) {
   return (
     <div
       className={`queue-item ${active ? 'active' : ''}`}
+      style={{ '--i': index }}
       tabIndex={onPlay ? 0 : undefined}
       onDoubleClick={onPlay}
       onContextMenu={onMenu}
@@ -420,10 +427,7 @@ export function SidePanel() {
   return (
     <aside ref={ref} className={`sidepanel ${panel ? 'open' : ''} ${overlay ? 'overlay' : ''}`} aria-label={panel === 'queue' ? '播放队列面板' : '歌词面板'} inert={!panel}>
       <div className="sp-tabs">
-        <div className="seg" role="tablist">
-          <button role="tab" aria-selected={panel === 'lyrics'} className={panel === 'lyrics' ? 'on' : ''} onClick={() => panel !== 'lyrics' && togglePanel('lyrics')}>歌词</button>
-          <button role="tab" aria-selected={panel === 'queue'} className={panel === 'queue' ? 'on' : ''} onClick={() => panel !== 'queue' && togglePanel('queue')}>播放队列</button>
-        </div>
+        <Seg tabs label="面板" value={panel || 'lyrics'} onChange={(v) => panel !== v && togglePanel(v)} options={[{ value: 'lyrics', label: '歌词' }, { value: 'queue', label: '播放队列' }]} />
         <button className="icon-btn" onClick={closePanel} title="关闭" aria-label="关闭面板"><Icon.Close size={16} /></button>
       </div>
       <div className="sp-body">
@@ -437,7 +441,6 @@ export function SidePanel() {
 // ---------- 全屏播放页 ----------
 export function FullPlayer() {
   const open = useUI((s) => s.fullPlayer)
-  const setFull = useUI((s) => s.setFullPlayer)
   const song = useCurrent()
   const playing = usePlayer((s) => s.playing)
   const toggleFavorite = usePlayer((s) => s.toggleFavorite)
@@ -450,13 +453,13 @@ export function FullPlayer() {
 
   useEffect(() => {
     if (!open) return
-    const k = (e) => e.key === 'Escape' && !useUI.getState().menu && setFull(false)
+    const k = (e) => e.key === 'Escape' && !useUI.getState().menu && closeFullPlayer()
     window.addEventListener('keydown', k)
     closeRef.current?.focus()
     return () => window.removeEventListener('keydown', k)
-  }, [open, setFull])
+  }, [open])
 
-  const go = useCallback((path) => { setFull(false); navigate(path) }, [navigate, setFull])
+  const go = useCallback((path) => { closeFullPlayer(); navigate(path) }, [navigate])
 
   return (
     <div className={`fullplayer ${open ? 'open' : ''}`} style={{ '--np-r': r, '--np-g': g, '--np-b': b }} role="dialog" aria-modal="true" aria-label="正在播放" inert={!open}>
@@ -466,18 +469,18 @@ export function FullPlayer() {
         <div className="fp-bg-tint" />
       </div>
       <div className="fp-top">
-        <button ref={closeRef} className="fp-close" onClick={() => setFull(false)} title="收起 (Esc)" aria-label="收起全屏播放器"><Icon.ChevronDown size={22} /></button>
+        <button ref={closeRef} className="fp-close" onClick={closeFullPlayer} title="收起 (Esc)" aria-label="收起全屏播放器"><Icon.ChevronDown size={22} /></button>
       </div>
       {song ? (
         <div className={`fp-main ${tab ? 'with-side' : ''}`}>
           <div className="fp-left">
             <div className="fp-art-wrap">
               <div className={`fp-art ${playing ? 'playing' : ''}`}>
-                <Cover coverId={song.coverId} px={1024} />
+                <Cover key={song.id} className="swap" coverId={song.coverId} px={1024} />
               </div>
             </div>
             <div className="fp-meta">
-              <div className="fp-meta-text">
+              <div key={song.id} className="fp-meta-text swap">
                 <div className="fp-title" title={song.title}>{song.title}</div>
                 <div className="fp-artist">
                   <button className="lnk" onClick={() => song.artistId && go(`/artist/${song.artistId}`)}>{song.artist}</button>
@@ -485,7 +488,7 @@ export function FullPlayer() {
                 </div>
               </div>
               <button className={`fp-round ${song.favorite ? 'fav' : ''}`} onClick={() => toggleFavorite(song)} title={song.favorite ? '取消喜欢' : '喜欢'} aria-label={song.favorite ? '取消喜欢' : '喜欢'} aria-pressed={song.favorite}>
-                {song.favorite ? <Icon.HeartFill size={18} /> : <Icon.Heart size={18} />}
+                <HeartIcon on={song.favorite} size={18} />
               </button>
               <button
                 className="fp-round"

@@ -116,7 +116,7 @@ export function ArtistDetail() {
       )}
       {albums.length > 0 && (
         <Shelf title="专辑">
-          {albums.map((a) => <AlbumCard key={a.id} album={a} sub={a.year ? String(a.year) : ''} />)}
+          {albums.map((a, i) => <AlbumCard key={a.id} index={i} album={a} sub={a.year ? String(a.year) : ''} />)}
         </Shelf>
       )}
     </div>

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { api, coverUrl, streamUrl, invalidate } from './api'
 import { shuffled } from './lib'
+import { applyMotion } from './motion'
 
 const LS = {
   get(k, d) { try { const v = localStorage.getItem('fnm:' + k); return v === null ? d : JSON.parse(v) } catch { return d } },
@@ -31,6 +32,7 @@ export const useUI = create((set, get) => ({
   fullPlayer: false,
   playlists: [],
   theme: LS.get('theme', 'system'),
+  motion: LS.get('motion', 'on'),
   sidebarCollapsed: LS.get('sbCollapsed', false),
   pageTitle: '', // 当前页面标题，滚动后显示在顶部导航条里
   scrolled: false,
@@ -50,6 +52,11 @@ export const useUI = create((set, get) => ({
   setPageTitle: (pageTitle) => set({ pageTitle }),
   setScrolled: (scrolled) => set((s) => (s.scrolled === scrolled ? s : { scrolled })),
   setFullPlayer: (v) => set({ fullPlayer: v }),
+  setMotion(mode) {
+    LS.set('motion', mode)
+    applyMotion(mode)
+    set({ motion: mode })
+  },
   setTheme(mode) {
     LS.set('theme', mode)
     window.fn.setTheme(mode)

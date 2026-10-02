@@ -12,6 +12,7 @@ export default function Login() {
   const [error, setError] = useState('')
   const [info, setInfo] = useState(null) // { serverName, version, nasLogin } | { error }
   const probeSeq = useRef(0)
+  const cardRef = useRef(null)
 
   useEffect(() => {
     window.fn.getPrefs().then((p) => {
@@ -39,7 +40,14 @@ export default function Login() {
     setError('')
     const r = await login({ server, mode, ...form })
     if (r.ok) window.fn.setPrefs({ lastServer: server, lastMode: mode, lastUser: mode === 'password' ? form.username : '' })
-    else if (!r.cancelled) setError(r.error)
+    else if (!r.cancelled) {
+      setError(r.error)
+      // 登录失败：整张卡片左右抖动一下（Web Animations，不影响入场动画）
+      cardRef.current?.animate(
+        [{ transform: 'translateX(0)' }, { transform: 'translateX(-9px)' }, { transform: 'translateX(8px)' }, { transform: 'translateX(-5px)' }, { transform: 'translateX(3px)' }, { transform: 'translateX(0)' }],
+        { duration: 480, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' }
+      )
+    }
     setBusy(false)
   }
   const set = (k) => (e) => { const v = e.target.value; setForm((f) => ({ ...f, [k]: v })) }
@@ -49,7 +57,7 @@ export default function Login() {
     <div className="login">
       <div className="login-drag" />
       <div className="login-blobs"><i /><i /><i /></div>
-      <form className="login-card" onSubmit={submit}>
+      <form ref={cardRef} className="login-card" onSubmit={submit}>
         <div className="login-logo"><Icon.Note size={34} /></div>
         <h1>飞牛音乐</h1>
         <p className="login-sub">登录 fnOS 以收听你的资料库</p>

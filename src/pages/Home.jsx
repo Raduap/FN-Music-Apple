@@ -28,22 +28,22 @@ export default function Home() {
         <>
           {data.recent.length > 0 && (
             <Shelf title="最近添加" to="/recent">
-              {data.recent.map((a) => <AlbumCard key={a.id} album={a} />)}
+              {data.recent.map((a, i) => <AlbumCard key={a.id} index={i} album={a} />)}
             </Shelf>
           )}
           {data.picks.length > 0 && (
             <Shelf title="为你推荐" to="/albums">
-              {data.picks.map((a) => <AlbumCard key={a.id} album={a} />)}
+              {data.picks.map((a, i) => <AlbumCard key={a.id} index={i} album={a} />)}
             </Shelf>
           )}
           {playlists.length > 0 && (
             <Shelf title="我的播放列表">
-              {playlists.map((p) => <PlaylistCard key={p.id} playlist={p} />)}
+              {playlists.map((p, i) => <PlaylistCard key={p.id} index={i} playlist={p} />)}
             </Shelf>
           )}
           {data.artists.length > 0 && (
             <Shelf title="艺人" to="/artists">
-              {data.artists.map((a) => <ArtistCard key={a.id} artist={a} />)}
+              {data.artists.map((a, i) => <ArtistCard key={a.id} index={i} artist={a} />)}
             </Shelf>
           )}
         </>

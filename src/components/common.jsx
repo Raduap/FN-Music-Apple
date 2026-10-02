@@ -156,6 +156,54 @@ export function PageHeader({ title, children }) {
   )
 }
 
+// ---------- 红心：点亮时弹出并扩散一圈光环 ----------
+export function HeartIcon({ on, size = 16 }) {
+  const prev = useRef(on)
+  const [pop, setPop] = useState(false)
+  useEffect(() => {
+    let t
+    if (on && !prev.current) { setPop(true); t = setTimeout(() => setPop(false), 700) }
+    prev.current = on
+    return () => clearTimeout(t)
+  }, [on])
+  return <span className={`heart ${pop ? 'pop' : ''}`}>{on ? <Icon.HeartFill size={size} /> : <Icon.Heart size={size} />}</span>
+}
+
+// ---------- 分段控件：高亮块带弹簧滑动到所选项 ----------
+export function Seg({ options, value, onChange, small, tabs, label, className = '' }) {
+  const ref = useRef(null)
+  const [thumb, setThumb] = useState(null)
+  const [ready, setReady] = useState(false)
+  const measure = () => {
+    const el = ref.current?.querySelector('button.on')
+    if (el) setThumb({ x: el.offsetLeft, w: el.offsetWidth })
+  }
+  useLayoutEffect(measure, [value, options.length])
+  useEffect(() => {
+    const ro = new ResizeObserver(measure)
+    if (ref.current) ro.observe(ref.current)
+    const t = setTimeout(() => setReady(true), 60) // 首次定位不做动画
+    return () => { ro.disconnect(); clearTimeout(t) }
+  }, [])
+  return (
+    <div ref={ref} className={`seg ${small ? 'small' : ''} ${ready ? 'ready' : ''} ${className}`} role={tabs ? 'tablist' : 'group'} aria-label={label}>
+      {thumb && <i className="seg-thumb" style={{ transform: `translateX(${thumb.x}px)`, width: thumb.w }} />}
+      {options.map((o) => (
+        <button
+          key={o.value}
+          role={tabs ? 'tab' : undefined}
+          aria-selected={tabs ? value === o.value : undefined}
+          aria-pressed={tabs ? undefined : value === o.value}
+          className={value === o.value ? 'on' : ''}
+          onClick={() => onChange(o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // ---------- 播放 / 随机按钮 ----------
 export function PlayButtons({ songs, disabled }) {
   const play = usePlayer((s) => s.play)
@@ -197,10 +245,13 @@ export function ContextMenu() {
 
   useLayoutEffect(() => {
     if (!menu || !ref.current) return setPos(null)
-    const r = ref.current.getBoundingClientRect()
-    const x = Math.min(menu.x, window.innerWidth - r.width - 8)
-    const y = menu.y + r.height > window.innerHeight - 8 ? Math.max(8, menu.y - r.height) : menu.y
-    setPos({ x: Math.max(8, x), y })
+    // 用 offsetWidth/Height：不受弹出动画里 scale 的影响
+    const w = ref.current.offsetWidth, h = ref.current.offsetHeight
+    const flipX = menu.x + w > window.innerWidth - 8
+    const flipY = menu.y + h > window.innerHeight - 8
+    const x = Math.max(8, Math.min(menu.x, window.innerWidth - w - 8))
+    const y = flipY ? Math.max(8, menu.y - h) : menu.y
+    setPos({ x, y, origin: `${flipY ? 'bottom' : 'top'} ${flipX ? 'right' : 'left'}` })
   }, [menu])
 
   const levels = (items, p) => {
@@ -253,7 +304,7 @@ export function ContextMenu() {
 
   if (!menu) return null
   return (
-    <div ref={ref} className="menu" role="menu" style={{ left: pos?.x ?? menu.x, top: pos?.y ?? menu.y, visibility: pos ? 'visible' : 'hidden' }} onContextMenu={(e) => e.preventDefault()}>
+    <div ref={ref} className="menu" role="menu" style={{ left: pos?.x ?? menu.x, top: pos?.y ?? menu.y, visibility: pos ? 'visible' : 'hidden', transformOrigin: pos?.origin }} onContextMenu={(e) => e.preventDefault()}>
       <MenuList items={menu.items} depth={0} path={path} setPath={setPath} close={close} />
     </div>
   )
@@ -300,16 +351,19 @@ function Submenu({ children }) {
   const [place, setPlace] = useState({ flip: false, dy: 0 })
   useLayoutEffect(() => {
     const el = ref.current
-    if (!el) return
-    const r = el.getBoundingClientRect()
-    const flip = r.right > window.innerWidth - 8
+    const par = el?.offsetParent // 触发它的菜单项（position: relative）
+    if (!el || !par) return
+    const pr = par.getBoundingClientRect()
+    const w = el.offsetWidth, h = el.offsetHeight
+    const flip = pr.right - 4 + w > window.innerWidth - 8
+    const top = pr.top - 5
     let dy = 0
-    if (r.bottom > window.innerHeight - 8) dy = -(r.bottom - window.innerHeight + 8)
-    if (r.top + dy < 8) dy = 8 - r.top
+    if (top + h > window.innerHeight - 8) dy = -(top + h - window.innerHeight + 8)
+    if (top + dy < 8) dy = 8 - top
     setPlace({ flip, dy })
   }, [])
   return (
-    <div ref={ref} className="menu submenu" role="menu" style={{ top: -5 + place.dy, ...(place.flip ? { right: 'calc(100% - 4px)', left: 'auto' } : null) }}>
+    <div ref={ref} className="menu submenu" role="menu" style={{ top: -5 + place.dy, transformOrigin: place.flip ? 'top right' : 'top left', ...(place.flip ? { right: 'calc(100% - 4px)', left: 'auto' } : null) }}>
       {children}
     </div>
   )
@@ -317,24 +371,41 @@ function Submenu({ children }) {
 
 // ---------- 对话框（输入名称 / 确认） ----------
 export function Dialog() {
-  const dialog = useUI((s) => s.dialog)
+  const current = useUI((s) => s.dialog)
   const close = useUI((s) => s.closeDialog)
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
   const inputRef = useRef(null)
   const okRef = useRef(null)
   const lastFocus = useRef(null)
+  // 关闭时先播放退出动画（约 180ms）再卸载：shown 保留最后一个对话框内容
+  const [shown, setShown] = useState(null)
+  const [leaving, setLeaving] = useState(false)
+  const dialog = shown
 
   useEffect(() => {
-    if (dialog) {
+    if (current) {
+      setShown(current)
+      setLeaving(false)
+      return
+    }
+    if (!shown) return
+    setLeaving(true)
+    const t = setTimeout(() => { setShown(null); setLeaving(false) }, 180)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current])
+
+  useEffect(() => {
+    if (current) {
       lastFocus.current = document.activeElement
-      setValue(dialog.defaultValue || '')
+      setValue(current.defaultValue || '')
       setBusy(false)
-      setTimeout(() => (dialog.input ? inputRef.current?.select() : okRef.current?.focus()), 30)
+      setTimeout(() => (current.input ? inputRef.current?.select() : okRef.current?.focus()), 30)
     } else if (lastFocus.current instanceof HTMLElement) {
       lastFocus.current.focus?.() // 关闭后把焦点还给触发它的元素
     }
-  }, [dialog])
+  }, [current])
 
   if (!dialog) return null
   const submit = async () => {
@@ -361,7 +432,7 @@ export function Dialog() {
     }
   }
   return (
-    <div className="dialog-mask" onMouseDown={(e) => e.target === e.currentTarget && close()}>
+    <div className={`dialog-mask ${leaving ? 'leaving' : ''}`} onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div className="dialog" role="dialog" aria-modal="true" aria-label={dialog.title} onKeyDown={onKeyDown}>
         <div className="dialog-title">{dialog.title}</div>
         {dialog.message && <div className="dialog-msg">{dialog.message}</div>}

@@ -3,7 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { Link } from 'react-router-dom'
 import { usePlayer, useUI } from '../store'
 import { fmtTime } from '../lib'
-import { Cover, SONG_DRAG_TYPE, songDrag, useScrollEl, useSongMenu } from './common'
+import { Cover, HeartIcon, SONG_DRAG_TYPE, songDrag, useScrollEl, useSongMenu } from './common'
 import * as Icon from '../icons'
 
 const ROW = 52
@@ -219,8 +219,8 @@ const Row = memo(function Row({ song, index, top, variant, albumArtist, isCurren
       aria-selected={selected}
       data-i={index}
       draggable
-      className={`song-row ${index % 2 ? 'odd' : ''} ${isCurrent ? 'current' : ''} ${selected ? 'selected' : ''}`}
-      style={{ transform: `translateY(${top}px)` }}
+      className={`song-row ${index % 2 ? 'odd' : ''} ${isCurrent ? 'current' : ''} ${selected ? 'selected' : ''} ${index < 18 ? 'enter' : ''}`}
+      style={{ transform: `translateY(${top}px)`, '--i': index }}
       onClick={(e) => onSelect(index, e)}
       onDoubleClick={() => onPlay(index)}
       onContextMenu={(e) => onMenu(e, index)}
@@ -264,7 +264,7 @@ const Row = memo(function Row({ song, index, top, variant, albumArtist, isCurren
           aria-label={song.favorite ? '取消喜欢' : '喜欢'}
           aria-pressed={song.favorite}
         >
-          {song.favorite ? <Icon.HeartFill size={15} /> : <Icon.Heart size={15} />}
+          <HeartIcon on={song.favorite} size={15} />
         </button>
       </div>
       <div className="c-time" role="gridcell">{fmtTime(song.duration)}</div>

@@ -1,0 +1,218 @@
+/* =====================================================================
+   动效系统（模仿 Apple 的运动语言）
+   - 缓动：iOS sheet 曲线（先快后极缓）与弹簧曲线（轻微过冲）
+   - 原则：进入用减速（ease-out），离开用加速（ease-in）且更短；
+          按压立即响应、松开回弹；位移小（8~24px）、配合透明度；列表依次浮现
+   - 本文件放在 styles.css 之后，仅追加/覆盖动效相关属性
+   ===================================================================== */
+
+:root {
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.55, 0, 0.8, 0.4);
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+  /* 通用弹簧（过冲约 4%），由阻尼比 0.72 的弹簧阶跃响应采样而来 */
+  --spring: linear(0, 0.020 2.9%, 0.073 5.9%, 0.147 8.8%, 0.235 11.8%, 0.329 14.7%, 0.424 17.6%, 0.517 20.6%, 0.603 23.5%, 0.682 26.5%, 0.753 29.4%, 0.815 32.4%, 0.867 35.3%, 0.911 38.2%, 0.947 41.2%, 0.975 44.1%, 0.997 47.1%, 1.013 50.0%, 1.025 52.9%, 1.032 55.9%, 1.037 58.8%, 1.038 61.8%, 1.038 64.7%, 1.037 67.6%, 1.034 70.6%, 1.031 73.5%, 1.027 76.5%, 1.024 79.4%, 1.020 82.4%, 1.016 85.3%, 1.013 88.2%, 1.010 91.2%, 1.008 94.1%, 1.006 97.1%, 1);
+  /* 活泼弹簧（过冲约 15%），仅用于红心等小元素的“弹出” */
+  --spring-bouncy: linear(0, 0.034 2.9%, 0.122 5.9%, 0.245 8.8%, 0.387 11.8%, 0.533 14.7%, 0.674 17.6%, 0.800 20.6%, 0.909 23.5%, 0.996 26.5%, 1.062 29.4%, 1.107 32.4%, 1.135 35.3%, 1.147 38.2%, 1.146 41.2%, 1.136 44.1%, 1.120 47.1%, 1.100 50.0%, 1.078 52.9%, 1.057 55.9%, 1.037 58.8%, 1.020 61.8%, 1.006 64.7%, 0.995 67.6%, 0.987 70.6%, 0.982 73.5%, 0.979 76.5%, 0.978 79.4%, 0.979 82.4%, 0.981 85.3%, 0.984 88.2%, 0.987 91.2%, 0.990 94.1%, 0.993 97.1%, 1);
+}
+
+/* ---------- 应用启动 ---------- */
+.app { animation: app-in 0.7s var(--ease-out) backwards; }
+@keyframes app-in { from { opacity: 0; transform: scale(0.992); } }
+
+/* ---------- 页面转场：前进从右侧轻推入，后退从左侧 ---------- */
+.content { --page-from: 14px; }
+.content[data-dir='back'] { --page-from: -14px; }
+.page { animation: page-in 0.42s var(--ease-out) backwards; }
+@keyframes page-in { from { opacity: 0; transform: translate3d(var(--page-from, 14px), 8px, 0); } }
+
+/* ---------- 卡片 / 网格：依次浮现（--i 为序号，最多错开 14 个） ---------- */
+.card { animation: rise 0.55s var(--ease-out) backwards; animation-delay: calc(min(var(--i, 0), 14) * 32ms + 40ms); }
+@keyframes rise { from { opacity: 0; transform: translate3d(0, 18px, 0) scale(0.97); } }
+
+.genre-tile { animation: rise 0.55s var(--ease-out) backwards; animation-delay: calc(min(var(--i, 0), 14) * 32ms + 40ms); }
+
+/* 卡片悬停：封面轻微上浮放大，按下收缩，松手弹回 */
+.card-art { transition: transform 0.45s var(--spring), box-shadow 0.35s var(--ease-out); }
+.card:hover .card-art, .card:focus-visible .card-art { transform: translate3d(0, -3px, 0) scale(1.03); box-shadow: 0 6px 14px rgba(0, 0, 0, 0.12), 0 18px 40px rgba(0, 0, 0, 0.16); }
+.card:active .card-art { transform: scale(0.972); transition-duration: 0.12s; }
+.artist-card:hover .card-art { box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18); }
+.card-title { transition: color 0.2s; }
+
+/* 悬停时播放 / 更多按钮以弹簧弹出，错开 40ms */
+.card-hover { transition: opacity 0.25s var(--ease-out); }
+.card-play, .card-more { opacity: 0; transform: scale(0.55) translate3d(0, 6px, 0); transition: transform 0.5s var(--spring), opacity 0.2s, background 0.12s; }
+.card:hover .card-play, .card:hover .card-more, .card:focus-visible .card-play, .card:focus-visible .card-more { opacity: 1; transform: none; }
+.card:hover .card-more, .card:focus-visible .card-more { transition-delay: 0.04s; }
+.card-play:hover, .card-more:hover { transform: scale(1.1); }
+.card-play:active, .card-more:active { transform: scale(0.92); transition-duration: 0.08s; }
+
+/* 封面载入：淡入同时从 1.06 缓缓落定 */
+.cover img { transform: scale(1.06); transition: opacity 0.5s var(--ease-out), transform 0.9s var(--ease-out); }
+.cover img.loaded { transform: none; }
+
+/* ---------- 按钮：按压即时缩小，松开弹簧回弹 ---------- */
+.btn, .icon-btn, .sb-user, .sb-rail-search, .fp-round, .fp-close, .genre-tile, .link-btn, .seg button {
+  transition: transform 0.45s var(--spring), background 0.15s, color 0.15s, opacity 0.15s, box-shadow 0.2s;
+}
+.btn:active, .icon-btn:active, .sb-user:active, .sb-rail-search:active, .fp-round:active, .fp-close:active { transform: scale(0.93); transition-duration: 0.08s; }
+.btn:hover { transform: none; }
+.btn:active { transform: scale(0.96); }
+.genre-tile:hover { transform: translate3d(0, -3px, 0) scale(1.02); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22); }
+.genre-tile:active { transform: scale(0.97); transition-duration: 0.1s; }
+
+/* 播放 / 暂停等图标切换：新图标带弹簧缩放入场 */
+.icon-swap { display: inline-grid; place-items: center; animation: icon-swap 0.42s var(--spring) backwards; }
+@keyframes icon-swap { from { opacity: 0; transform: scale(0.5) rotate(-18deg); } }
+.tbtn.toggle { transition: transform 0.45s var(--spring), color 0.2s, background 0.2s; }
+.tbtn.toggle.on svg { animation: toggle-bump 0.45s var(--spring); }
+@keyframes toggle-bump { 40% { transform: scale(1.22); } }
+
+/* 红心：点亮时弹出并带一圈扩散的光环 */
+.heart { position: relative; display: inline-grid; place-items: center; }
+.heart.pop svg { animation: heart-pop 0.6s var(--spring-bouncy); }
+.heart.pop::after { content: ''; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid var(--accent); opacity: 0; animation: heart-ring 0.55s var(--ease-out); pointer-events: none; }
+@keyframes heart-pop { 0% { transform: scale(0.5); } 100% { transform: scale(1); } }
+@keyframes heart-ring { 0% { opacity: 0.8; transform: scale(0.4); } 100% { opacity: 0; transform: scale(2.1); } }
+.fullplayer .heart.pop::after { border-color: #fff; }
+
+/* ---------- 分段控件：高亮块滑动到所选项 ---------- */
+.seg { position: relative; }
+.seg-thumb { position: absolute; top: 2px; bottom: 2px; left: 0; border-radius: 6px; background: var(--bg); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14), 0 0 0 0.5px rgba(0, 0, 0, 0.04); z-index: 0; pointer-events: none; }
+.seg.ready .seg-thumb { transition: transform 0.45s var(--spring), width 0.45s var(--spring); }
+.seg button { position: relative; z-index: 1; }
+.seg button.on { background: transparent; box-shadow: none; }
+.seg button:active { transform: scale(0.95); transition-duration: 0.08s; }
+
+/* ---------- 侧边栏 ---------- */
+.sb-item { transition: background 0.18s var(--ease-out), transform 0.4s var(--spring); }
+.sb-item:active { transform: scale(0.97); transition-duration: 0.08s; }
+.sb-item.active .sb-icon { animation: icon-bounce 0.55s var(--spring); }
+@keyframes icon-bounce { 0% { transform: scale(0.7); } 100% { transform: scale(1); } }
+.sb-item.drop { animation: drop-pulse 0.9s ease-in-out infinite; }
+@keyframes drop-pulse { 50% { box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 3px var(--accent-soft); } }
+.sb-label { transition: opacity 0.2s; }
+
+/* 导航条 / 顶部标题 */
+.ns-title { transition: opacity 0.25s var(--ease-out), transform 0.3s var(--ease-out); }
+
+/* ---------- 歌曲列表 ---------- */
+.song-row { transition: background 0.12s; }
+@keyframes row-in { from { opacity: 0; transform: translate3d(0, 10px, 0); } }
+/* 行本身用 transform 定位，入场动画只作用于内部各列，避免与定位冲突 */
+.song-row.enter > * { animation: row-in 0.4s var(--ease-out) backwards; animation-delay: calc(min(var(--i, 0), 18) * 18ms); }
+.row-play, .row-cover-overlay { transition: opacity 0.18s; }
+.icon-btn.fav, .icon-btn.more { transition: opacity 0.18s, transform 0.45s var(--spring), background 0.12s; }
+.row-cover-overlay.show .eq-wrap { animation: fade 0.3s backwards; }
+
+/* 排序箭头 */
+.sort-arrow { transition: transform 0.3s var(--spring); }
+
+/* ---------- 货架翻页按钮 ---------- */
+.shelf-pager { transition: opacity 0.25s var(--ease-out); }
+
+/* ---------- 菜单：从触发点弹簧展开 ---------- */
+.menu { transform-origin: top left; animation: menu-spring 0.34s var(--spring) backwards; }
+.submenu { transform-origin: top left; animation: menu-spring 0.26s var(--spring) backwards; }
+@keyframes menu-spring { from { opacity: 0; transform: scale(0.9); } }
+.menu-item { transition: background 0.06s; }
+
+/* ---------- 对话框：背景淡入 + 磨砂，面板弹簧缩放；关闭有退出动画 ---------- */
+.dialog-mask { animation: mask-in 0.28s var(--ease-out) backwards; backdrop-filter: blur(8px) saturate(1.1); background: rgba(0, 0, 0, 0.28); }
+@keyframes mask-in { from { opacity: 0; backdrop-filter: blur(0); } }
+.dialog { animation: dialog-in 0.5s var(--spring) backwards; }
+@keyframes dialog-in { from { opacity: 0; transform: scale(0.88) translate3d(0, 8px, 0); } }
+.dialog-mask.leaving { animation: mask-out 0.18s var(--ease-in) backwards; pointer-events: none; }
+.dialog-mask.leaving .dialog { animation: dialog-out 0.18s var(--ease-in) backwards; }
+@keyframes mask-out { to { opacity: 0; } }
+@keyframes dialog-out { to { opacity: 0; transform: scale(0.95); } }
+
+/* ---------- 提示条：从底部弹簧升起 ---------- */
+.toast { transform: translate(-50%, 28px) scale(0.92); transition: opacity 0.25s var(--ease-out), transform 0.55s var(--spring); }
+.toast.show { transform: translate(-50%, 0) scale(1); }
+
+/* ---------- 底部播放栏 ---------- */
+.pb-cover { transition: transform 0.45s var(--spring), box-shadow 0.3s; }
+.pb-cover:hover { transform: scale(1.05); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28); }
+.pb-cover:active { transform: scale(0.96); transition-duration: 0.08s; }
+/* 切歌：封面与文字轻盈换入 */
+.pb-cover.swap { animation: swap-cover 0.55s var(--spring) backwards; }
+.pb-meta.swap > * { animation: swap-text 0.45s var(--ease-out) backwards; }
+.pb-meta.swap > *:nth-child(2) { animation-delay: 0.05s; }
+@keyframes swap-cover { from { opacity: 0; transform: scale(0.82); } }
+@keyframes swap-text { from { opacity: 0; transform: translate3d(0, 8px, 0); } }
+.quality-badge { animation: fade 0.4s backwards; }
+@keyframes fade { from { opacity: 0; } }
+
+/* 进度 / 音量：填充平滑推进，拖动时即时跟手 */
+.slider-fill { transition: width 0.22s linear, background 0.15s; }
+.slider-thumb { transition: transform 0.3s var(--spring), left 0.22s linear; }
+.slider.dragging .slider-fill, .slider.dragging .slider-thumb { transition: transform 0.3s var(--spring); }
+.slider-track { transition: height 0.25s var(--spring); }
+.vol-slider { transition: width 0.3s var(--ease-out), opacity 0.2s; }
+.slider-tip { animation: tip-in 0.15s var(--ease-out) backwards; }
+@keyframes tip-in { from { opacity: 0; transform: translate(-50%, 2px); } }
+
+/* 均衡器柱 */
+.eq i { transition: height 0.2s; }
+
+/* ---------- 右侧面板 ---------- */
+.sidepanel .lyrics, .sidepanel .queue { animation: panel-fade 0.4s var(--ease-out) backwards; }
+@keyframes panel-fade { from { opacity: 0; transform: translate3d(12px, 0, 0); } }
+.queue.enter .queue-item { animation: rise 0.45s var(--ease-out) backwards; animation-delay: calc(min(var(--i, 0), 12) * 24ms); }
+.queue-item { transition: background 0.15s; }
+.queue-item.active { animation: queue-glow 0.6s var(--ease-out); }
+@keyframes queue-glow { from { background: var(--accent-soft); } }
+
+/* ---------- 歌词：更柔和的聚焦移动 ---------- */
+.lyric-line { transition: color 0.45s var(--ease-out), transform 0.55s var(--spring), filter 0.45s var(--ease-out), background 0.15s; }
+
+/* ---------- 全屏播放页 ---------- */
+.fullplayer { transition: transform 0.6s var(--ease-sheet), visibility 0s linear 0.6s, background-color 0.9s var(--ease-out); }
+.fullplayer.open { transition: transform 0.6s var(--ease-sheet), visibility 0s, background-color 0.9s var(--ease-out); }
+.fp-bg-img { transition: opacity 0.9s var(--ease-out); }
+.fp-bg-tint { transition: background 0.9s var(--ease-out); }
+/* 打开后内容自上而下依次浮现 */
+.fullplayer.open .fp-art-wrap { animation: fp-rise 0.8s var(--ease-sheet) 0.08s backwards; }
+.fullplayer.open .fp-meta { animation: fp-rise 0.7s var(--ease-sheet) 0.16s backwards; }
+.fullplayer.open .fp-progress { animation: fp-rise 0.7s var(--ease-sheet) 0.22s backwards; }
+.fullplayer.open .fp-left > .transport { animation: fp-rise 0.7s var(--ease-sheet) 0.28s backwards; }
+.fullplayer.open .fp-bottom { animation: fp-rise 0.7s var(--ease-sheet) 0.34s backwards; }
+.fullplayer.open .fp-side { animation: fp-rise-x 0.8s var(--ease-sheet) 0.2s backwards; }
+@keyframes fp-rise { from { opacity: 0; transform: translate3d(0, 28px, 0); } }
+@keyframes fp-rise-x { from { opacity: 0; transform: translate3d(28px, 0, 0); } }
+/* 切歌：大封面和标题换入 */
+.fp-art .cover.swap { animation: swap-cover 0.7s var(--spring) backwards; }
+.fp-meta-text.swap > * { animation: swap-text 0.5s var(--ease-out) backwards; }
+.fp-meta-text.swap > *:nth-child(2) { animation-delay: 0.06s; }
+.fp-art { transition: transform 0.9s var(--spring), box-shadow 0.8s var(--ease-out); }
+
+/* 播放器共享元素过渡（View Transitions）：播放栏封面 ⇄ 全屏大封面 */
+html.vt-np .fullplayer, html.vt-np .fullplayer.open { transition: none !important; }
+html.vt-np .fullplayer.open * { animation: none !important; }
+html.vt-old-bar .pb-cover { view-transition-name: np-art; }
+html.vt-new-full .fullplayer.open .fp-art { view-transition-name: np-art; }
+html.vt-old-full .fullplayer.open .fp-art { view-transition-name: np-art; }
+html.vt-new-bar .pb-cover { view-transition-name: np-art; }
+::view-transition-group(root) { animation-duration: 0.5s; animation-timing-function: var(--ease-sheet); }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 0.5s; animation-timing-function: var(--ease-sheet); }
+::view-transition-group(np-art) { animation-duration: 0.62s; animation-timing-function: var(--ease-sheet); }
+::view-transition-old(np-art), ::view-transition-new(np-art) { height: 100%; width: 100%; object-fit: cover; animation-duration: 0.62s; }
+
+/* ---------- 状态页：图标缓慢浮动，让空状态不死板 ---------- */
+.state-icon { animation: float 4s ease-in-out infinite; }
+@keyframes float { 50% { transform: translate3d(0, -5px, 0); } }
+.state-box { animation: page-in 0.5s var(--ease-out) backwards; }
+
+/* ---------- 登录页 ---------- */
+.login-card { animation: login-in 0.9s var(--spring) backwards; }
+@keyframes login-in { from { opacity: 0; transform: translate3d(0, 26px, 0) scale(0.94); } }
+.login-logo { animation: logo-float 5s ease-in-out infinite; }
+@keyframes logo-float { 50% { transform: translate3d(0, -4px, 0) rotate(-2deg); } }
+.login-error { animation: shake 0.5s var(--ease-out); }
+@keyframes shake { 15% { transform: translateX(-7px); } 35% { transform: translateX(6px); } 55% { transform: translateX(-4px); } 75% { transform: translateX(2px); } }
+
+/* ---------- 减少动效：保留状态变化，去掉位移与缩放（与 styles.css 中的全局规则配合） ---------- */
+html[data-motion='reduce'] .page, html[data-motion='reduce'] .card, html[data-motion='reduce'] .genre-tile,
+html[data-motion='reduce'] .app, html[data-motion='reduce'] .state-box, html[data-motion='reduce'] .login-card,
+html[data-motion='reduce'] .dialog, html[data-motion='reduce'] .menu { animation: none !important; }
