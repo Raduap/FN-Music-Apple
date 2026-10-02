@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
-import { api } from '../api'
 import { usePlayer, useUI, useCurrent } from '../store'
-import { fmtTime, parseLrc, useCoverColor, useViewport } from '../lib'
+import { fmtTime, useCoverColor, useViewport } from '../lib'
+import { lineAt, loadLyrics, peekLyrics } from '../lyrics'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
 import { closeFullPlayer, openFullPlayer } from '../motion'
 import * as Icon from '../icons'
@@ -249,23 +249,16 @@ export function PlayerBar() {
 }
 
 // ---------- 歌词 ----------
-const lrcCache = new Map()
 function useLyrics(song) {
   const id = song?.id
   const [state, setState] = useState({ lines: [], loading: false })
   useEffect(() => {
     if (!id) return setState({ lines: [], loading: false })
-    if (lrcCache.has(id)) return setState({ lines: lrcCache.get(id), loading: false })
+    const cached = peekLyrics(id)
+    if (cached) return setState({ lines: cached, loading: false })
     let dead = false
     setState({ lines: [], loading: true })
-    api.lyric(id).then((text) => {
-      const lines = parseLrc(text)
-      // 无时间戳的纯文本歌词也显示（不滚动）
-      const plain = !lines.length && text ? text.split(/\r?\n/).map((t) => t.replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean).map((t) => ({ time: -1, text: t })) : null
-      const out = plain || lines
-      lrcCache.set(id, out)
-      if (!dead) setState({ lines: out, loading: false })
-    })
+    loadLyrics(id).then((lines) => { if (!dead) setState({ lines, loading: false }) })
     return () => { dead = true }
   }, [id])
   return state
@@ -279,16 +272,7 @@ export function LyricsView({ song, big = false }) {
   const userScroll = useRef(0)
   const synced = lines.length && lines[0].time >= 0
 
-  const active = useMemo(() => {
-    if (!synced) return -1
-    const t = time + 0.25
-    let lo = 0, hi = lines.length - 1, ans = -1
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1
-      if (lines[mid].time <= t) { ans = mid; lo = mid + 1 } else hi = mid - 1
-    }
-    return ans
-  }, [time, lines, synced])
+  const active = useMemo(() => lineAt(lines, time + 0.25), [time, lines])
 
   useEffect(() => {
     const el = ref.current

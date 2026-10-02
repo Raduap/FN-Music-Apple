@@ -1,0 +1,245 @@
+/* 悬浮球
+ * 尺寸与 electron/ballGeometry.js 保持一致：球 60px，窗口四周 24px 阴影边距，展开宽度 336px
+ * 阴影向下最多延伸 offset + blur + spread ≤ 24px，否则会在窗口边缘被截断
+ * 窗口透明且没有系统阴影，阴影、圆角、背景都由这里绘制
+ */
+:root {
+  --font: 'SF Pro Text', -apple-system, 'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
+  --ball: 60px;
+  --pad: 24px;
+  --panel: 336px;
+  --disc-inset: 5px;
+
+  --surface: rgba(252, 252, 253, 0.94);
+  --stroke: rgba(0, 0, 0, 0.07);
+  --text: #1d1d1f;
+  --text2: rgba(60, 60, 67, 0.62);
+  --hover: rgba(120, 120, 128, 0.14);
+  --press: rgba(120, 120, 128, 0.24);
+  --track: rgba(120, 120, 128, 0.16);
+  --primary-bg: #1d1d1f;
+  --primary-fg: #fff;
+  --shadow: 0 10px 22px -10px rgba(0, 0, 0, 0.34), 0 2px 6px -1px rgba(0, 0, 0, 0.12);
+  --accent: #fa233b;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* 与主窗口 motion.css 相同的弹簧曲线 */
+  --spring: linear(0, 0.020 2.9%, 0.073 5.9%, 0.147 8.8%, 0.235 11.8%, 0.329 14.7%, 0.424 17.6%, 0.517 20.6%, 0.603 23.5%, 0.682 26.5%, 0.753 29.4%, 0.815 32.4%, 0.867 35.3%, 0.911 38.2%, 0.947 41.2%, 0.975 44.1%, 0.997 47.1%, 1.013 50.0%, 1.025 52.9%, 1.032 55.9%, 1.037 58.8%, 1.038 61.8%, 1.038 64.7%, 1.037 67.6%, 1.034 70.6%, 1.031 73.5%, 1.027 76.5%, 1.024 79.4%, 1.020 82.4%, 1.016 85.3%, 1.013 88.2%, 1.010 91.2%, 1.008 94.1%, 1.006 97.1%, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: rgba(38, 38, 41, 0.94);
+    --stroke: rgba(255, 255, 255, 0.09);
+    --text: #f5f5f7;
+    --text2: rgba(235, 235, 245, 0.58);
+    --hover: rgba(255, 255, 255, 0.1);
+    --press: rgba(255, 255, 255, 0.18);
+    --track: rgba(255, 255, 255, 0.12);
+    --primary-bg: #f5f5f7;
+    --primary-fg: #1d1d1f;
+    --shadow: 0 10px 22px -8px rgba(0, 0, 0, 0.7), 0 2px 6px -1px rgba(0, 0, 0, 0.4);
+    --accent: #ff375f;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+body {
+  font-family: var(--font);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+button { font: inherit; color: inherit; border: 0; background: none; padding: 0; margin: 0; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+button:focus { outline: none; }
+
+/* ---------- 胶囊：收起时就是球本身，展开时向屏幕内侧伸长 ---------- */
+.stage { position: relative; width: 100%; height: 100%; }
+.capsule {
+  position: absolute;
+  top: var(--pad);
+  width: var(--ball);
+  height: var(--ball);
+  border-radius: calc(var(--ball) / 2);
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: var(--shadow), inset 0 0 0 0.5px var(--stroke);
+  transition: width 0.55s var(--spring), transform 0.35s var(--spring), box-shadow 0.3s var(--ease);
+  animation: capsule-in 0.6s var(--spring) backwards;
+  will-change: width;
+}
+.stage[data-anchor='left'] .capsule { left: var(--pad); }
+.stage[data-anchor='right'] .capsule { right: var(--pad); flex-direction: row-reverse; }
+.stage[data-expanded] .capsule { width: var(--panel); }
+.stage[data-dragging] .capsule { transform: scale(1.06); box-shadow: 0 12px 22px -10px rgba(0, 0, 0, 0.45), 0 3px 8px -2px rgba(0, 0, 0, 0.16), inset 0 0 0 0.5px var(--stroke); cursor: grabbing; }
+@keyframes capsule-in { from { opacity: 0; transform: scale(0.55); } }
+
+/* 封面色晕染：从球所在一侧向面板方向渐隐，让面板带上当前歌曲的色调 */
+.glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.5s var(--ease);
+  background: linear-gradient(90deg, rgb(var(--c) / 0.2), rgb(var(--c) / 0.06) 45%, transparent 75%);
+}
+.stage[data-anchor='right'] .glow { background: linear-gradient(270deg, rgb(var(--c) / 0.2), rgb(var(--c) / 0.06) 45%, transparent 75%); }
+.stage[data-expanded] .glow { opacity: 1; }
+
+/* ---------- 球：进度环 + 旋转的唱片封面 ---------- */
+.orb {
+  position: relative;
+  flex: none;
+  width: var(--ball);
+  height: var(--ball);
+  border-radius: 50%;
+  transition: transform 0.4s var(--spring);
+}
+.orb:hover { transform: scale(1.035); }
+.orb:active { transform: scale(0.94); transition-duration: 0.15s; }
+
+.ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
+.ring circle { fill: none; stroke-width: 2.6; }
+.ring-track { stroke: var(--track); }
+.ring-progress {
+  stroke: rgb(var(--c));
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.25s linear, stroke 0.6s var(--ease), opacity 0.3s;
+  filter: drop-shadow(0 0 2px rgb(var(--c) / 0.45));
+}
+/* 缓冲中：进度环换成旋转的短弧 */
+.ring-spinner { stroke: rgb(var(--c)); stroke-linecap: round; opacity: 0; transform-origin: 30px 30px; transition: opacity 0.3s; }
+.stage[data-loading] .ring-spinner { opacity: 1; animation: spin 0.9s linear infinite; }
+.stage[data-loading] .ring-progress { opacity: 0.25; }
+.stage[data-idle] .ring-progress { opacity: 0; }
+
+.disc {
+  position: absolute;
+  inset: var(--disc-inset);
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--track);
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+  animation: spin 22s linear infinite;
+  animation-play-state: paused;
+}
+.stage[data-playing] .disc { animation-play-state: running; }
+.disc img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  animation: fade-in 0.5s var(--ease);
+}
+/* 唱片中心孔与高光，让封面读起来像一张唱片，又不喧宾夺主 */
+.disc::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, transparent 0 5px, rgba(0, 0, 0, 0.18) 5.5px, transparent 7px),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 45%);
+  pointer-events: none;
+}
+.disc::after {
+  content: '';
+  position: absolute;
+  z-index: 2;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: inset 0 0.5px 1.5px rgba(0, 0, 0, 0.35);
+}
+.disc.idle { background: linear-gradient(180deg, #ff5b70, #e3112f); color: #fff; animation: none; }
+.disc.idle::before, .disc.idle::after { display: none; }
+
+/* ---------- 展开后的内容 ---------- */
+.body {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 9px;
+  opacity: 0;
+  transform: translateX(-10px);
+  transition: opacity 0.18s var(--ease), transform 0.3s var(--ease);
+  pointer-events: none;
+}
+.stage[data-anchor='right'] .body { padding: 0 9px 0 16px; transform: translateX(10px); }
+.stage[data-expanded] .body { opacity: 1; transform: none; pointer-events: auto; transition: opacity 0.3s var(--ease) 0.1s, transform 0.5s var(--spring) 0.06s; }
+
+.meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.title span { display: inline-block; }
+/* 标题过长：右端淡出，并来回滚动 */
+.title:has(span[data-scroll='1']) { mask-image: linear-gradient(90deg, #000 calc(100% - 16px), transparent); }
+.stage[data-expanded] .title span[data-scroll='1'] { animation: marquee var(--dur) var(--ease) 0.8s infinite alternate; }
+@keyframes marquee { 0%, 15% { transform: translateX(0); } 85%, 100% { transform: translateX(var(--shift)); } }
+
+.sub {
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--text2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sub > span { display: block; overflow: hidden; text-overflow: ellipsis; animation: line-in 0.45s var(--ease); }
+.sub .lyric { color: color-mix(in srgb, rgb(var(--c)) 62%, var(--text)); font-weight: 500; }
+@keyframes line-in { from { opacity: 0; transform: translateY(5px); } }
+
+.hud { display: flex !important; align-items: center; gap: 6px; color: var(--text); }
+.hud svg { flex: none; }
+.hud-bar { position: relative; flex: 1; min-width: 24px; max-width: 72px; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+.hud-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: rgb(var(--c)); transition: width 0.2s var(--ease); }
+.hud em { flex: none; font-style: normal; font-variant-numeric: tabular-nums; color: var(--text2); min-width: 32px; }
+
+.controls { flex: none; display: flex; align-items: center; gap: 2px; }
+.ctrl {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+  transition: background-color 0.15s, transform 0.35s var(--spring), color 0.2s;
+}
+.ctrl:hover { background: var(--hover); }
+.ctrl:active { background: var(--press); transform: scale(0.86); transition-duration: 0.1s; }
+.ctrl.main { width: 34px; height: 34px; margin: 0 2px; background: var(--primary-bg); color: var(--primary-fg); box-shadow: 0 2px 6px -2px rgba(0, 0, 0, 0.3); }
+.ctrl.main:hover { background: var(--primary-bg); filter: brightness(1.12); }
+.ctrl.fav { color: var(--text2); }
+.ctrl.fav.on { color: var(--accent); }
+.ctrl.fav.on svg { animation: heart-pop 0.5s var(--spring); }
+.swap { display: grid; place-items: center; animation: swap-in 0.35s var(--spring); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes swap-in { from { opacity: 0; transform: scale(0.5); } }
+@keyframes heart-pop { 0% { transform: scale(0.6); } 60% { transform: scale(1.2); } 100% { transform: scale(1); } }
+
+/* 减少动效：保留状态变化，去掉位移、缩放与旋转 */
+.stage[data-motion='reduce'] *, .stage[data-motion='reduce'] *::before, .stage[data-motion='reduce'] *::after {
+  animation-duration: 0.001s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.12s !important;
+}
+.stage[data-motion='reduce'] .disc { animation: none !important; }
+.stage[data-motion='reduce'] .ring-spinner { animation: none !important; }

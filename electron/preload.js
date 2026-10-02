@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('fn', {
   setOverlay: (o) => ipcRenderer.send('overlay:set', o),
   trayInfo: () => ipcRenderer.invoke('tray:info'),
   setPlayerState: (s) => ipcRenderer.send('player:state', s),
-  onPlayerCommand: (cb) => { const h = (_e, cmd) => cb(cmd); ipcRenderer.on('player:command', h); return () => ipcRenderer.removeListener('player:command', h) },
+  onPlayerCommand: (cb) => { const h = (_e, cmd, arg) => cb(cmd, arg); ipcRenderer.on('player:command', h); return () => ipcRenderer.removeListener('player:command', h) },
   onNav: (cb) => { const h = (_e, d) => cb(d); ipcRenderer.on('nav', h); return () => ipcRenderer.removeListener('nav', h) },
   minimize: () => ipcRenderer.send('win:minimize'),
   toggleMaximize: () => ipcRenderer.send('win:toggle-maximize'),

@@ -43,6 +43,7 @@ export default function Sidebar({ rail }) {
     const theme = ui().theme
     const motion = ui().motion
     const [tray, coverCache] = await Promise.all([window.fn.trayInfo?.().catch(() => null), window.fn.coverCacheStats?.().catch(() => null)])
+    const setBallMode = (mode) => window.fn.setPrefs({ ballMode: mode }).then(() => ui().showToast({ always: '悬浮球将始终显示', hidden: '主窗口隐藏或最小化时显示悬浮球', off: '已关闭悬浮球' }[mode]))
     const setCloseToTray = (on) => window.fn.setPrefs({ closeToTray: on }).then(() => ui().showToast(on ? '关闭窗口后将停留在系统托盘' : '关闭窗口将退出应用'))
     ui().openMenu(rail ? r.right + 8 : r.left, rail ? r.bottom : r.top - 8, [
       { label: `${username} @ ${server.replace(/^https?:\/\//, '').replace(/\/music$/, '')}`, disabled: true },
@@ -61,6 +62,14 @@ export default function Sidebar({ rail }) {
           { label: '开启', checked: motion === 'on', onClick: () => ui().setMotion('on') },
           { label: '跟随系统', checked: motion === 'system', onClick: () => ui().setMotion('system') },
           { label: '关闭', checked: motion === 'off', onClick: () => ui().setMotion('off') },
+        ],
+      },
+      tray?.ballMode && {
+        label: '悬浮球',
+        children: [
+          { label: '始终显示', checked: tray.ballMode === 'always', onClick: () => setBallMode('always') },
+          { label: '主窗口隐藏时显示', checked: tray.ballMode === 'hidden', onClick: () => setBallMode('hidden') },
+          { label: '关闭', checked: tray.ballMode === 'off', onClick: () => setBallMode('off') },
         ],
       },
       tray?.available && {

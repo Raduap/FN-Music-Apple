@@ -16,13 +16,33 @@ const SERVER = `127.0.0.1:${PORT}`
 const userData = mkdtempSync(join(tmpdir(), 'fnm-e2e-'))
 let mock, app, win
 
+// 主窗口与悬浮球窗口在主进程中的状态
+const windows = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => ({ ball: w.webContents.getURL().includes('ball.html'), visible: w.isVisible() })))
+const mainVisible = async () => (await windows()).find((w) => !w.ball)?.visible
+const ballVisible = async () => !!(await windows()).find((w) => w.ball)?.visible
+const closeMain = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('ball.html')).close())
+async function ballPage() {
+  for (let i = 0; i < 100; i++) {
+    const p = app.windows().find((w) => w.url().includes('ball.html'))
+    if (p) return p
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  throw new Error('悬浮球窗口没有出现')
+}
+const until = async (fn, msg) => {
+  for (let i = 0; i < 100; i++) { if (await fn()) return; await new Promise((r) => setTimeout(r, 100)) }
+  assert.fail(msg)
+}
+
 async function launch() {
   app = await _electron.launch({
     executablePath: require('electron'),
     args: [root, ...(process.platform === 'linux' ? ['--no-sandbox'] : [])],
     env: { ...process.env, NODE_ENV: 'production', FNM_USER_DATA: userData },
   })
-  win = await app.firstWindow()
+  await app.firstWindow()
+  // 主窗口（悬浮球是另一个窗口）
+  for (let i = 0; i < 100 && !(win = app.windows().find((w) => !w.url().includes('ball.html'))); i++) await new Promise((r) => setTimeout(r, 100))
   win.setDefaultTimeout(15000)
 }
 
@@ -135,32 +155,77 @@ test('封面磁盘缓存：重启后不再向 NAS 请求已显示过的封面', 
   await bar.getByRole('button', { name: '暂停', exact: true }).waitFor()
 })
 
+test('悬浮球：显示当前歌曲，并能控制播放', async (t) => {
+  const bar = win.getByRole('contentinfo', { name: '播放器' })
+  const title = await bar.locator('.pb-title').innerText()
+  assert.equal(await ballVisible(), false, '默认只在主窗口隐藏时显示')
+
+  await win.evaluate(() => window.fn.setPrefs({ ballMode: 'always' }))
+  t.after(() => win.evaluate(() => window.fn.setPrefs({ ballMode: 'hidden' })).catch(() => {}))
+  const ball = await ballPage()
+  await until(ballVisible, '“始终显示”时应显示悬浮球')
+  ball.setDefaultTimeout(15000)
+  await ball.locator('.title').getByText(title, { exact: true }).waitFor()
+
+  // 悬停展开，用面板上的按钮控制主窗口里的播放器
+  await ball.locator('.orb').hover()
+  await ball.locator('.stage[data-expanded]').waitFor()
+  const poll = { polling: 250 }
+  await ball.getByRole('button', { name: '暂停', exact: true }).click()
+  await win.waitForFunction(() => document.title.startsWith('⏸'), null, poll)
+  await ball.getByRole('button', { name: '播放', exact: true }).click()
+  await win.waitForFunction(() => !document.title.startsWith('⏸'), null, poll)
+
+  const favBefore = await bar.getByRole('button', { name: /喜欢/ }).getAttribute('aria-pressed')
+  await ball.locator('.ctrl.fav').click()
+  await until(async () => (await bar.getByRole('button', { name: /喜欢/ }).getAttribute('aria-pressed')) !== favBefore, '应切换“喜欢”')
+
+  await ball.getByRole('button', { name: '下一首' }).click()
+  await until(async () => (await bar.locator('.pb-title').innerText()) !== title, '应切到下一首')
+  const next = await bar.locator('.pb-title').innerText()
+  await ball.locator('.title').getByText(next, { exact: true }).waitFor()
+
+  // 滚轮调音量
+  const volume = () => win.evaluate(() => JSON.parse(localStorage.getItem('fnm:volume')) ?? 0.8) // 未调过音量时为默认值 0.8
+  const vol = await volume()
+  await ball.locator('.orb').hover()
+  await ball.mouse.wheel(0, 120)
+  await until(async () => (await volume()) < vol, '滚轮向下应降低音量')
+  await ball.locator('.hud').waitFor()
+
+  // 恢复默认：主窗口可见时隐藏
+  await win.evaluate(() => window.fn.setPrefs({ ballMode: 'hidden' }))
+  await until(async () => !(await ballVisible()), '“主窗口隐藏时显示”且主窗口可见时应隐藏悬浮球')
+})
+
 test('关闭窗口后停留在托盘，音乐继续播放', async () => {
   const info = await win.evaluate(() => window.fn.trayInfo())
   assert.ok(info.available, '应已创建托盘图标')
   await win.evaluate(() => window.fn.setPrefs({ closeToTray: true }))
   await win.waitForFunction(() => !document.title.startsWith('⏸') && document.title !== '飞牛音乐')
 
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
-  const visible = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isVisible()))
-  assert.deepEqual(visible, [false], '窗口应隐藏而不是关闭')
+  await closeMain()
+  assert.equal(await mainVisible(), false, '窗口应隐藏而不是关闭')
+  // 默认“主窗口隐藏时显示”悬浮球
+  await until(ballVisible, '主窗口隐藏后应显示悬浮球')
   // 窗口隐藏后 requestAnimationFrame 不再触发，waitForFunction 必须改用定时轮询
   const poll = { polling: 250 }
   const before = await win.evaluate(() => document.querySelector('.pb-time').textContent)
   await win.waitForFunction((t) => document.querySelector('.pb-time').textContent !== t, before, poll)
 
   // 托盘菜单的“暂停”：主进程向渲染进程发送播放控制命令
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('player:command', 'toggle'))
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('ball.html')).webContents.send('player:command', 'toggle'))
   await win.waitForFunction(() => document.title.startsWith('⏸'), null, poll)
 
   // 再次启动应用（第二个实例）时调出窗口
   await app.evaluate(({ app }) => app.emit('second-instance'))
-  assert.deepEqual(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isVisible())), [true])
+  assert.equal(await mainVisible(), true)
+  await until(async () => !(await ballVisible()), '主窗口显示后应隐藏悬浮球')
 })
 
 test('关闭“最小化到托盘”后，关闭窗口即退出', async () => {
   await win.evaluate(() => window.fn.setPrefs({ closeToTray: false }))
   const exited = new Promise((resolve) => app.process().once('exit', resolve))
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
-  await exited
+  await closeMain()
+  await exited // 悬浮球窗口不应让应用继续留在后台
 })
