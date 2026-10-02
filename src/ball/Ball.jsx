@@ -2,7 +2,7 @@
 //
 // 交互
 // - 悬停 120ms 后展开，离开 450ms 后收起（避免鼠标掠过时闪动）
-// - 单击圆球：打开主窗口；拖动任意空白处：移动（松手吸附屏幕边缘）
+// - 单击圆球：打开主窗口；按住圆球或面板空白处拖动：自由移动，松手停在原处
 // - 滚轮：调节音量；右键：菜单
 // - 窗口透明区域默认鼠标穿透，只有指针在胶囊上时才接收点击
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -134,14 +134,21 @@ export default function Ball() {
   const later = (key, fn, ms) => { clearTimeout(timers.current[key]); timers.current[key] = setTimeout(fn, ms) }
   useEffect(() => () => Object.values(timers.current).forEach(clearTimeout), [])
 
+  // 透明窗口默认鼠标穿透，Windows 只转发鼠标移动消息，所以用 mouse 事件（而不是 pointer 事件）判断悬停
+  const interactive = useRef(false)
+  const setInteractive = (on) => {
+    if (interactive.current === on) return
+    interactive.current = on
+    bridge?.setInteractive(on)
+  }
   const onEnter = () => {
-    bridge?.setInteractive(true)
+    setInteractive(true)
     clearTimeout(timers.current.collapse)
     if (!expanded) later('expand', () => setExpanded(true), 120)
   }
   const onLeave = () => {
     if (press.current) return // 拖动中（指针被捕获）不收起
-    bridge?.setInteractive(false)
+    setInteractive(false)
     clearTimeout(timers.current.expand)
     later('collapse', () => setExpanded(false), 450)
   }
@@ -160,12 +167,16 @@ export default function Ball() {
     if (!p.moved) { p.moved = true; setDragging(true); setExpanded(false) }
     bridge?.dragMove()
   }
-  const onPointerUp = () => {
+  const onPointerUp = (e) => {
     const p = press.current
     press.current = null
     if (!p) return
-    if (p.moved) { setDragging(false); bridge?.dragEnd() }
-    else if (p.onOrb) bridge?.command('show-main')
+    if (p.moved) {
+      setDragging(false)
+      bridge?.dragEnd()
+      // 松手时光标可能已在面板外
+      if (!e.currentTarget.matches(':hover')) onLeave()
+    } else if (p.onOrb) bridge?.command('show-main')
   }
 
   const onWheel = (e) => {
@@ -190,14 +201,16 @@ export default function Ball() {
       data-loading={(state.loading && state.playing) || undefined}
       data-dragging={dragging || undefined}
       data-motion={reduce ? 'reduce' : 'full'}
+      data-palette={state.palette || 'red'}
       style={{ '--c': `${r} ${g} ${b}` }}
     >
       <div
         className="capsule"
         role="toolbar"
         aria-label="迷你播放器"
-        onPointerEnter={onEnter}
-        onPointerLeave={onLeave}
+        onMouseEnter={onEnter}
+        onMouseLeave={onLeave}
+        onMouseMove={() => setInteractive(true)}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}

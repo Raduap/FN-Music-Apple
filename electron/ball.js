@@ -1,8 +1,8 @@
 // 悬浮球窗口：透明、置顶、不出现在任务栏、不抢焦点
 //
 // - 窗口比球大，透明部分默认让鼠标穿透（Windows / macOS），鼠标移到球或展开的面板上时才接收点击
-// - 拖动由主进程根据鼠标的屏幕坐标移动窗口（不用 -webkit-app-region，否则球上的点击和悬停都会失效）
-// - 松手后吸附到屏幕边缘（带缓动动画），位置写入偏好设置
+// - 拖动由主进程按鼠标的屏幕坐标移动窗口（不用 -webkit-app-region，否则球上的点击和悬停都会失效）：
+//   拖动期间主进程以 60fps 读取光标位置跟随，甩得再快窗口也跟得上；松手的位置就是最终位置（只保证留在屏幕内）
 const { BrowserWindow, Menu, screen, ipcMain } = require('electron')
 const G = require('./ballGeometry')
 
@@ -24,8 +24,7 @@ function createBall({ preload, load, readPrefs, writePrefs, command, showMain, m
   let ball = null // 球左上角的屏幕坐标
   let anchor = 'right'
   let state = {}
-  let drag = null
-  let anim = null
+  let drag = null // { cursor, ball, follow: 截止时间, timer }
   let wanted = false
 
   const alive = () => win && !win.isDestroyed()
@@ -35,7 +34,7 @@ function createBall({ preload, load, readPrefs, writePrefs, command, showMain, m
   function initialBall() {
     const saved = readPrefs().ball
     const areas = screen.getAllDisplays().map((d) => d.workArea)
-    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y) && G.isOnScreen(saved, areas)) return G.snapBall(saved, workAreaFor(saved))
+    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y) && G.isOnScreen(saved, areas)) return G.clampBall(saved, workAreaFor(saved))
     return G.defaultBall(screen.getPrimaryDisplay().workArea)
   }
 
@@ -75,19 +74,30 @@ function createBall({ preload, load, readPrefs, writePrefs, command, showMain, m
     load(win)
   }
 
-  // 缓动移动到目标位置（Windows 上 setBounds 没有动画）
-  function animateTo(target, done) {
-    clearInterval(anim)
-    const from = { ...ball }
-    const t0 = Date.now()
-    const dur = 240
-    anim = setInterval(() => {
-      const t = Math.min(1, (Date.now() - t0) / dur)
-      const e = 1 - Math.pow(1 - t, 3)
-      ball = { x: Math.round(from.x + (target.x - from.x) * e), y: Math.round(from.y + (target.y - from.y) * e) }
-      if (alive()) win.setBounds(G.windowBounds(ball, anchor))
-      if (t === 1) { clearInterval(anim); anim = null; done?.() }
-    }, 16)
+  // ---------- 拖动 ----------
+  // 页面每收到一次 pointermove 就把“跟随”延长 400ms；期间主进程每 16ms 把窗口移到光标处。
+  // 光标甩出窗口时页面收不到事件，但主进程仍在跟随，窗口很快追上；万一松手事件丢了，400ms 后自动停止，不会一直粘着鼠标
+  function followCursor() {
+    if (!drag || !alive()) return stopFollow()
+    if (Date.now() > drag.follow) return stopFollow()
+    const c = screen.getCursorScreenPoint()
+    const next = { x: drag.ball.x + c.x - drag.cursor.x, y: drag.ball.y + c.y - drag.cursor.y }
+    if (next.x !== ball.x || next.y !== ball.y) {
+      ball = next
+      win.setBounds(G.windowBounds(ball, anchor))
+    }
+  }
+  function stopFollow() {
+    if (drag?.timer) { clearInterval(drag.timer); drag.timer = null }
+  }
+  function endDrag() {
+    if (!drag) return
+    followCursor()
+    stopFollow()
+    drag = null
+    ball = G.clampBall(ball, workAreaFor(ball))
+    layout() // 球过了屏幕中线时，面板改向另一侧展开
+    writePrefs({ ...readPrefs(), ball })
   }
 
   const fromBall = (e) => alive() && e.sender === win.webContents
@@ -99,31 +109,25 @@ function createBall({ preload, load, readPrefs, writePrefs, command, showMain, m
     else command(cmd, arg)
   })
   ipcMain.on('ball:menu', (e) => { if (fromBall(e)) Menu.buildFromTemplate(menu()).popup({ window: win }) })
+  // 按下时记录起点（光标与球的位置），移动超过阈值后才开始跟随，单击不会挪动
   ipcMain.on('ball:drag-start', (e) => {
     if (!fromBall(e)) return
-    clearInterval(anim)
-    drag = { cursor: screen.getCursorScreenPoint(), ball: { ...ball } }
+    stopFollow()
+    drag = { cursor: screen.getCursorScreenPoint(), ball: { ...ball }, follow: 0, timer: null }
   })
   ipcMain.on('ball:drag-move', (e) => {
     if (!fromBall(e) || !drag) return
-    const c = screen.getCursorScreenPoint()
-    ball = { x: drag.ball.x + c.x - drag.cursor.x, y: drag.ball.y + c.y - drag.cursor.y }
-    win.setBounds(G.windowBounds(ball, anchor))
+    drag.follow = Date.now() + 400
+    if (!drag.timer) drag.timer = setInterval(followCursor, 16)
+    followCursor()
   })
-  ipcMain.on('ball:drag-end', (e) => {
-    if (!fromBall(e) || !drag) return
-    drag = null
-    animateTo(G.snapBall(ball, workAreaFor(ball)), () => {
-      layout()
-      writePrefs({ ...readPrefs(), ball })
-    })
-  })
+  ipcMain.on('ball:drag-end', (e) => { if (fromBall(e)) endDrag() })
 
   // 显示器拔出或分辨率变化后，把球挪回可见区域
   const recheck = () => {
     if (!alive() || !ball) return
     const areas = screen.getAllDisplays().map((d) => d.workArea)
-    ball = G.isOnScreen(ball, areas) ? G.snapBall(ball, workAreaFor(ball)) : G.defaultBall(screen.getPrimaryDisplay().workArea)
+    ball = G.isOnScreen(ball, areas) ? G.clampBall(ball, workAreaFor(ball)) : G.defaultBall(screen.getPrimaryDisplay().workArea)
     layout()
   }
   screen.on('display-removed', recheck)
