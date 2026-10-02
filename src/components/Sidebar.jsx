@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { api, clearCache } from '../api'
 import { useAuth, useUI } from '../store'
 import { SONG_DRAG_TYPE, songDrag } from './common'
+import { resetCovers } from '../covers'
 import * as Icon from '../icons'
 
 export default function Sidebar({ rail }) {
@@ -41,7 +42,7 @@ export default function Sidebar({ rail }) {
     const r = e.currentTarget.getBoundingClientRect()
     const theme = ui().theme
     const motion = ui().motion
-    const tray = await window.fn.trayInfo?.().catch(() => null)
+    const [tray, coverCache] = await Promise.all([window.fn.trayInfo?.().catch(() => null), window.fn.coverCacheStats?.().catch(() => null)])
     const setCloseToTray = (on) => window.fn.setPrefs({ closeToTray: on }).then(() => ui().showToast(on ? '关闭窗口后将停留在系统托盘' : '关闭窗口将退出应用'))
     ui().openMenu(rail ? r.right + 8 : r.left, rail ? r.bottom : r.top - 8, [
       { label: `${username} @ ${server.replace(/^https?:\/\//, '').replace(/\/music$/, '')}`, disabled: true },
@@ -70,6 +71,7 @@ export default function Sidebar({ rail }) {
         ],
       },
       { label: '刷新资料库', onClick: () => { clearCache(); ui().loadPlaylists(); window.dispatchEvent(new CustomEvent('fn:refresh')) } },
+      coverCache && { label: `清除封面缓存（${fmtBytes(coverCache.bytes)}）`, disabled: !coverCache.count, onClick: clearCovers },
       { label: '关于飞牛音乐', onClick: showAbout },
       '-',
       { label: '退出登录', icon: Icon.Logout, danger: true, onClick: () => ui().openDialog({ title: '退出登录？', message: '将清除本机保存的登录信息。', confirmText: '退出', danger: true, onConfirm: logout }) },
@@ -168,6 +170,15 @@ function Item({ to, icon: Ic, children, end, accent, rail, onContextMenu, onDrop
       {!rail && <span className="sb-label">{children}</span>}
     </NavLink>
   )
+}
+
+const fmtBytes = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`)
+
+async function clearCovers() {
+  await window.fn.clearCoverCache()
+  resetCovers()
+  window.dispatchEvent(new CustomEvent('fn:refresh'))
+  useUI.getState().showToast('已清除封面缓存')
 }
 
 async function showAbout() {

@@ -11,6 +11,8 @@ const USER = { username: 'demo', password: sha('demo') }
 const TOKEN = crypto.randomBytes(16).toString('hex')
 const codes = new Set()
 
+// 与真实接口一致的封面 ID：album_<hex> / artist_<hex>
+const hex = (n) => n.toString(16).padStart(8, '0')
 const hash = (s) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7)
 
 // ---------- 数据 ----------
@@ -19,7 +21,7 @@ const WORDS = ['夜曲', '晴天', '稻香', '七里香', '星空', '海阔天�
 const GENRES = ['流行', '摇滚', '民谣', 'R&B', '电子', '古典']
 
 const artists = ARTIST_NAMES.map((name, i) => ({
-  guid: 'ar' + i, name, coverId: 'cv-ar' + i, albumCount: 0, trackCount: 0,
+  guid: 'ar' + i, name, coverId: 'artist_' + hex(i), albumCount: 0, trackCount: 0,
 }))
 const albums = []
 const tracks = []
@@ -29,7 +31,7 @@ artists.forEach((ar, ai) => {
   for (let k = 0; k < cnt; k++) {
     const alb = {
       guid: 'al' + albums.length, name: WORDS[(ai * 3 + k * 5) % WORDS.length] + (k ? ' ' + (k + 1) : ''),
-      coverId: 'cv-al' + albums.length, artists: [{ guid: ar.guid, name: ar.name }],
+      coverId: 'album_' + hex(albums.length), artists: [{ guid: ar.guid, name: ar.name }],
       releaseDate: `${2005 + ((ai + k * 3) % 19)}-0${1 + (k % 9)}-15`, trackCount: 0,
       newTrackAddedAt: 1700000000 + albums.length * 86400,
     }
@@ -52,9 +54,10 @@ artists.forEach((ar, ai) => {
     ar.albumCount++
   }
 })
+// 与真实接口一致：歌单自带的 coverId 是无效的裸 GUID，客户端会改用第一首歌的封面
 const playlists = [
-  { guid: 'pl0', name: '通勤路上', trackCount: 0, coverId: 'cv-al0', trackIds: tracks.slice(0, 12).map((t) => t.guid) },
-  { guid: 'pl1', name: '深夜单曲循环', trackCount: 0, coverId: 'cv-al5', trackIds: tracks.slice(30, 40).map((t) => t.guid) },
+  { guid: 'pl0', name: '通勤路上', trackCount: 0, coverId: crypto.randomBytes(16).toString('hex'), trackIds: tracks.slice(0, 12).map((t) => t.guid) },
+  { guid: 'pl1', name: '深夜单曲循环', trackCount: 0, coverId: crypto.randomBytes(16).toString('hex'), trackIds: tracks.slice(30, 40).map((t) => t.guid) },
 ]
 const syncPl = () => playlists.forEach((p) => (p.trackCount = p.trackIds.length))
 syncPl()
@@ -75,7 +78,7 @@ const body = (req) => new Promise((r) => { let b = ''; req.on('data', (c) => (b 
 
 function cover(id) {
   const h = hash(id) % 360
-  const label = id.startsWith('cv-ar') ? '♪' : (id.replace(/\D/g, '') || '0')
+  const label = id.startsWith('artist_') ? '♪' : String(parseInt(id.split('_')[1], 16) || 0)
   return `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
 <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${h},70%,58%)"/><stop offset="1" stop-color="hsl(${(h + 60) % 360},75%,38%)"/></linearGradient></defs>
 <rect width="600" height="600" fill="url(#g)"/><circle cx="420" cy="180" r="150" fill="hsla(${(h + 30) % 360},90%,75%,.25)"/>
@@ -113,10 +116,18 @@ function lyric(track) {
 }
 
 // ---------- 路由 ----------
+const coverLog = [] // 收到的封面请求（coverId@size），供端到端测试检查缓存是否生效
+
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x')
   const p = u.pathname.replace(/^\/music/, ''), q = u.searchParams
   const json = (o, code = 200) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(o)) }
+
+  // ---- 测试用：查看 / 清空封面请求记录 ----
+  if (u.pathname === '/__mock/covers') {
+    if (req.method === 'DELETE') coverLog.length = 0
+    return json(coverLog)
+  }
 
   // ---- 模拟 fnOS 官方登录页（OAuth）----
   if (u.pathname === '/signin') {
@@ -187,7 +198,7 @@ const server = http.createServer(async (req, res) => {
     case '/api/v1/search/album': { const k = q.get('q').toLowerCase(); return json(page(albums.filter((a) => (a.name + a.artists[0].name).toLowerCase().includes(k)), q)) }
     case '/api/v1/search/artist': { const k = q.get('q').toLowerCase(); return json(page(artists.filter((a) => a.name.toLowerCase().includes(k)), q)) }
     case '/api/v1/lyric/list': { const t = T.find((x) => x.guid === q.get('trackGUID')); return json(ok({ list: t ? [{ content: lyric(t) }] : [] })) }
-    case '/api/v1/static/cover': { res.writeHead(200, { 'content-type': 'image/svg+xml' }); return res.end(cover(q.get('coverId') || '')) }
+    case '/api/v1/static/cover': { coverLog.push(`${q.get('coverId')}@${q.get('size') || ''}`); res.writeHead(200, { 'content-type': 'image/svg+xml' }); return res.end(cover(q.get('coverId') || '')) }
     case '/api/v1/track/stream': {
       const t = T.find((x) => x.guid === q.get('guid'))
       if (!t) return json({ code: 404, msg: 'not found' }, 404)

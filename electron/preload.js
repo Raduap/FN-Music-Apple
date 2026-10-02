@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('fn', {
   relogin: () => ipcRenderer.invoke('auth:relogin'),
   logout: () => ipcRenderer.invoke('auth:logout'),
   appInfo: () => ipcRenderer.invoke('app:info'),
+  coverCacheStats: () => ipcRenderer.invoke('covers:stats'),
+  clearCoverCache: () => ipcRenderer.invoke('covers:clear'),
   getPrefs: () => ipcRenderer.invoke('prefs:get'),
   setPrefs: (p) => ipcRenderer.invoke('prefs:set', p),
   setTheme: (mode) => ipcRenderer.send('theme:set', mode),
