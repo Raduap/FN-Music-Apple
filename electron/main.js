@@ -5,6 +5,10 @@ const crypto = require('crypto')
 
 const isDev = process.env.NODE_ENV === 'development'
 
+// 默认 User-Agent 含应用名「飞牛音乐」（中文），飞牛 NAS 的网关遇到非 ASCII 请求头会直接返回 HTTP 500，
+// 因此必须在 ready 之前改成纯 ASCII。
+app.userAgentFallback = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36 FNMusic/${app.getVersion()}`
+
 // 自定义协议：渲染进程所有请求（接口 / 封面 / 音频流）都经 fnm://srv/... 转发到飞牛，
 // 由主进程统一附带 music-token Cookie，渲染进程永远拿不到凭证。
 protocol.registerSchemesAsPrivileged([
@@ -73,9 +77,10 @@ async function apiFetch(base, apiPath, { method = 'GET', body, token } = {}) {
   if (raw !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers.Cookie = `music-token=${token}`
   const res = await net.fetch(url, { method, headers, body: raw })
-  let json
-  try { json = await res.json() } catch { json = null }
-  return { status: res.status, json }
+  const text = await res.text()
+  let json = null
+  try { json = JSON.parse(text) } catch {}
+  return { status: res.status, json, text, type: res.headers.get('content-type') || '' }
 }
 
 function saveSession() {
@@ -320,8 +325,11 @@ function registerIpc() {
     try {
       const base = normalizeBase(server)
       if (!base) throw new Error('请输入服务器地址')
-      const { json } = await apiFetch(base, '/api/v1/sys/config')
-      if (!json || json.code !== 0) throw new Error('该地址不是飞牛音乐服务')
+      const { json, status, text, type } = await apiFetch(base, '/api/v1/sys/config')
+      if (!json || json.code !== 0) {
+        console.error('[auth:server-info]', base, status, type, text.slice(0, 200))
+        throw new Error(`该地址不是飞牛音乐服务（HTTP ${status}，${type || '无类型'}：${text.slice(0, 80).replace(/\s+/g, ' ')}）`)
+      }
       const d = json.data || {}
       return { ok: true, serverName: d.serverName || '', version: d.serverVersion || '', nasLogin: !!(d.nasOAuth && d.nasOAuth.clientId) }
     } catch (e) {
@@ -437,6 +445,8 @@ if (!gotLock) {
     // NAS 常用自签名证书：本应用的请求与 fnOS 登录页均放行自签名证书
     session.defaultSession.setCertificateVerifyProc((_req, cb) => cb(0))
     session.fromPartition(OAUTH_PARTITION).setCertificateVerifyProc((_req, cb) => cb(0))
+    session.defaultSession.setUserAgent(app.userAgentFallback)
+    session.fromPartition(OAUTH_PARTITION).setUserAgent(app.userAgentFallback)
     registerProxy()
     registerIpc()
     createWindow()
