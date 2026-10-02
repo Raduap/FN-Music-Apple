@@ -251,22 +251,23 @@ export function PlayerBar() {
 // ---------- 歌词 ----------
 const lrcCache = new Map()
 function useLyrics(song) {
+  const id = song?.id
   const [state, setState] = useState({ lines: [], loading: false })
   useEffect(() => {
-    if (!song) return setState({ lines: [], loading: false })
-    if (lrcCache.has(song.id)) return setState({ lines: lrcCache.get(song.id), loading: false })
+    if (!id) return setState({ lines: [], loading: false })
+    if (lrcCache.has(id)) return setState({ lines: lrcCache.get(id), loading: false })
     let dead = false
     setState({ lines: [], loading: true })
-    api.lyric(song.id).then((text) => {
+    api.lyric(id).then((text) => {
       const lines = parseLrc(text)
       // 无时间戳的纯文本歌词也显示（不滚动）
       const plain = !lines.length && text ? text.split(/\r?\n/).map((t) => t.replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean).map((t) => ({ time: -1, text: t })) : null
       const out = plain || lines
-      lrcCache.set(song.id, out)
+      lrcCache.set(id, out)
       if (!dead) setState({ lines: out, loading: false })
     })
     return () => { dead = true }
-  }, [song?.id])
+  }, [id])
   return state
 }
 

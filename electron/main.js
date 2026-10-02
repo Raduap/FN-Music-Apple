@@ -1,9 +1,11 @@
 const { app, BrowserWindow, ipcMain, protocol, net, session, safeStorage, nativeTheme, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const crypto = require('crypto')
+const { sha256, newDeviceId, normalizeBase, hostOf, authx, friendlyError } = require('./util')
 
 const isDev = process.env.NODE_ENV === 'development'
+// 自定义数据目录（自动化测试用，让每次测试都从干净的状态开始）
+if (process.env.FNM_USER_DATA) app.setPath('userData', path.resolve(process.env.FNM_USER_DATA))
 
 // 默认 User-Agent 含应用名「飞牛音乐」（中文），飞牛 NAS 的网关遇到非 ASCII 请求头会直接返回 HTTP 500，
 // 因此必须在 ready 之前改成纯 ASCII。
@@ -34,40 +36,10 @@ const storeFile = () => path.join(app.getPath('userData'), 'session.bin')
 const prefsFile = () => path.join(app.getPath('userData'), 'prefs.json')
 const OAUTH_PARTITION = 'persist:fnos-oauth'
 
-function normalizeBase(input) {
-  let url = String(input || '').trim()
-  if (!url) return ''
-  if (!/^https?:\/\//i.test(url)) url = 'http://' + url
-  url = url.replace(/\/+$/, '')
-  if (!/\/music$/i.test(url)) url += '/music'
-  return url
-}
-
-const sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex')
-const md5 = (s) => crypto.createHash('md5').update(s, 'utf8').digest('hex')
-const newDeviceId = () => crypto.randomBytes(16).toString('hex')
-
-// ---------- authx 签名（与飞牛音乐网页端一致） ----------
-const SIGN_PREFIX = 'NDzZTVxnRKP8Z0jXg1VAMonaG8akvh'
-const SIGN_KEY = '6D5602D4-A342-4799-A0F0-BB795E7167D0'
-
-function authx(method, url, body) {
-  const u = new URL(url)
-  let payload
-  if (method.toUpperCase() === 'GET') {
-    const sorted = new URLSearchParams()
-    for (const k of [...new Set(u.searchParams.keys())].sort()) {
-      for (const v of u.searchParams.getAll(k)) if (v !== 'undefined' && v !== 'null') sorted.append(k, v)
-    }
-    const encoded = sorted.toString().replace(/\+/g, '%20')
-    try { payload = md5(decodeURIComponent(encoded.replace(/%(?![0-9A-Fa-f]{2})/g, '%25'))) } catch { payload = md5(encoded) }
-  } else {
-    payload = md5(body ? Buffer.from(body).toString('utf8') : '')
-  }
-  const nonce = String(Math.floor(Math.random() * 9e5) + 1e5)
-  const ts = String(Date.now())
-  return `nonce=${nonce}&timestamp=${ts}&sign=${md5([SIGN_PREFIX, u.pathname, nonce, ts, payload, SIGN_KEY].join('_'))}`
-}
+// NAS 常用自签名证书。只对用户填写的服务器（以及它的 fnOS 登录页）放行，其他网站照常校验证书
+const trustedHosts = new Set()
+const trustHost = (url) => { const h = hostOf(url); if (h) trustedHosts.add(h) }
+const verifyCert = (req, cb) => cb(trustedHosts.has(String(req.hostname).toLowerCase().replace(/^\[(.*)\]$/, '$1')) ? 0 : -3)
 
 // 带签名的 JSON 请求（主进程内部使用）
 async function apiFetch(base, apiPath, { method = 'GET', body, token } = {}) {
@@ -109,6 +81,7 @@ function loadSession() {
     const body = buf.subarray(2)
     const json = tag === 'E1' ? safeStorage.decryptString(body) : body.toString('utf8')
     Object.assign(state, JSON.parse(json))
+    trustHost(state.base)
     if (!state.mode) state.mode = state.password ? 'password' : 'nas'
     return true
   } catch {
@@ -129,13 +102,6 @@ function readPrefs() {
 }
 function writePrefs(p) {
   try { fs.writeFileSync(prefsFile(), JSON.stringify(p)) } catch {}
-}
-
-function friendlyError(e) {
-  let msg = (e && e.message) || String(e)
-  if (/ERR_CONNECTION|ERR_NAME|ERR_ADDRESS|ERR_TIMED|ERR_INTERNET|fetch failed/i.test(msg)) msg = '无法连接到服务器，请检查地址与网络'
-  else if (/CERT/i.test(msg)) msg = 'HTTPS 证书不受信任'
-  return msg
 }
 
 // ---------- 独立账号：用户名密码登录 ----------
@@ -163,6 +129,7 @@ async function getOAuthUrl(base) {
   if (!clientId) throw new Error('该服务器未开启 NAS 账号登录，请使用飞牛音乐独立账号')
   const origin = new URL(base).origin
   const signinBase = ((cfg.nasOAuth && cfg.nasOAuth.url) || origin).replace(/\/+$/, '')
+  trustHost(signinBase)
   const redirect = base + '/oauth/result'
   const url = `${signinBase}/signin?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirect)}&app_name=${encodeURIComponent('飞牛音乐')}`
   return { url, redirect, serverName: cfg.serverName || '' }
@@ -325,6 +292,7 @@ function registerIpc() {
     try {
       const base = normalizeBase(server)
       if (!base) throw new Error('请输入服务器地址')
+      trustHost(base)
       const { json, status, text, type } = await apiFetch(base, '/api/v1/sys/config')
       if (!json || json.code !== 0) {
         console.error('[auth:server-info]', base, status, type, text.slice(0, 200))
@@ -341,6 +309,7 @@ function registerIpc() {
     try {
       const base = normalizeBase(server)
       if (!base) throw new Error('请输入服务器地址')
+      trustHost(base)
       const deviceId = newDeviceId()
       if (mode === 'password') {
         if (!username) throw new Error('请输入用户名')
@@ -367,6 +336,7 @@ function registerIpc() {
     return true
   })
 
+  ipcMain.handle('app:info', () => ({ version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }))
   ipcMain.handle('prefs:get', () => readPrefs())
   ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); return true })
 
@@ -432,6 +402,11 @@ function createWindow() {
     if (url.startsWith('http://localhost:5173') || url.startsWith('file:') && url.includes('/dist/index.html')) return
     e.preventDefault()
   })
+  // 渲染进程意外崩溃（显卡驱动、内存不足等）时自动重新载入，而不是留下一个空白窗口
+  win.webContents.on('render-process-gone', (_e, d) => {
+    console.error('[render-process-gone]', d.reason, d.exitCode)
+    if (d.reason !== 'clean-exit' && !win.isDestroyed()) setTimeout(() => !win.isDestroyed() && win.webContents.reload(), 500)
+  })
   // 鼠标侧键 / 键盘“浏览器后退/前进”键 → 渲染进程的路由前进后退
   win.on('app-command', (_e, cmd) => {
     if (cmd === 'browser-backward') win.webContents.send('nav', -1)
@@ -452,9 +427,8 @@ if (!gotLock) {
     if (w) { if (w.isMinimized()) w.restore(); w.focus() }
   })
   app.whenReady().then(() => {
-    // NAS 常用自签名证书：本应用的请求与 fnOS 登录页均放行自签名证书
-    session.defaultSession.setCertificateVerifyProc((_req, cb) => cb(0))
-    session.fromPartition(OAUTH_PARTITION).setCertificateVerifyProc((_req, cb) => cb(0))
+    session.defaultSession.setCertificateVerifyProc(verifyCert)
+    session.fromPartition(OAUTH_PARTITION).setCertificateVerifyProc(verifyCert)
     session.defaultSession.setUserAgent(app.userAgentFallback)
     session.fromPartition(OAUTH_PARTITION).setUserAgent(app.userAgentFallback)
     registerProxy()

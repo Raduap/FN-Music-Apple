@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
+import { Component, createContext, useContext, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { coverUrl } from '../api'
 import { useUI, usePlayer } from '../store'
@@ -130,6 +130,18 @@ export const ErrorBox = ({ error, onRetry }) => (
     {onRetry && <button className="btn" onClick={onRetry}>重试</button>}
   </div>
 )
+// 页面渲染出错时只替换内容区，侧边栏和播放器照常可用；resetKey 变化（切换页面）时自动复位
+export class ErrorBoundary extends Component {
+  state = { error: null }
+  static getDerivedStateFromError(error) { return { error } }
+  componentDidCatch(error, info) { console.error('[页面渲染出错]', error, info?.componentStack) }
+  componentDidUpdate(prev) { if (prev.resetKey !== this.props.resetKey && this.state.error) this.setState({ error: null }) }
+  render() {
+    if (!this.state.error) return this.props.children
+    return <ErrorBox error={this.state.error} onRetry={() => this.setState({ error: null })} />
+  }
+}
+
 export const Empty = ({ title, sub, icon: Ic = Icon.Note }) => (
   <div className="state-box">
     <Ic size={44} className="state-icon" />
@@ -299,7 +311,7 @@ export function ContextMenu() {
       window.removeEventListener('resize', close)
       document.removeEventListener('wheel', close)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [menu, path, close])
 
   if (!menu) return null
@@ -440,7 +452,7 @@ export function Dialog() {
           <input ref={inputRef} className="input" value={value} maxLength={64} placeholder={dialog.placeholder} onChange={(e) => setValue(e.target.value)} />
         )}
         <div className="dialog-actions">
-          <button className="btn" onClick={close}>取消</button>
+          {!dialog.alert && <button className="btn" onClick={close}>取消</button>}
           <button ref={okRef} className={`btn ${dialog.danger ? 'btn-danger' : 'btn-accent'}`} disabled={busy || (dialog.input && !value.trim())} onClick={submit}>
             {dialog.confirmText || '确定'}
           </button>
