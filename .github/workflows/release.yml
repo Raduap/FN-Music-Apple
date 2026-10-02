@@ -1,32 +1,118 @@
 name: Release
 
-# 推送 v* 标签（例如 git tag v1.1.0 && git push origin v1.1.0）时构建 Windows 安装版与便携版并发布到 GitHub Releases
+# 自动发布：
+# - 合并到 main 后，如果 package.json 的版本号还没有发布过（不存在对应的 v* 标签），自动构建并发布该版本
+# - 也可以手动推送标签（git tag v1.2.0 && git push origin v1.2.0），或在 Actions 页面手动运行
+# 发布说明取自 CHANGELOG.md 中该版本的段落（## x.y.z），缺少该段落时发布失败
+# 发布前会先跑 lint、单元测试与端到端测试，再在 Windows 上打包安装版与便携版
 on:
   push:
+    branches: [main]
+    paths: ['package.json'] # 只有改了版本号的提交才可能需要发布；推送标签时不受此限制
     tags: ['v*']
+  workflow_dispatch:
 
-permissions:
-  contents: write
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: windows-latest
+  prepare:
+    name: 确定版本
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      release: ${{ steps.v.outputs.release }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - id: v
+        name: 读取版本号并检查是否已发布
+        run: |
+          version=$(node -p "require('./package.json').version")
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          [[ "$version" == *-* ]] && echo "prerelease=true" >> "$GITHUB_OUTPUT" || echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            [ "$GITHUB_REF_NAME" = "$tag" ] || { echo "::error::标签 $GITHUB_REF_NAME 与 package.json 版本 $version 不一致"; exit 1; }
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "::notice::$tag 已发布过，跳过"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 从 CHANGELOG.md 提取发布说明
+        if: steps.v.outputs.release == 'true'
+        run: |
+          awk -v v="${{ steps.v.outputs.version }}" '
+            $0 ~ "^## " { if (found) exit; if ($2 == v) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md 中没有版本 ${{ steps.v.outputs.version }} 的说明（需要一个“## ${{ steps.v.outputs.version }}”段落）"
+            exit 1
+          fi
+          cat notes.md
+      - uses: actions/upload-artifact@v4
+        if: steps.v.outputs.release == 'true'
+        with:
+          name: release-notes
+          path: notes.md
+
+  check:
+    name: Lint / 单元测试 / 端到端测试
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run lint
       - run: npm test
-      - name: 检查标签与 package.json 版本一致
-        shell: bash
-        run: |
-          v=$(node -p "require('./package.json').version")
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "标签 $GITHUB_REF_NAME 与 package.json 版本 $v 不一致"; exit 1; }
+      - run: xvfb-run -a npm run test:e2e
+
+  build:
+    name: 打包 Windows 版
+    needs: [prepare, check]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: release/*.exe
+          if-no-files-found: error
+
+  publish:
+    name: 发布 ${{ needs.prepare.outputs.tag }}
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
       - uses: softprops/action-gh-release@v2
         with:
-          files: release/*.exe
-          generate_release_notes: true
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: 飞牛音乐 ${{ needs.prepare.outputs.version }}
+          body_path: artifacts/release-notes/notes.md
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.prepare.outputs.prerelease != 'true' }}
+          files: artifacts/windows/*.exe
+          fail_on_unmatched_files: true
