@@ -11,6 +11,8 @@ const LS = {
 // ---------- 单例 audio ----------
 const audio = new Audio()
 audio.preload = 'auto'
+// 尚未加载音频（启动后恢复的队列）时记下的起始位置，真正开始播放时再跳转过去
+let pendingSeek = 0
 
 // 整理菜单项：去掉假值，合并连续分隔线，去掉首尾分隔线（子菜单同理）
 function tidyMenu(items) {
@@ -146,12 +148,18 @@ export const usePlayer = create((set, get) => ({
     LS.set('queue', { queue, original, index })
   },
 
-  _load(song, autoplay = true) {
+  _load(song, autoplay = true, start = 0) {
+    pendingSeek = 0
     audio.src = streamUrl(song.id)
     audio.currentTime = 0
-    set({ currentTime: 0, duration: song.duration || 0, loading: true })
+    if (start > 0) {
+      const src = audio.src
+      audio.addEventListener('loadedmetadata', () => { if (audio.src === src) audio.currentTime = start }, { once: true })
+    }
+    set({ currentTime: start, duration: song.duration || 0, loading: true })
     if (autoplay) audio.play().catch(() => {})
     updateMediaSession(song)
+    savePosition(song.id, start)
   },
 
   /** 播放一组歌曲，从 startIndex 开始；shuffleAll 时随机排序 */
@@ -200,23 +208,27 @@ export const usePlayer = create((set, get) => ({
   },
 
   removeFromQueue(i) {
-    const { queue, index } = get()
-    if (i === index) return
+    const { queue, original, index } = get()
+    if (i === index || !queue[i]) return
     const q = queue.filter((_, k) => k !== i)
-    set({ queue: q, index: i < index ? index - 1 : index })
+    // original 是关闭随机播放时恢复的顺序，也要去掉这一首，否则关闭随机后它又会回来
+    const o = original.findIndex((s) => s.id === queue[i].id)
+    set({ queue: q, original: o < 0 ? original : original.filter((_, k) => k !== o), index: i < index ? index - 1 : index })
     get()._persist()
   },
 
   clearUpcoming() {
-    const { queue, index } = get()
-    set({ queue: queue.slice(0, index + 1) })
+    const { queue, original, index } = get()
+    const kept = queue.slice(0, index + 1)
+    const ids = new Set(kept.map((s) => s.id))
+    set({ queue: kept, original: original.filter((s) => ids.has(s.id)) })
     get()._persist()
   },
 
   toggle() {
     const { queue, index } = get()
     if (!queue[index]) return
-    if (!audio.src) get()._load(queue[index])
+    if (!audio.src) get()._load(queue[index], true, pendingSeek)
     else if (audio.paused) audio.play().catch(() => {})
     else audio.pause()
   },
@@ -224,7 +236,7 @@ export const usePlayer = create((set, get) => ({
   next(auto = false) {
     const { queue, index, repeat } = get()
     if (!queue.length) return
-    if (auto && repeat === 'one') { audio.currentTime = 0; audio.play(); return }
+    if (auto && repeat === 'one') { audio.currentTime = 0; audio.play().catch(() => {}); return }
     if (index + 1 < queue.length) get().playIndex(index + 1)
     else if (repeat === 'all' || !auto) get().playIndex(0)
     else { audio.pause(); audio.currentTime = 0; set({ playing: false, currentTime: 0 }) }
@@ -233,12 +245,16 @@ export const usePlayer = create((set, get) => ({
   prev() {
     const { queue, index } = get()
     if (!queue.length) return
-    if (audio.currentTime > 3 || index === 0) { audio.currentTime = 0; return }
+    if (audio.currentTime > 3 || pendingSeek > 3 || index === 0) { get().seek(0); return }
     get().playIndex(index - 1)
   },
 
   seek(t) {
-    if (Number.isFinite(t)) { audio.currentTime = Math.max(0, t); set({ currentTime: audio.currentTime }) }
+    if (!Number.isFinite(t)) return
+    t = Math.max(0, t)
+    if (!audio.src) { pendingSeek = t; set({ currentTime: t }); return } // 尚未加载：开始播放时再跳转
+    audio.currentTime = t
+    set({ currentTime: audio.currentTime })
   },
 
   setVolume(v) {
@@ -283,7 +299,8 @@ export const usePlayer = create((set, get) => ({
       await api.setFavorite(song.id, on)
       useUI.getState().showToast(on ? '已添加到“喜欢的歌曲”' : '已从“喜欢的歌曲”移除')
     } catch (e) {
-      set({ queue: patch(get().queue).map((s) => (s.id === song.id ? { ...s, favorite: !on } : s)) })
+      const undo = (list) => list.map((s) => (s.id === song.id ? { ...s, favorite: !on } : s))
+      set({ queue: undo(get().queue), original: undo(get().original) })
       window.dispatchEvent(new CustomEvent('fn:favorite-changed', { detail: { id: song.id, favorite: !on } }))
       useUI.getState().showToast('操作失败：' + e.message)
     }
@@ -293,10 +310,25 @@ export const usePlayer = create((set, get) => ({
     audio.pause()
     audio.removeAttribute('src')
     audio.load()
+    pendingSeek = 0
     set({ queue: [], original: [], index: -1, playing: false, currentTime: 0, duration: 0 })
     LS.set('queue', { queue: [], index: -1 })
+    LS.set('position', null)
   },
 }))
+
+// ---------- 播放位置（重启后从上次的位置继续） ----------
+let lastSaved = 0
+function savePosition(id, t) {
+  lastSaved = performance.now()
+  LS.set('position', { id, t: Math.floor(t) })
+}
+const saveCurrentPosition = () => {
+  const song = usePlayer.getState().queue[usePlayer.getState().index]
+  if (song && audio.src) savePosition(song.id, audio.currentTime)
+}
+audio.addEventListener('pause', saveCurrentPosition)
+window.addEventListener('beforeunload', saveCurrentPosition)
 
 // ---------- audio 事件 ----------
 audio.volume = usePlayer.getState().volume
@@ -314,6 +346,7 @@ audio.addEventListener('timeupdate', () => {
   if (now - lastTick < 200) return
   lastTick = now
   usePlayer.setState({ currentTime: audio.currentTime })
+  if (now - lastSaved > 5000) saveCurrentPosition()
   if ('mediaSession' in navigator && Number.isFinite(audio.duration)) {
     try { navigator.mediaSession.setPositionState({ duration: audio.duration, position: audio.currentTime, playbackRate: 1 }) } catch {}
   }
@@ -349,7 +382,7 @@ function updateMediaSession(song) {
 }
 if ('mediaSession' in navigator) {
   const h = (a, f) => { try { navigator.mediaSession.setActionHandler(a, f) } catch {} }
-  h('play', () => audio.play().catch(() => {}))
+  h('play', () => { if (audio.paused) usePlayer.getState().toggle() })
   h('pause', () => audio.pause())
   h('previoustrack', () => usePlayer.getState().prev())
   h('nexttrack', () => usePlayer.getState().next())
@@ -358,16 +391,16 @@ if ('mediaSession' in navigator) {
 audio.addEventListener('play', () => { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing' })
 audio.addEventListener('pause', () => { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused' })
 
-// 启动恢复上次队列（不自动播放，仅预置当前曲目，点击播放时才加载）
+// 启动恢复上次队列和播放位置（不自动播放，也不预先请求音频流，点击播放时才加载）
 export function restorePlayer() {
   const { queue, index } = usePlayer.getState()
   const song = queue[index]
-  if (song) {
-    audio.src = streamUrl(song.id)
-    audio.pause()
-    usePlayer.setState({ duration: song.duration || 0 })
-    updateMediaSession(song)
-  }
+  if (!song || audio.src) return
+  const pos = LS.get('position', null)
+  const t = pos && pos.id === song.id && pos.t > 0 && (!song.duration || pos.t < song.duration - 2) ? pos.t : 0
+  pendingSeek = t
+  usePlayer.setState({ duration: song.duration || 0, currentTime: t })
+  updateMediaSession(song)
 }
 export const getAudio = () => audio
 export const useCurrent = () => usePlayer((s) => s.queue[s.index] || null)

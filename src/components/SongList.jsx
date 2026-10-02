@@ -85,7 +85,7 @@ export default function SongList({ songs, variant = 'default', extraMenu, sortab
     if (!selRef.current.has(i)) { setSel(new Set([i])); anchor.current = i; cursor.current = i }
     const songsPicked = selRef.current.has(i) ? picked() : [viewRef.current[i]]
     useUI.getState().openMenu(e.clientX, e.clientY, songMenuRef.current(songsPicked, { extra: extraRef.current ? extraRef.current(songsPicked) : [] }))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [])
 
   const onDragStart = useCallback((e, i) => {
@@ -102,7 +102,7 @@ export default function SongList({ songs, variant = 'default', extraMenu, sortab
     document.body.appendChild(g)
     e.dataTransfer.setDragImage(g, 12, 14)
     setTimeout(() => g.remove(), 0)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [])
 
   const onKeyDown = (e) => {

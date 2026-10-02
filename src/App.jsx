@@ -4,7 +4,7 @@ import { useAuth, usePlayer, useUI, restorePlayer } from './store'
 import { useViewport } from './lib'
 import Sidebar from './components/Sidebar'
 import { PlayerBar, SidePanel, FullPlayer } from './components/Player'
-import { ContextMenu, Dialog, ScrollCtx, Spinner, Toast } from './components/common'
+import { ContextMenu, Dialog, ErrorBoundary, ScrollCtx, Spinner, Toast } from './components/common'
 import * as Icon from './icons'
 import Login from './pages/Login'
 import Home from './pages/Home'
@@ -155,22 +155,24 @@ function Main() {
   return (
     <ScrollCtx.Provider value={scrollRef}>
       <main className="content" ref={scrollRef} onScroll={onScroll} tabIndex={-1}>
-        <Routes key={refresh}>
-          <Route path="/" element={<Home />} />
-          <Route path="/search" element={<Search />} />
-          <Route path="/recent" element={<Albums recent />} />
-          <Route path="/albums" element={<Albums />} />
-          <Route path="/artists" element={<Artists />} />
-          <Route path="/songs" element={<Songs />} />
-          <Route path="/genres" element={<Genres />} />
-          <Route path="/genre/:id" element={<GenreDetail />} />
-          <Route path="/favorites" element={<Favorites />} />
-          <Route path="/playlists" element={<Playlists />} />
-          <Route path="/album/:id" element={<AlbumDetail key={location.pathname} />} />
-          <Route path="/artist/:id" element={<ArtistDetail key={location.pathname} />} />
-          <Route path="/playlist/:id" element={<PlaylistDetail />} />
-          <Route path="*" element={<Home />} />
-        </Routes>
+        <ErrorBoundary resetKey={location.key}>
+          <Routes key={refresh}>
+            <Route path="/" element={<Home />} />
+            <Route path="/search" element={<Search />} />
+            <Route path="/recent" element={<Albums recent />} />
+            <Route path="/albums" element={<Albums />} />
+            <Route path="/artists" element={<Artists />} />
+            <Route path="/songs" element={<Songs />} />
+            <Route path="/genres" element={<Genres />} />
+            <Route path="/genre/:id" element={<GenreDetail />} />
+            <Route path="/favorites" element={<Favorites />} />
+            <Route path="/playlists" element={<Playlists />} />
+            <Route path="/album/:id" element={<AlbumDetail key={location.pathname} />} />
+            <Route path="/artist/:id" element={<ArtistDetail key={location.pathname} />} />
+            <Route path="/playlist/:id" element={<PlaylistDetail />} />
+            <Route path="*" element={<Home />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </ScrollCtx.Provider>
   )

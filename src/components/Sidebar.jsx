@@ -61,6 +61,7 @@ export default function Sidebar({ rail }) {
         ],
       },
       { label: '刷新资料库', onClick: () => { clearCache(); ui().loadPlaylists(); window.dispatchEvent(new CustomEvent('fn:refresh')) } },
+      { label: '关于飞牛音乐', onClick: showAbout },
       '-',
       { label: '退出登录', icon: Icon.Logout, danger: true, onClick: () => ui().openDialog({ title: '退出登录？', message: '将清除本机保存的登录信息。', confirmText: '退出', danger: true, onConfirm: logout }) },
     ])
@@ -158,6 +159,16 @@ function Item({ to, icon: Ic, children, end, accent, rail, onContextMenu, onDrop
       {!rail && <span className="sb-label">{children}</span>}
     </NavLink>
   )
+}
+
+async function showAbout() {
+  const info = await window.fn.appInfo().catch(() => ({}))
+  useUI.getState().openDialog({
+    title: '飞牛音乐',
+    message: `版本 ${info.version || '未知'}\nElectron ${info.electron || '-'} · Chromium ${info.chrome || '-'}\n\n适用于 fnOS 飞牛音乐的 Apple Music 风格桌面客户端。`,
+    confirmText: '好',
+    alert: true,
+  })
 }
 
 export function renamePlaylist(pl) {

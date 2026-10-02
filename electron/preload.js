@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('fn', {
   login: (payload) => ipcRenderer.invoke('auth:login', payload),
   relogin: () => ipcRenderer.invoke('auth:relogin'),
   logout: () => ipcRenderer.invoke('auth:logout'),
+  appInfo: () => ipcRenderer.invoke('app:info'),
   getPrefs: () => ipcRenderer.invoke('prefs:get'),
   setPrefs: (p) => ipcRenderer.invoke('prefs:set', p),
   setTheme: (mode) => ipcRenderer.send('theme:set', mode),

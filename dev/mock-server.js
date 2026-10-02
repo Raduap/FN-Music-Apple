@@ -69,7 +69,6 @@ const sortBy = (list, q) => {
   const out = [...list].sort((a, b) => (a[f] > b[f] ? 1 : a[f] < b[f] ? -1 : 0))
   return d === 'desc' ? out.reverse() : out
 }
-const withFav = (t) => t
 const body = (req) => new Promise((r) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { try { r(JSON.parse(b || '{}')) } catch { r({}) } }) })
 
 function cover(id) {

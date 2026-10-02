@@ -10,19 +10,29 @@
     "build": "vite build",
     "start": "vite build && electron .",
     "mock": "node dev/mock-server.js",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:e2e": "vite build && node --test --test-concurrency=1 \"e2e/**/*.test.mjs\"",
+    "check": "npm run lint && npm test && npm run build",
     "dist": "vite build && electron-builder --win"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@tanstack/react-virtual": "^3.14.13",
     "@vitejs/plugin-react": "^6.1.1",
     "concurrently": "^10.0.5",
     "cross-env": "^10.1.0",
     "electron": "^44.5.1",
     "electron-builder": "^26.15.3",
+    "eslint": "^10.11.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "playwright-core": "^1.63.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-router-dom": "^7.18.4",
     "vite": "^8.3.2",
+    "vitest": "^5.0.3",
     "wait-on": "^9.5.1",
     "zustand": "^5.0.15"
   },
@@ -72,5 +82,8 @@
     "portable": {
       "artifactName": "FN-Music-Portable-${version}.${ext}"
     }
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

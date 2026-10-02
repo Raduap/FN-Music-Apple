@@ -27,4 +27,6 @@ export default defineConfig({
   base: './',
   server: { port: 5173, strictPort: true },
   build: { outDir: 'dist', emptyOutDir: true },
+  // 单元测试；e2e/ 下的端到端测试需要 Electron，单独用 npm run test:e2e 运行
+  test: { include: ['test/**/*.test.js'] },
 })

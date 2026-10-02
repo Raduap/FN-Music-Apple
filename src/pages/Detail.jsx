@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useLocation } from 'react-router-dom'
 import { api } from '../api'
 import { usePlayer, useUI } from '../store'
@@ -131,14 +131,21 @@ export function PlaylistDetail() {
   const pl = playlists.find((p) => p.id === id)
   const [songs, setSongs] = useState(null)
   const [error, setError] = useState(null)
-  const load = () => api.playlistSongs(id).then((s) => { setSongs(s); setError(null) }).catch(setError)
+  // 只采用最近一次请求的结果：快速切换播放列表时，旧请求晚到不会覆盖新列表
+  const seq = useRef(0)
+  const load = useCallback(() => {
+    const n = ++seq.current
+    return api.playlistSongs(id)
+      .then((s) => { if (n === seq.current) { setSongs(s); setError(null) } })
+      .catch((e) => { if (n === seq.current) setError(e) })
+  }, [id])
 
-  useEffect(() => { setSongs(null); load() }, [id])
+  useEffect(() => { setSongs(null); setError(null); load() }, [load])
   useEffect(() => {
     const h = (e) => e.detail === id && load()
     window.addEventListener('fn:playlist-changed', h)
     return () => window.removeEventListener('fn:playlist-changed', h)
-  }, [id])
+  }, [id, load])
   useFavoriteSync(setSongs)
   usePageTitle(pl?.name)
 
