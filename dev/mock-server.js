@@ -4,6 +4,8 @@ const http = require('http')
 const crypto = require('crypto')
 
 const PORT = process.env.PORT || 5666
+// 模拟较慢的 NAS：写请求（POST）延迟这么多毫秒再处理，用于测试乐观更新与读写竞态
+const WRITE_DELAY = +process.env.MOCK_WRITE_DELAY || 0
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex')
 const USER = { username: 'demo', password: sha('demo') }
 const TOKEN = crypto.randomBytes(16).toString('hex')
@@ -154,6 +156,7 @@ const server = http.createServer(async (req, res) => {
   }
   const cookie = req.headers.cookie || ''
   if (!cookie.includes('music-token=' + TOKEN)) return json({ code: 99999, msg: 'token 失效' })
+  if (req.method === 'POST' && WRITE_DELAY) await new Promise((r) => setTimeout(r, WRITE_DELAY))
 
   const T = tracks
   switch (p) {

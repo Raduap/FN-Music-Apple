@@ -27,7 +27,8 @@ async function launch() {
 }
 
 before(async () => {
-  mock = spawn(process.execPath, [join(root, 'dev/mock-server.js')], { env: { ...process.env, PORT }, stdio: ['ignore', 'pipe', 'inherit'] })
+  // 写请求延迟 500ms，确保界面的乐观更新先于服务器写入完成，能稳定暴露读写竞态
+  mock = spawn(process.execPath, [join(root, 'dev/mock-server.js')], { env: { ...process.env, PORT, MOCK_WRITE_DELAY: '500' }, stdio: ['ignore', 'pipe', 'inherit'] })
   await new Promise((resolve, reject) => {
     mock.stdout.on('data', (d) => String(d).includes('已启动') && resolve())
     mock.on('exit', (c) => reject(new Error('模拟服务器退出：' + c)))
