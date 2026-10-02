@@ -3,6 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const { sha256, newDeviceId, normalizeBase, hostOf, authx, friendlyError } = require('./util')
 const { createTray } = require('./tray')
+const { createCoverCache, coverKey } = require('./coverCache')
 
 const isDev = process.env.NODE_ENV === 'development'
 // 自定义数据目录（自动化测试用，让每次测试都从干净的状态开始）
@@ -274,12 +275,37 @@ function relogin() {
   return reloginInFlight
 }
 
+// ---------- 封面磁盘缓存 ----------
+let covers = null
+const signedGet = (url) => {
+  const headers = { authx: authx('GET', url) }
+  if (state.token) headers.Cookie = `music-token=${state.token}`
+  return net.fetch(url, { headers, bypassCustomProtocolHandlers: true })
+}
+const proxyError = (e) => new Response(JSON.stringify({ code: -1, msg: '无法连接服务器：' + e.message }), {
+  status: 502,
+  headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*' },
+})
+
+async function serveCover(u, target) {
+  try {
+    const q = u.searchParams
+    const r = await covers.get(coverKey(state.base, q.get('coverId') || '', q.get('size') || ''), target)
+    const headers = { 'content-type': r.type || 'application/octet-stream', 'access-control-allow-origin': '*', 'x-fnm-cache': r.source }
+    if (r.status === 200) headers['cache-control'] = 'public, max-age=604800'
+    return new Response(r.body, { status: r.status, headers })
+  } catch (e) {
+    return proxyError(e)
+  }
+}
+
 // ---------- fnm:// 协议代理 ----------
 function registerProxy() {
   protocol.handle('fnm', async (request) => {
     if (!state.base) return new Response('not configured', { status: 503 })
     const u = new URL(request.url)
     const target = state.base + u.pathname + u.search
+    if (covers && request.method === 'GET' && u.pathname === '/api/v1/static/cover') return serveCover(u, target)
     const headers = new Headers()
     for (const h of ['range', 'content-type', 'accept', 'if-none-match', 'if-modified-since']) {
       const v = request.headers.get(h)
@@ -293,15 +319,11 @@ function registerProxy() {
     try {
       upstream = await net.fetch(target, { method: request.method, headers, body, bypassCustomProtocolHandlers: true })
     } catch (e) {
-      return new Response(JSON.stringify({ code: -1, msg: '无法连接服务器：' + e.message }), {
-        status: 502,
-        headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*' },
-      })
+      return proxyError(e)
     }
     const out = new Headers(upstream.headers)
     out.set('access-control-allow-origin', '*')
     out.delete('content-encoding')
-    if (u.pathname.includes('/static/cover') && upstream.ok) out.set('cache-control', 'public, max-age=604800')
     return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: out })
   })
 }
@@ -372,6 +394,8 @@ function registerIpc() {
     return true
   })
 
+  ipcMain.handle('covers:stats', () => covers?.init().then(() => covers.stats()) ?? { count: 0, bytes: 0 })
+  ipcMain.handle('covers:clear', async () => { await covers?.clear(); return true })
   ipcMain.handle('app:info', () => ({ version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }))
   ipcMain.handle('prefs:get', () => readPrefs())
   ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); tray?.refresh(); return true })
@@ -481,6 +505,8 @@ if (!gotLock) {
     session.fromPartition(OAUTH_PARTITION).setCertificateVerifyProc(verifyCert)
     session.defaultSession.setUserAgent(app.userAgentFallback)
     session.fromPartition(OAUTH_PARTITION).setUserAgent(app.userAgentFallback)
+    covers = createCoverCache({ dir: path.join(app.getPath('userData'), 'covers'), fetchUpstream: signedGet })
+    covers.init()
     registerProxy()
     registerIpc()
     mainWindow = createWindow()

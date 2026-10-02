@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { api, coverUrl, streamUrl, invalidate } from './api'
+import { api, streamUrl, invalidate } from './api'
+import { acquireCover, prefetchCover } from './covers'
 import { shuffled } from './lib'
 import { applyMotion } from './motion'
 
@@ -169,6 +170,7 @@ export const usePlayer = create((set, get) => ({
     if (autoplay) audio.play().catch(() => {})
     updateMediaSession(song)
     savePosition(song.id, start)
+    setTimeout(prefetchUpcoming, 1500) // 让当前歌曲的音频和封面先走
   },
 
   /** 播放一组歌曲，从 startIndex 开始；shuffleAll 时随机排序 */
@@ -373,22 +375,28 @@ audio.addEventListener('error', () => {
 })
 
 // ---------- 系统媒体控制（SMTC / 媒体键） ----------
-// MediaSession 只接受 http/https/data/blob 封面，fnm:// 需先转为 blob URL
-let artUrl = ''
+// MediaSession 只接受 http/https/data/blob 封面，用封面缓存里的 blob URL（600 尺寸足够，原图可能有几 MB）。
+// 占用当前歌曲的封面直到切歌，避免被回收
+let art = null
 function updateMediaSession(song) {
   if (!('mediaSession' in navigator)) return
   const meta = { title: song.title, artist: song.artist, album: song.album }
   navigator.mediaSession.metadata = new MediaMetadata(meta)
-  if (!song.coverId) return
-  fetch(coverUrl(song.coverId))
-    .then((r) => (r.ok ? r.blob() : Promise.reject()))
-    .then((blob) => {
-      if (usePlayer.getState().queue[usePlayer.getState().index]?.id !== song.id) return
-      if (artUrl) URL.revokeObjectURL(artUrl)
-      artUrl = URL.createObjectURL(blob)
-      navigator.mediaSession.metadata = new MediaMetadata({ ...meta, artwork: [{ src: artUrl, sizes: '512x512', type: blob.type }] })
-    })
-    .catch(() => {})
+  art?.release()
+  art = song.coverId ? acquireCover(song.coverId, 600) : null
+  art?.promise.then((url) => {
+    if (!url || usePlayer.getState().queue[usePlayer.getState().index]?.id !== song.id) return
+    navigator.mediaSession.metadata = new MediaMetadata({ ...meta, artwork: [{ src: url, sizes: '600x600' }] })
+  })
+}
+
+// 预加载下一首的封面，切歌时播放栏 / 全屏页能立刻显示
+function prefetchUpcoming() {
+  const { queue, index } = usePlayer.getState()
+  const next = queue[index + 1]
+  if (!next?.coverId) return
+  prefetchCover(next.coverId, 160)
+  if (useUI.getState().fullPlayer) prefetchCover(next.coverId, 1024)
 }
 if ('mediaSession' in navigator) {
   const h = (a, f) => { try { navigator.mediaSession.setActionHandler(a, f) } catch {} }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { coverUrl } from './api'
+import { acquireCover } from './covers'
 
 // ---------- 时间 ----------
 export function fmtTime(sec) {
@@ -43,8 +43,9 @@ export function useCoverColor(coverId) {
     if (!coverId) return
     if (colorCache.has(coverId)) { setColor(colorCache.get(coverId)); return }
     let dead = false
+    // 与界面上的封面共用缓存（播放栏已经加载过 160 尺寸，通常无需再请求）
+    const cover = acquireCover(coverId, 160)
     const img = new Image()
-    img.crossOrigin = 'anonymous'
     img.onload = () => {
       try {
         const c = document.createElement('canvas')
@@ -64,8 +65,8 @@ export function useCoverColor(coverId) {
         if (!dead) setColor(col)
       } catch {}
     }
-    img.src = coverUrl(coverId, 160)
-    return () => { dead = true }
+    cover.promise.then((url) => { if (url && !dead) img.src = url })
+    return () => { dead = true; img.onload = null; cover.release() }
   }, [coverId])
   return color
 }

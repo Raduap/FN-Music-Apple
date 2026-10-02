@@ -106,6 +106,35 @@ test('重启后保持登录并恢复播放队列与位置', async () => {
   await bar2.getByRole('button', { name: '暂停', exact: true }).waitFor()
 })
 
+test('封面磁盘缓存：重启后不再向 NAS 请求已显示过的封面', async () => {
+  const mockCovers = (method = 'GET') => fetch(`http://${SERVER}/__mock/covers`, { method }).then((r) => r.json())
+  // 专辑页首屏中已显示出来的封面（coverId@尺寸）
+  const openAlbums = async () => {
+    await win.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '专辑', exact: true }).click()
+    await win.getByRole('heading', { name: '专辑' }).waitFor()
+    await win.waitForFunction(() => document.querySelectorAll('.grid .cover img.loaded').length >= 8)
+    return win.evaluate(() => [...document.querySelectorAll('.grid .cover')].filter((c) => c.querySelector('img.loaded')).map((c) => c.dataset.cover))
+  }
+
+  const shown = await openAlbums()
+  const requested = await mockCovers()
+  for (const k of shown) assert.ok(requested.includes(k), `首次显示的封面应来自 NAS：${k}`)
+
+  await mockCovers('DELETE')
+  await app.close()
+  await launch()
+  const shownAgain = await openAlbums()
+  const both = shownAgain.filter((k) => shown.includes(k))
+  assert.ok(both.length >= 4, `重启后应再次显示之前的封面，实际只有 ${both.length} 张`)
+  // 重启前显示过的封面都应来自磁盘缓存；NAS 只会收到之前没显示过的封面请求
+  const refetched = (await mockCovers()).filter((k) => shown.includes(k))
+  assert.deepEqual(refetched, [], '已缓存的封面不应再向 NAS 请求')
+  // 恢复播放，供后面的托盘测试使用
+  const bar = win.getByRole('contentinfo', { name: '播放器' })
+  await bar.getByRole('button', { name: '播放', exact: true }).click()
+  await bar.getByRole('button', { name: '暂停', exact: true }).waitFor()
+})
+
 test('关闭窗口后停留在托盘，音乐继续播放', async () => {
   const info = await win.evaluate(() => window.fn.trayInfo())
   assert.ok(info.available, '应已创建托盘图标')

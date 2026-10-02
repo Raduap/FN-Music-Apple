@@ -1,6 +1,6 @@
-import { Component, createContext, useContext, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
+import { Component, createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { coverUrl } from '../api'
+import { useCover } from '../covers'
 import { useUI, usePlayer } from '../store'
 import * as Icon from '../icons'
 
@@ -11,104 +11,28 @@ export const useScrollEl = () => useContext(ScrollCtx)
 export const songDrag = { songs: [] }
 export const SONG_DRAG_TYPE = 'application/x-fnmusic-songs'
 
-// ---------- 封面 ----------
-// 封面经限流队列加载（同时最多 3 张）、失败自动重试，并缓存为 blob URL。
-// 首页一次会请求几十张封面，不限流时 NAS 现场生成缩略图容易被拖慢甚至拒绝。
-const covers = new Map() // `${coverId}@${size}` -> { id, size, refs, status: idle|queued|loading|done|fail, url, subs }
-const coverQueue = []
-let coverActive = 0
-// 注意：浏览器/Chromium 对同一主机最多 6 个并发连接，封面只占 3 个，给接口请求和音频流留出余量
-const COVER_CONCURRENCY = 3
-const COVER_CACHE_MAX = 600
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-const coverKey = (id, size) => `${id}@${size}`
-function coverEntry(id, size) {
-  const k = coverKey(id, size)
-  let e = covers.get(k)
-  if (!e) covers.set(k, (e = { id, size, refs: 0, status: 'idle', url: '', subs: new Set() }))
-  return e
-}
-function pumpCovers() {
-  while (coverActive < COVER_CONCURRENCY && coverQueue.length) {
-    const e = coverQueue.shift()
-    if (e.refs === 0) { e.status = 'idle'; continue } // 已滚出屏幕，放弃
-    coverActive++
-    loadCover(e).finally(() => { coverActive--; pumpCovers() })
-  }
-}
-async function loadCover(e) {
-  e.status = 'loading'
-  for (let i = 0; i < 3; i++) {
-    try {
-      const r = await fetch(coverUrl(e.id, e.size))
-      if (r.status >= 400 && r.status < 500) { e.status = 'fail'; e.subs.forEach((f) => f()); return } // 封面不存在/ID 无效，重试也没用
-      if (!r.ok) throw new Error('HTTP ' + r.status)
-      const blob = await r.blob()
-      if (!blob.size) throw new Error('empty')
-      e.url = URL.createObjectURL(blob)
-      e.status = 'done'
-      evictCovers()
-      e.subs.forEach((f) => f())
-      return
-    } catch {
-      if (i < 2) await sleep(700 * (i + 1))
-    }
-  }
-  e.status = 'fail'
-  e.subs.forEach((f) => f())
-}
-function evictCovers() {
-  if (covers.size <= COVER_CACHE_MAX) return
-  for (const [k, e] of covers) {
-    if (covers.size <= COVER_CACHE_MAX) break
-    if (e.refs === 0 && e.status === 'done') { URL.revokeObjectURL(e.url); covers.delete(k) }
-  }
-}
-
-function useCoverImage(coverId, size, wanted) {
-  const [, force] = useReducer((n) => n + 1, 0)
-  useEffect(() => {
-    if (!coverId || !wanted) return
-    const e = coverEntry(coverId, size)
-    e.refs++
-    e.subs.add(force)
-    if (e.status === 'fail') e.status = 'idle'
-    if (e.status === 'idle') { e.status = 'queued'; coverQueue.push(e); pumpCovers() }
-    force()
-    return () => { e.refs--; e.subs.delete(force) }
-  }, [coverId, size, wanted])
-  const e = coverId ? covers.get(coverKey(coverId, size)) : null
-  return e ? { status: e.status, url: e.url } : { status: coverId && wanted ? 'queued' : 'idle', url: '' }
-}
-
+// ---------- 封面（加载、排队与缓存见 src/covers.js） ----------
 // size：显示尺寸（px，用于布局）；px：向服务器请求的图片尺寸（160 / 600 / 1024），列表小图用 160 可大幅减少流量
 export function Cover({ coverId, size, px = 600, round, className = '', alt = '', icon = 'note' }) {
   const ref = useRef(null)
-  const [near, setNear] = useState(false)
-  const { status, url } = useCoverImage(coverId, px, near)
-  const [shown, setShown] = useState(false)
-  useEffect(() => setShown(false), [url])
-
-  // 只加载屏幕附近的封面，滚远了未开始的请求会被放弃
-  useEffect(() => {
-    if (!coverId || !ref.current) return
-    const io = new IntersectionObserver(([en]) => setNear(en.isIntersecting), { rootMargin: '400px' })
-    io.observe(ref.current)
-    return () => io.disconnect()
-  }, [coverId])
+  const { status, url, placeholder } = useCover(ref, coverId, px)
+  // 已在内存中的图片直接显示，不做淡入（例如返回上一页时）
+  const [shown, setShown] = useState(() => status === 'done')
+  const firstUrl = useRef(url)
+  useEffect(() => { if (url !== firstUrl.current) setShown(false) }, [url])
 
   const Fallback = icon === 'person' ? Icon.Person : Icon.Note
-  const failed = !coverId || status === 'fail'
+  const failed = !coverId || status === 'missing' || status === 'fail'
   return (
-    <div ref={ref} className={`cover ${round ? 'round' : ''} ${className}`} style={size ? { width: size, height: size } : undefined}>
-      {failed && (
+    <div ref={ref} className={`cover ${round ? 'round' : ''} ${className}`} data-cover={coverId ? `${coverId}@${px || ''}` : undefined} style={size ? { width: size, height: size } : undefined}>
+      {failed && !placeholder && (
         <div className="cover-fallback">
           <Fallback size={size ? Math.max(14, Math.round(size * 0.4)) : 44} />
         </div>
       )}
-      {!failed && !shown && <div className="cover-skeleton" />}
-      {status === 'done' && url && (
+      {!failed && !shown && !placeholder && <div className="cover-skeleton" />}
+      {placeholder && <img src={placeholder} alt="" decoding="async" draggable={false} className="ph" />}
+      {url && (
         <img src={url} alt={alt} decoding="async" draggable={false} className={shown ? 'loaded' : ''} onLoad={() => setShown(true)} />
       )}
     </div>
