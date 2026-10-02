@@ -4,6 +4,7 @@ import { acquireCover, prefetchCover } from './covers'
 import { lineAt, loadLyrics } from './lyrics'
 import { shuffled } from './lib'
 import { applyMotion } from './motion'
+import { DEFAULT_WALLPAPER, applyPalette, isPalette } from './appearance'
 
 const LS = {
   get(k, d) { try { const v = localStorage.getItem('fnm:' + k); return v === null ? d : JSON.parse(v) } catch { return d } },
@@ -45,6 +46,10 @@ export const useUI = create((set, get) => ({
   fullPlayer: false,
   playlists: [],
   theme: LS.get('theme', 'system'),
+  palette: isPalette(LS.get('palette', 'red')) ? LS.get('palette', 'red') : 'red',
+  wallpaper: { ...DEFAULT_WALLPAPER, ...LS.get('wallpaper', {}) },
+  wallpaperUrl: '', // 自选图片的 blob URL（图片本身存在主进程的 userData 里）
+  appearanceOpen: false,
   motion: LS.get('motion', 'on'),
   sidebarCollapsed: LS.get('sbCollapsed', false),
   pageTitle: '', // 当前页面标题，滚动后显示在顶部导航条里
@@ -75,6 +80,45 @@ export const useUI = create((set, get) => ({
     window.fn.setTheme(mode)
     set({ theme: mode })
   },
+  setPalette(id) {
+    if (!isPalette(id)) return
+    LS.set('palette', id)
+    applyPalette(id)
+    set({ palette: id })
+  },
+  setWallpaper(patch) {
+    const wallpaper = { ...get().wallpaper, ...patch }
+    LS.set('wallpaper', wallpaper)
+    set({ wallpaper })
+  },
+  // 读取自选壁纸（即使当前用的是内置壁纸，也要给设置面板显示缩略图）；
+  // 文件不在了（例如换了电脑数据目录）而当前又选着它，就退回无壁纸
+  async loadWallpaper() {
+    const r = await window.fn.getWallpaper?.().catch(() => null)
+    if (!r?.data) {
+      if (get().wallpaper.kind === 'custom') get().setWallpaper({ kind: 'none' })
+      return
+    }
+    const old = get().wallpaperUrl
+    set({ wallpaperUrl: URL.createObjectURL(new Blob([r.data], { type: r.type })) })
+    if (old) URL.revokeObjectURL(old)
+  },
+  async chooseWallpaper() {
+    const r = await window.fn.chooseWallpaper()
+    if (r.cancelled) return
+    if (!r.ok) return get().showToast(r.error || '无法使用这张图片')
+    get().setWallpaper({ kind: 'custom' })
+    await get().loadWallpaper()
+  },
+  async removeCustomWallpaper() {
+    await window.fn.clearWallpaper()
+    const old = get().wallpaperUrl
+    if (old) URL.revokeObjectURL(old)
+    set({ wallpaperUrl: '' })
+    if (get().wallpaper.kind === 'custom') get().setWallpaper({ kind: 'none' })
+  },
+  openAppearance: () => set({ appearanceOpen: true }),
+  closeAppearance: () => set({ appearanceOpen: false }),
 
   async loadPlaylists() {
     try { set({ playlists: await api.playlists() }) } catch {}
@@ -437,6 +481,7 @@ function broadcast() {
     volume: s.muted ? 0 : s.volume,
     lyric: line >= 0 ? lyricLines[line].text : '',
     motion: useUI.getState().motion,
+    palette: useUI.getState().palette,
   }
   const key = JSON.stringify(state)
   const now = Date.now()
@@ -448,7 +493,7 @@ function broadcast() {
   window.fn?.setPlayerState?.({ ...state, currentTime: s.currentTime, at: now })
 }
 usePlayer.subscribe(broadcast)
-useUI.subscribe((s, prev) => { if (s.motion !== prev.motion) broadcast() })
+useUI.subscribe((s, prev) => { if (s.motion !== prev.motion || s.palette !== prev.palette) broadcast() })
 
 window.fn?.onPlayerCommand?.((cmd, arg) => {
   const p = usePlayer.getState()

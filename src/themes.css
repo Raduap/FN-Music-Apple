@@ -1,0 +1,231 @@
+/* =====================================================================
+   主题色（与“浅色 / 深色 / 跟随系统”相互独立，可任意组合）
+   <html data-palette="red | green | blue">，默认经典红（styles.css 中的令牌）
+   每个主题不只换强调色：背景、侧栏、面板、选中态也带上对应色调，深色模式下是同色系的深底
+   ===================================================================== */
+
+:root {
+  /* 品牌渐变（头像、喜欢的歌曲封面、登录页标志等），各主题覆盖 */
+  --brand-1: #ff5b72;
+  --brand-2: #fa233b;
+  --brand-3: #d0122d;
+  --accent-rgb: 250 35 59;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --accent-rgb: 250 45 72; }
+}
+
+/* ---------- 墨绿 ---------- */
+:root[data-palette='green'] {
+  --accent: #0f7a5a;
+  --accent-rgb: 15 122 90;
+  --accent-soft: rgba(15, 122, 90, 0.11);
+  --accent-hover: #0b6549;
+  --brand-1: #34b386;
+  --brand-2: #0f7a5a;
+  --brand-3: #0a5440;
+  --bg: #f9fbfa;
+  --sidebar: #eef4f1;
+  --bar-bg: rgba(244, 249, 246, 0.86);
+  --strip-bg: rgba(249, 251, 250, 0.82);
+  --panel: #f5f9f7;
+  --text: #17231e;
+  --text2: rgba(38, 64, 54, 0.66);
+  --text3: rgba(38, 64, 54, 0.34);
+  --sep: rgba(16, 60, 44, 0.1);
+  --hover: rgba(16, 60, 44, 0.055);
+  --press: rgba(16, 60, 44, 0.095);
+  --row-alt: rgba(16, 60, 44, 0.024);
+  --row-sel: rgba(16, 60, 44, 0.075);
+  --row-sel-focus: rgba(15, 122, 90, 0.14);
+  --fallback: linear-gradient(135deg, #e4ede8, #d0ddd6);
+  --fallback-icon: rgba(16, 60, 44, 0.25);
+  --menu: rgba(243, 248, 245, 0.92);
+  --input: rgba(16, 60, 44, 0.055);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-palette='green'] {
+    --accent: #3cc490;
+    --accent-rgb: 60 196 144;
+    --accent-soft: rgba(60, 196, 144, 0.16);
+    --accent-hover: #5ad6a5;
+    --brand-1: #4fd3a0;
+    --brand-2: #1f9a6e;
+    --brand-3: #0e6a4b;
+    --bg: #101a16;
+    --sidebar: #15221d;
+    --bar-bg: rgba(20, 33, 28, 0.86);
+    --strip-bg: rgba(16, 26, 22, 0.82);
+    --panel: #13201b;
+    --text: #eef5f1;
+    --text2: rgba(220, 238, 229, 0.6);
+    --text3: rgba(220, 238, 229, 0.28);
+    --sep: rgba(200, 255, 230, 0.09);
+    --hover: rgba(200, 255, 230, 0.06);
+    --press: rgba(200, 255, 230, 0.1);
+    --row-alt: rgba(200, 255, 230, 0.025);
+    --row-sel: rgba(200, 255, 230, 0.09);
+    --row-sel-focus: rgba(60, 196, 144, 0.22);
+    --fallback: linear-gradient(135deg, #24352d, #1a2822);
+    --fallback-icon: rgba(220, 238, 229, 0.25);
+    --menu: rgba(24, 38, 32, 0.92);
+    --input: rgba(200, 255, 230, 0.08);
+  }
+}
+
+/* ---------- 海蓝 ---------- */
+:root[data-palette='blue'] {
+  --accent: #0a66d8;
+  --accent-rgb: 10 102 216;
+  --accent-soft: rgba(10, 102, 216, 0.1);
+  --accent-hover: #0856b8;
+  --brand-1: #4ea2ff;
+  --brand-2: #0a66d8;
+  --brand-3: #0748a0;
+  --bg: #f9fafd;
+  --sidebar: #eef2f8;
+  --bar-bg: rgba(244, 247, 252, 0.86);
+  --strip-bg: rgba(249, 250, 253, 0.82);
+  --panel: #f5f7fc;
+  --text: #161c27;
+  --text2: rgba(40, 54, 80, 0.64);
+  --text3: rgba(40, 54, 80, 0.33);
+  --sep: rgba(20, 40, 80, 0.1);
+  --hover: rgba(20, 40, 80, 0.05);
+  --press: rgba(20, 40, 80, 0.09);
+  --row-alt: rgba(20, 40, 80, 0.022);
+  --row-sel: rgba(20, 40, 80, 0.07);
+  --row-sel-focus: rgba(10, 102, 216, 0.13);
+  --fallback: linear-gradient(135deg, #e4eaf3, #d1dae8);
+  --fallback-icon: rgba(20, 40, 80, 0.24);
+  --menu: rgba(243, 246, 251, 0.92);
+  --input: rgba(20, 40, 80, 0.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-palette='blue'] {
+    --accent: #4a9dff;
+    --accent-rgb: 74 157 255;
+    --accent-soft: rgba(74, 157, 255, 0.17);
+    --accent-hover: #6cb0ff;
+    --brand-1: #6cb3ff;
+    --brand-2: #2f7fe6;
+    --brand-3: #1554b0;
+    --bg: #0f1520;
+    --sidebar: #141c29;
+    --bar-bg: rgba(20, 28, 41, 0.86);
+    --strip-bg: rgba(15, 21, 32, 0.82);
+    --panel: #121a26;
+    --text: #eef2f8;
+    --text2: rgba(222, 232, 248, 0.6);
+    --text3: rgba(222, 232, 248, 0.28);
+    --sep: rgba(200, 220, 255, 0.09);
+    --hover: rgba(200, 220, 255, 0.06);
+    --press: rgba(200, 220, 255, 0.1);
+    --row-alt: rgba(200, 220, 255, 0.025);
+    --row-sel: rgba(200, 220, 255, 0.09);
+    --row-sel-focus: rgba(74, 157, 255, 0.22);
+    --fallback: linear-gradient(135deg, #243044, #1a2433);
+    --fallback-icon: rgba(222, 232, 248, 0.25);
+    --menu: rgba(24, 32, 46, 0.92);
+    --input: rgba(200, 220, 255, 0.08);
+  }
+}
+
+/* =====================================================================
+   壁纸
+   壁纸层固定在最底下，自身用 CSS filter 模糊一次；界面各区域改为半透明，
+   不需要逐层 backdrop-filter，滚动时不增加合成开销。
+   --wp-main / --wp-side 为内容区 / 侧栏背景的浓度（由“不透明度”滑块控制）
+   ===================================================================== */
+.wallpaper {
+  position: fixed;
+  inset: calc(var(--wp-blur, 0px) * -2); /* 模糊后边缘会变透明，向外扩一些 */
+  z-index: 0;
+  pointer-events: none;
+  background-size: cover;
+  background-position: center;
+  filter: blur(var(--wp-blur, 0px)) saturate(1.15);
+  animation: wp-in 0.6s ease-out;
+}
+@keyframes wp-in { from { opacity: 0; } }
+.root.wp .app { position: relative; z-index: 1; }
+.root.wp .main-col { background: color-mix(in srgb, var(--bg) var(--wp-main), transparent); }
+.root.wp .sidebar { background: color-mix(in srgb, var(--sidebar) var(--wp-side), transparent); }
+.root.wp .sidepanel { background: color-mix(in srgb, var(--panel) calc(var(--wp-main) + 8%), transparent); backdrop-filter: blur(24px) saturate(1.4); }
+.root.wp .song-head { background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(16px); }
+.root.wp .playerbar { background: color-mix(in srgb, var(--bar-bg) 92%, transparent); }
+
+/* 内置壁纸：多层径向渐变，模糊后像柔和的光斑 */
+.wp-aurora { background-color: #0b1f2a; background-image: radial-gradient(60% 50% at 20% 25%, #2dd4bf 0, transparent 70%), radial-gradient(55% 45% at 80% 30%, #6366f1 0, transparent 70%), radial-gradient(70% 60% at 50% 90%, #0ea5e9 0, transparent 70%); }
+.wp-dusk { background-color: #2a1530; background-image: radial-gradient(60% 55% at 15% 20%, #fb7185 0, transparent 70%), radial-gradient(55% 50% at 85% 25%, #f59e0b 0, transparent 70%), radial-gradient(70% 60% at 55% 95%, #a855f7 0, transparent 72%); }
+.wp-forest { background-color: #0d1f17; background-image: radial-gradient(60% 50% at 25% 20%, #4ade80 0, transparent 70%), radial-gradient(50% 50% at 80% 70%, #0f766e 0, transparent 70%), radial-gradient(60% 60% at 30% 95%, #a3e635 0, transparent 72%); }
+.wp-mist { background-color: #e8edf5; background-image: radial-gradient(60% 50% at 20% 25%, #c7d2fe 0, transparent 70%), radial-gradient(55% 45% at 80% 30%, #fbcfe8 0, transparent 70%), radial-gradient(70% 60% at 50% 90%, #bae6fd 0, transparent 70%); }
+
+/* =====================================================================
+   外观设置面板
+   ===================================================================== */
+.dialog.ap { width: min(560px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; padding: 0; }
+.ap-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 18px 6px 24px; }
+.ap-head h2 { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
+.ap-sec { padding: 14px 24px; }
+.ap-sec + .ap-sec { border-top: 1px solid var(--sep); }
+.ap-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.ap-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.ap-sec > .ap-label { margin-bottom: 12px; }
+
+/* 选中标记：右上角的小圆勾 */
+.ap-check {
+  position: absolute; top: 6px; right: 6px; width: 18px; height: 18px; border-radius: 50%;
+  display: grid; place-items: center; color: #fff; background: var(--accent);
+  box-shadow: 0 0 0 2px var(--panel); animation: check-in 0.35s var(--spring, ease-out);
+}
+@keyframes check-in { from { transform: scale(0.3); opacity: 0; } }
+
+/* 主题色 */
+.ap-palettes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.ap-palette {
+  position: relative; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px;
+  background: var(--input); text-align: left; transition: background 0.15s, box-shadow 0.2s, transform 0.25s var(--spring, ease-out);
+}
+.ap-palette:hover { background: var(--hover); }
+.ap-palette:active { transform: scale(0.97); }
+.ap-palette.on { background: var(--panel); box-shadow: 0 0 0 2px var(--sw2), 0 4px 14px -6px var(--sw2); }
+.ap-swatch {
+  position: relative; flex: none; width: 30px; height: 30px; border-radius: 50%;
+  background: linear-gradient(145deg, var(--sw1), var(--sw2)); box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.15);
+}
+.ap-swatch .ap-check { top: 0; right: 0; width: 100%; height: 100%; background: transparent; box-shadow: none; }
+.ap-palette .ap-name { font-size: 13px; font-weight: 500; }
+
+/* 壁纸 */
+.ap-walls { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 10px; }
+.ap-wall { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; border-radius: 12px; padding: 0 0 2px; transition: transform 0.25s var(--spring, ease-out); }
+.ap-wall:active { transform: scale(0.96); }
+.ap-thumb {
+  width: 100%; aspect-ratio: 16 / 10; border-radius: 10px; display: grid; place-items: center; color: var(--text2);
+  background-size: cover; background-position: center; box-shadow: inset 0 0 0 0.5px var(--sep), 0 1px 3px rgba(0, 0, 0, 0.08);
+  transition: box-shadow 0.2s, filter 0.2s;
+}
+.ap-wall:hover .ap-thumb { filter: brightness(1.05); }
+.ap-wall.none .ap-thumb { background: var(--input); }
+.ap-wall.custom.empty .ap-thumb { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text3); border: 0; }
+.ap-wall.custom.empty:hover .ap-thumb { box-shadow: inset 0 0 0 1.5px var(--accent); color: var(--accent); }
+.ap-wall.on .ap-thumb { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
+.ap-wall .ap-name { font-size: 12px; color: var(--text2); }
+.ap-wall.on .ap-name { color: var(--text); font-weight: 600; }
+.ap-wall .ap-check { top: 5px; right: 5px; }
+
+.ap-links { display: flex; gap: 16px; margin-top: 10px; }
+.link-btn.danger { color: #ff3b30; }
+
+.ap-sliders { margin-top: 16px; display: grid; gap: 10px; transition: opacity 0.2s; }
+.ap-sliders.disabled { opacity: 0.45; }
+.ap-slider { display: grid; grid-template-columns: 64px 1fr 40px; align-items: center; gap: 12px; font-size: 12.5px; color: var(--text2); }
+.ap-slider em { font-style: normal; text-align: right; font-variant-numeric: tabular-nums; }
+.ap-slider .slider-fill { background: var(--accent); }
+.ap-slider .slider:hover .slider-fill, .ap-slider .slider.dragging .slider-fill { background: var(--accent); }
+.ap-slider .slider-thumb { transform: translate(-50%, -50%) scale(1); }
+.ap-hint { margin: 2px 0 0 76px; font-size: 11.5px; color: var(--text3); }
+
+.ap-foot { display: flex; justify-content: flex-end; padding: 12px 24px 20px; }
+.ap-foot .btn { min-width: 84px; }

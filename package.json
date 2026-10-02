@@ -1,6 +1,6 @@
 {
   "name": "fn-music-apple",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "飞牛音乐 Windows 桌面客户端 · Apple Music 风格",
   "main": "electron/main.js",
   "author": "FN Music",
