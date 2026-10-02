@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
+import { useUI } from '../store'
 import { useAsync } from '../lib'
-import { AlbumCard, ArtistCard } from '../components/Cards'
+import { AlbumCard, ArtistCard, PlaylistCard } from '../components/Cards'
 import SongList from '../components/SongList'
-import { Empty, ErrorBox, Loading, PageHeader, PlayButtons, useFavoriteSync } from '../components/common'
+import { Empty, ErrorBox, Loading, PageHeader, PlayButtons, useFavoriteSync, usePageTitle } from '../components/common'
 import * as Icon from '../icons'
 
 // 渐进加载全部分页
 function useProgressive(loader, deps) {
   const [state, setState] = useState({ items: null, total: 0, done: false, error: null })
+  const [nonce, setNonce] = useState(0)
   useEffect(() => {
     let dead = false
     setState({ items: null, total: 0, done: false, error: null })
@@ -18,31 +20,36 @@ function useProgressive(loader, deps) {
       .catch((error) => !dead && setState((s) => ({ ...s, error, done: true })))
     return () => { dead = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps)
-  return [state, (fn) => setState((s) => ({ ...s, items: fn(s.items) }))]
+  }, [...deps, nonce])
+  return [state, (fn) => setState((s) => ({ ...s, items: fn(s.items) })), () => setNonce((n) => n + 1)]
 }
 
 const coll = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' })
 
 export function Albums({ recent = false }) {
   const [sort, setSort] = useState(recent ? 'newTrackAddedAt,desc' : 'name,asc')
-  const [{ items, error, done, total }] = useProgressive((onPage) => (recent ? api.albumsPage(120, sort) : api.albums(sort, onPage)), [sort, recent])
+  const [{ items, error, done, total }, , retry] = useProgressive((onPage) => (recent ? api.albumsPage(120, sort) : api.albums(sort, onPage)), [sort, recent])
   const [byArtist, setByArtist] = useState(false)
   const list = useMemo(() => (items && byArtist ? [...items].sort((a, b) => coll.compare(a.artist, b.artist)) : items), [items, byArtist])
+  const mode = byArtist ? 'artist' : sort === 'newTrackAddedAt,desc' ? 'recent' : 'title'
+  const pick = (m) => {
+    setByArtist(m === 'artist')
+    setSort(m === 'recent' ? 'newTrackAddedAt,desc' : 'name,asc')
+  }
 
   return (
     <div className="page">
       <PageHeader title={recent ? '最近添加' : '专辑'}>
         {!recent && (
-          <div className="seg small">
-            <button className={sort === 'name,asc' && !byArtist ? 'on' : ''} onClick={() => { setSort('name,asc'); setByArtist(false) }}>标题</button>
-            <button className={byArtist ? 'on' : ''} onClick={() => { setSort('name,asc'); setByArtist(true) }}>艺人</button>
-            <button className={sort === 'newTrackAddedAt,desc' ? 'on' : ''} onClick={() => { setSort('newTrackAddedAt,desc'); setByArtist(false) }}>最近添加</button>
+          <div className="seg small" role="group" aria-label="排序方式">
+            <button className={mode === 'title' ? 'on' : ''} aria-pressed={mode === 'title'} onClick={() => pick('title')}>标题</button>
+            <button className={mode === 'artist' ? 'on' : ''} aria-pressed={mode === 'artist'} onClick={() => pick('artist')}>艺人</button>
+            <button className={mode === 'recent' ? 'on' : ''} aria-pressed={mode === 'recent'} onClick={() => pick('recent')}>最近添加</button>
           </div>
         )}
       </PageHeader>
       {!list && !error && <Loading />}
-      {error && <ErrorBox error={error} />}
+      {error && <ErrorBox error={error} onRetry={retry} />}
       {list && !list.length && done && <Empty title="还没有专辑" sub="在飞牛音乐中添加音乐文件夹后，专辑会显示在这里。" icon={Icon.AlbumIcon} />}
       {list && list.length > 0 && (
         <>
@@ -67,19 +74,20 @@ export function Artists() {
       <PageHeader title="艺人">
         <div className="filter-input">
           <Icon.Search size={14} />
-          <input placeholder="筛选" value={filter} onChange={(e) => setFilter(e.target.value)} />
+          <input aria-label="筛选艺人" placeholder="筛选" value={filter} onChange={(e) => setFilter(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setFilter('')} spellCheck={false} />
+          {filter && <button className="sb-clear" onClick={() => setFilter('')} aria-label="清除筛选"><Icon.Close size={11} /></button>}
         </div>
       </PageHeader>
       {loading && <Loading />}
       {error && <ErrorBox error={error} />}
-      {list && !list.length && <Empty title={filter ? '没有匹配的艺人' : '还没有艺人'} icon={Icon.Mic} />}
+      {list && !list.length && <Empty title={filter ? '没有匹配的艺人' : '还没有艺人'} sub={filter ? '换个关键词试试。' : undefined} icon={Icon.Mic} />}
       {list && list.length > 0 && <div className="grid artists">{list.map((a) => <ArtistCard key={a.id} artist={a} />)}</div>}
     </div>
   )
 }
 
 export function Songs() {
-  const [{ items, error, done, total }, update] = useProgressive((onPage) => api.songs(onPage), [])
+  const [{ items, error, done, total }, update, retry] = useProgressive((onPage) => api.songs(onPage), [])
   useFavoriteSync(update)
   return (
     <div className="page">
@@ -87,8 +95,8 @@ export function Songs() {
         <PlayButtons songs={items} disabled={!done} />
       </PageHeader>
       {!items && !error && <Loading />}
-      {error && <ErrorBox error={error} />}
-      {items && !items.length && done && <Empty title="还没有歌曲" />}
+      {error && <ErrorBox error={error} onRetry={retry} />}
+      {items && !items.length && done && <Empty title="还没有歌曲" sub="在飞牛音乐中添加音乐文件夹后，歌曲会显示在这里。" />}
       {items && items.length > 0 && (
         <>
           <div className="count-line">{total || items.length} 首歌曲{!done && ` · 已载入 ${items.length}`}</div>
@@ -100,6 +108,7 @@ export function Songs() {
 }
 
 export function Favorites() {
+  usePageTitle('喜欢的歌曲')
   const [state, setState] = useState({ items: null, error: null })
   const load = () => api.favorites().then((items) => setState({ items, error: null })).catch((error) => setState({ items: null, error }))
   useEffect(() => { load() }, [])
@@ -113,18 +122,35 @@ export function Favorites() {
   return (
     <div className="page">
       <div className="detail-head">
-        <div className="detail-art fav-art"><Icon.HeartFill size={96} /></div>
+        <div className="detail-art fav-art"><Icon.HeartFill size={88} /></div>
         <div className="detail-info">
           <div className="detail-kind">播放列表</div>
           <h1 className="detail-title">喜欢的歌曲</h1>
-          <div className="detail-meta">{items ? `${items.length} 首歌曲` : ''}</div>
+          <div className="detail-meta">{items ? `${items.length} 首歌曲` : ' '}</div>
           <PlayButtons songs={items} />
         </div>
       </div>
       {!items && !error && <Loading />}
       {error && <ErrorBox error={error} onRetry={load} />}
-      {items && !items.length && <Empty title="还没有喜欢的歌曲" sub="点按歌曲旁的 ♡ 即可添加到这里。" icon={Icon.Heart} />}
+      {items && !items.length && <Empty title="还没有喜欢的歌曲" sub="点按歌曲旁的 ♡ 即可添加到这里，也可以把歌曲拖到侧边栏的“喜欢的歌曲”。" icon={Icon.Heart} />}
       {items && items.length > 0 && <SongList songs={items} sortable />}
+    </div>
+  )
+}
+
+export function Playlists() {
+  const playlists = useUI((s) => s.playlists)
+  const create = () => useUI.getState().openDialog({ title: '新建播放列表', input: true, placeholder: '播放列表名称', confirmText: '创建', onConfirm: (name) => useUI.getState().createPlaylist(name) })
+  return (
+    <div className="page">
+      <PageHeader title="播放列表">
+        <button className="btn" onClick={create}><Icon.Plus size={15} /> 新建播放列表</button>
+      </PageHeader>
+      {!playlists.length ? (
+        <Empty title="还没有播放列表" sub="点击右上角“新建播放列表”，或在任意歌曲上点按右键选择“添加到播放列表”。" icon={Icon.ListIcon} />
+      ) : (
+        <div className="grid">{playlists.map((p) => <PlaylistCard key={p.id} playlist={p} />)}</div>
+      )}
     </div>
   )
 }
@@ -135,11 +161,10 @@ export function Genres() {
   const navigate = useNavigate()
   return (
     <div className="page">
-      <PageHeader title="浏览" />
-      <h2 className="sub-title">流派</h2>
+      <PageHeader title="流派" />
       {loading && <Loading />}
       {error && <ErrorBox error={error} />}
-      {data && !data.length && <Empty title="暂无流派信息" icon={Icon.Guitar} />}
+      {data && !data.length && <Empty title="暂无流派信息" sub="歌曲的元数据中没有流派标签。" icon={Icon.Guitar} />}
       {data && data.length > 0 && (
         <div className="genre-grid">
           {data.map((g, i) => {

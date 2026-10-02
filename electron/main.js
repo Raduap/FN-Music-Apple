@@ -427,6 +427,16 @@ function createWindow() {
     if (/^https?:/i.test(url)) shell.openExternal(url)
     return { action: 'deny' }
   })
+  // 禁止窗口被导航走（例如把音频/图片文件拖进窗口会被当作页面打开），保留应用自身页面与开发服务器
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url.startsWith('http://localhost:5173') || url.startsWith('file:') && url.includes('/dist/index.html')) return
+    e.preventDefault()
+  })
+  // 鼠标侧键 / 键盘“浏览器后退/前进”键 → 渲染进程的路由前进后退
+  win.on('app-command', (_e, cmd) => {
+    if (cmd === 'browser-backward') win.webContents.send('nav', -1)
+    else if (cmd === 'browser-forward') win.webContents.send('nav', 1)
+  })
 
   if (isDev) win.loadURL('http://localhost:5173')
   else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))

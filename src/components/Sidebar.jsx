@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { api, clearCache } from '../api'
 import { useAuth, useUI } from '../store'
+import { SONG_DRAG_TYPE, songDrag } from './common'
 import * as Icon from '../icons'
 
-export default function Sidebar() {
+export default function Sidebar({ rail }) {
   const navigate = useNavigate()
   const location = useLocation()
   const playlists = useUI((s) => s.playlists)
@@ -22,18 +23,7 @@ export default function Sidebar() {
     }, 280)
   }
 
-  useEffect(() => {
-    const k = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
-        e.preventDefault()
-        inputRef.current?.focus()
-        inputRef.current?.select()
-      }
-    }
-    window.addEventListener('keydown', k)
-    return () => window.removeEventListener('keydown', k)
-  }, [])
-
+  useEffect(() => () => clearTimeout(timer.current), [])
   useEffect(() => {
     if (location.pathname !== '/search') setQ('')
   }, [location.pathname])
@@ -50,7 +40,7 @@ export default function Sidebar() {
   const userMenu = (e) => {
     const r = e.currentTarget.getBoundingClientRect()
     const theme = ui().theme
-    ui().openMenu(r.left, r.top - 8, [
+    ui().openMenu(rail ? r.right + 8 : r.left, rail ? r.bottom : r.top - 8, [
       { label: `${username} @ ${server.replace(/^https?:\/\//, '').replace(/\/music$/, '')}`, disabled: true },
       '-',
       {
@@ -67,68 +57,96 @@ export default function Sidebar() {
     ])
   }
 
+  const newPlaylist = () => ui().openDialog({ title: '新建播放列表', input: true, placeholder: '播放列表名称', confirmText: '创建', onConfirm: (name) => ui().createPlaylist(name) })
+
   return (
-    <nav className="sidebar">
+    <nav className="sidebar" aria-label="主导航">
       <div className="sb-drag" />
-      <div className="sb-search">
-        <Icon.Search size={15} />
-        <input
-          ref={inputRef}
-          placeholder="搜索"
-          value={q}
-          onChange={(e) => onSearch(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && q.trim()) navigate(`/search?q=${encodeURIComponent(q.trim())}`)
-            if (e.key === 'Escape') { setQ(''); e.currentTarget.blur() }
-          }}
-        />
-        {q && <button className="sb-clear" onClick={() => setQ('')}><Icon.Close size={12} /></button>}
-      </div>
+      {rail ? (
+        <button className="sb-rail-search" title="搜索 (Ctrl+F)" aria-label="搜索" onClick={() => navigate('/search', { state: { focus: true } })}>
+          <Icon.Search size={17} />
+        </button>
+      ) : (
+        <div className="sb-search">
+          <Icon.Search size={15} />
+          <input
+            ref={inputRef}
+            data-search-input
+            aria-label="搜索资料库"
+            placeholder="搜索"
+            value={q}
+            spellCheck={false}
+            onChange={(e) => onSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && q.trim()) navigate(`/search?q=${encodeURIComponent(q.trim())}`)
+              if (e.key === 'Escape') { setQ(''); e.currentTarget.blur() }
+            }}
+          />
+          {q && <button className="sb-clear" onClick={() => { setQ(''); inputRef.current?.focus() }} aria-label="清除搜索"><Icon.Close size={11} /></button>}
+        </div>
+      )}
 
       <div className="sb-scroll">
-        <Item to="/" icon={Icon.Home} end>主页</Item>
-        <Item to="/genres" icon={Icon.Grid}>浏览</Item>
+        <Item to="/" icon={Icon.Home} end rail={rail}>主页</Item>
 
-        <div className="sb-section">资料库</div>
-        <Item to="/recent" icon={Icon.Clock}>最近添加</Item>
-        <Item to="/artists" icon={Icon.Mic}>艺人</Item>
-        <Item to="/albums" icon={Icon.AlbumIcon}>专辑</Item>
-        <Item to="/songs" icon={Icon.Note}>歌曲</Item>
-        <Item to="/genres" icon={Icon.Guitar} end={false} alias>流派</Item>
+        {rail ? <div className="sb-divider" /> : <div className="sb-section">资料库</div>}
+        <Item to="/recent" icon={Icon.Clock} rail={rail}>最近添加</Item>
+        <Item to="/artists" icon={Icon.Mic} rail={rail}>艺人</Item>
+        <Item to="/albums" icon={Icon.AlbumIcon} rail={rail}>专辑</Item>
+        <Item to="/songs" icon={Icon.Note} rail={rail}>歌曲</Item>
+        <Item to="/genres" icon={Icon.Guitar} rail={rail}>流派</Item>
 
-        <div className="sb-section with-action">
-          <span>播放列表</span>
-          <button
-            className="icon-btn sb-add"
-            title="新建播放列表"
-            onClick={() => ui().openDialog({ title: '新建播放列表', input: true, placeholder: '播放列表名称', confirmText: '创建', onConfirm: (name) => ui().createPlaylist(name) })}
-          >
-            <Icon.Plus size={15} />
-          </button>
-        </div>
-        <Item to="/favorites" icon={Icon.HeartFill} accent>喜欢的歌曲</Item>
-        {playlists.map((pl) => (
-          <Item key={pl.id} to={`/playlist/${pl.id}`} icon={Icon.ListIcon} onContextMenu={(e) => playlistMenu(e, pl)}>
-            {pl.name}
-          </Item>
-        ))}
+        {rail ? (
+          <div className="sb-divider" />
+        ) : (
+          <div className="sb-section with-action">
+            <span>播放列表</span>
+            <button className="icon-btn sb-add" title="新建播放列表" aria-label="新建播放列表" onClick={newPlaylist}>
+              <Icon.Plus size={15} />
+            </button>
+          </div>
+        )}
+        <Item to="/favorites" icon={Icon.HeartFill} accent rail={rail} onDropSongs={(songs) => ui().favoriteSongs(songs)}>喜欢的歌曲</Item>
+        {rail ? (
+          <Item to="/playlists" icon={Icon.ListIcon} rail>全部播放列表</Item>
+        ) : (
+          playlists.map((pl) => (
+            <Item key={pl.id} to={`/playlist/${pl.id}`} icon={Icon.ListIcon} onContextMenu={(e) => playlistMenu(e, pl)} onDropSongs={(songs) => ui().addToPlaylist(pl, songs)}>
+              {pl.name}
+            </Item>
+          ))
+        )}
+        {!rail && !playlists.length && <div className="sb-empty">暂无播放列表</div>}
       </div>
 
-      <button className="sb-user" onClick={userMenu}>
+      <button className="sb-user" onClick={userMenu} title={rail ? username : undefined} aria-label="账户菜单" aria-haspopup="menu">
         <span className="sb-avatar">{(username || '?').slice(0, 1).toUpperCase()}</span>
-        <span className="sb-user-name">{username}</span>
-        <Icon.More size={16} />
+        {!rail && <span className="sb-user-name">{username}</span>}
+        {!rail && <Icon.More size={16} />}
       </button>
     </nav>
   )
 }
 
-function Item({ to, icon: Ic, children, end, accent, alias, onContextMenu }) {
-  // “浏览”与“流派”都指向 /genres，仅让“浏览”高亮
+function Item({ to, icon: Ic, children, end, accent, rail, onContextMenu, onDropSongs }) {
+  const [over, setOver] = useState(false)
+  const accepts = (e) => !!onDropSongs && [...(e.dataTransfer?.types || [])].includes(SONG_DRAG_TYPE)
   return (
-    <NavLink to={to} end={end} className={({ isActive }) => `sb-item ${isActive && !alias ? 'active' : ''}`} onContextMenu={onContextMenu} draggable={false}>
+    <NavLink
+      to={to}
+      end={end}
+      draggable={false}
+      title={rail ? children : undefined}
+      aria-label={rail ? children : undefined}
+      className={({ isActive }) => `sb-item ${isActive ? 'active' : ''} ${over ? 'drop' : ''}`}
+      onContextMenu={onContextMenu}
+      onDragEnter={(e) => accepts(e) && (e.preventDefault(), setOver(true))}
+      onDragOver={(e) => { if (accepts(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' } }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOver(false) }}
+      onDrop={(e) => { if (accepts(e)) { e.preventDefault(); setOver(false); onDropSongs(songDrag.songs) } }}
+    >
       <Ic size={18} className={`sb-icon ${accent ? 'accent' : ''}`} />
-      <span className="sb-label">{children}</span>
+      {!rail && <span className="sb-label">{children}</span>}
     </NavLink>
   )
 }
@@ -158,7 +176,7 @@ export function deletePlaylist(pl, navigate, location) {
     onConfirm: async () => {
       await api.deletePlaylist(pl.id)
       await ui.loadPlaylists()
-      if (location.pathname === `/playlist/${pl.id}`) navigate('/')
+      if (location.pathname === `/playlist/${pl.id}`) navigate('/playlists')
       ui.showToast('已删除播放列表')
     },
   })

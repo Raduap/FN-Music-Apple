@@ -7,13 +7,18 @@ import * as Icon from '../icons'
 export const ScrollCtx = createContext({ current: null })
 export const useScrollEl = () => useContext(ScrollCtx)
 
+// 拖拽歌曲到侧边栏播放列表时的载荷（dataTransfer 只能在 drop 时读取，这里用模块变量传递对象）
+export const songDrag = { songs: [] }
+export const SONG_DRAG_TYPE = 'application/x-fnmusic-songs'
+
 // ---------- 封面 ----------
-// 封面经限流队列加载（同时最多 6 张）、失败自动重试，并缓存为 blob URL。
+// 封面经限流队列加载（同时最多 3 张）、失败自动重试，并缓存为 blob URL。
 // 首页一次会请求几十张封面，不限流时 NAS 现场生成缩略图容易被拖慢甚至拒绝。
 const covers = new Map() // `${coverId}@${size}` -> { id, size, refs, status: idle|queued|loading|done|fail, url, subs }
 const coverQueue = []
 let coverActive = 0
-const COVER_CONCURRENCY = 6
+// 注意：浏览器/Chromium 对同一主机最多 6 个并发连接，封面只占 3 个，给接口请求和音频流留出余量
+const COVER_CONCURRENCY = 3
 const COVER_CACHE_MAX = 600
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -99,7 +104,7 @@ export function Cover({ coverId, size, px = 600, round, className = '', alt = ''
     <div ref={ref} className={`cover ${round ? 'round' : ''} ${className}`} style={size ? { width: size, height: size } : undefined}>
       {failed && (
         <div className="cover-fallback">
-          <Fallback size={size ? Math.max(16, size * 0.36) : 48} />
+          <Fallback size={size ? Math.max(14, Math.round(size * 0.4)) : 44} />
         </div>
       )}
       {!failed && !shown && <div className="cover-skeleton" />}
@@ -112,33 +117,44 @@ export function Cover({ coverId, size, px = 600, round, className = '', alt = ''
 
 // ---------- 加载 / 错误 / 空 ----------
 export const Spinner = ({ size = 28 }) => (
-  <div className="spinner" style={{ width: size, height: size }}>
+  <div className="spinner" style={{ width: size, height: size }} role="status" aria-label="加载中">
     {Array.from({ length: 8 }, (_, i) => <i key={i} style={{ transform: `rotate(${i * 45}deg)`, animationDelay: `${i * 0.1 - 0.8}s` }} />)}
   </div>
 )
 export const Loading = () => <div className="state-box"><Spinner /></div>
 export const ErrorBox = ({ error, onRetry }) => (
-  <div className="state-box">
+  <div className="state-box" role="alert">
+    <Icon.Close size={40} className="state-icon" />
     <div className="state-title">无法载入内容</div>
-    <div className="state-sub">{error?.message || String(error)}</div>
+    <div className="state-sub selectable">{error?.message || String(error)}</div>
     {onRetry && <button className="btn" onClick={onRetry}>重试</button>}
   </div>
 )
 export const Empty = ({ title, sub, icon: Ic = Icon.Note }) => (
   <div className="state-box">
-    <Ic size={48} className="state-icon" />
+    <Ic size={44} className="state-icon" />
     <div className="state-title">{title}</div>
     {sub && <div className="state-sub">{sub}</div>}
   </div>
 )
 
-// ---------- 页面标题 ----------
-export const PageHeader = ({ title, children }) => (
-  <div className="page-header">
-    <h1>{title}</h1>
-    <div className="page-header-actions">{children}</div>
-  </div>
-)
+// ---------- 页面标题（滚动后同步显示到顶部导航条） ----------
+export function usePageTitle(title) {
+  useEffect(() => {
+    useUI.getState().setPageTitle(title || '')
+    return () => useUI.getState().setPageTitle('')
+  }, [title])
+}
+
+export function PageHeader({ title, children }) {
+  usePageTitle(title)
+  return (
+    <div className="page-header">
+      <h1>{title}</h1>
+      {children && <div className="page-header-actions">{children}</div>}
+    </div>
+  )
+}
 
 // ---------- 播放 / 随机按钮 ----------
 export function PlayButtons({ songs, disabled }) {
@@ -148,82 +164,155 @@ export function PlayButtons({ songs, disabled }) {
   return (
     <div className="play-buttons">
       <button className="btn btn-accent" disabled={off} onClick={() => play(songs, 0, { shuffle: false })}>
-        <Icon.Play size={15} /> 播放
+        <Icon.Play size={14} /> 播放
       </button>
       <button className="btn btn-accent-soft" disabled={off} onClick={() => playShuffled(songs)}>
-        <Icon.Shuffle size={16} /> 随机播放
+        <Icon.Shuffle size={15} /> 随机播放
       </button>
     </div>
   )
 }
 
-// ---------- 右键菜单 ----------
+// ---------- 右键菜单（支持键盘：↑↓ 选择、→ 打开子菜单、← 返回、Enter 执行、Esc 关闭） ----------
+const selectable = (it) => it && it !== '-' && !it.disabled
+function nextIndex(list, from, dir) {
+  const n = list.length
+  if (!list.some(selectable)) return -1
+  let i = from
+  for (let k = 0; k < n; k++) {
+    i = (i + dir + n) % n
+    if (selectable(list[i])) return i
+  }
+  return from
+}
+
 export function ContextMenu() {
   const menu = useUI((s) => s.menu)
   const close = useUI((s) => s.closeMenu)
   const ref = useRef(null)
   const [pos, setPos] = useState(null)
+  const [path, setPath] = useState([]) // 每一级当前高亮的下标；长度 > 层级 + 1 表示该层的子菜单已展开
+
+  useEffect(() => setPath([]), [menu])
 
   useLayoutEffect(() => {
     if (!menu || !ref.current) return setPos(null)
     const r = ref.current.getBoundingClientRect()
     const x = Math.min(menu.x, window.innerWidth - r.width - 8)
     const y = menu.y + r.height > window.innerHeight - 8 ? Math.max(8, menu.y - r.height) : menu.y
-    setPos({ x, y })
+    setPos({ x: Math.max(8, x), y })
   }, [menu])
+
+  const levels = (items, p) => {
+    const out = [items.filter(Boolean)]
+    for (let d = 0; d < p.length - 1; d++) {
+      const parent = out[d][p[d]]
+      if (parent?.children) out.push(parent.children.filter(Boolean))
+    }
+    return out
+  }
 
   useEffect(() => {
     if (!menu) return
     const onDown = (e) => { if (!ref.current?.contains(e.target)) close() }
-    const onKey = (e) => e.key === 'Escape' && close()
+    const onKey = (e) => {
+      const lv = levels(menu.items, path)
+      const d = path.length ? path.length - 1 : 0
+      const list = lv[Math.min(d, lv.length - 1)] || []
+      const cur = path.length ? path[path.length - 1] : -1
+      const set = (i) => setPath(path.length ? [...path.slice(0, -1), i] : [i])
+      if (e.key === 'Escape') { e.preventDefault(); path.length > 1 ? setPath(path.slice(0, -1)) : close() }
+      else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); const i = nextIndex(list, cur === -1 ? (e.key === 'ArrowDown' ? -1 : 0) : cur, e.key === 'ArrowDown' ? 1 : -1); if (i >= 0) set(i) }
+      else if (e.key === 'Home' || e.key === 'End') { e.preventDefault(); const i = e.key === 'Home' ? nextIndex(list, -1, 1) : nextIndex(list, 0, -1); if (i >= 0) set(i) }
+      else if (e.key === 'ArrowRight') {
+        const it = list[cur]
+        if (it?.children) { e.preventDefault(); setPath([...path, nextIndex(it.children.filter(Boolean), -1, 1)]) }
+      } else if (e.key === 'ArrowLeft') { if (path.length > 1) { e.preventDefault(); setPath(path.slice(0, -1)) } }
+      else if (e.key === 'Enter' || e.key === ' ') {
+        const it = list[cur]
+        if (!selectable(it)) return
+        e.preventDefault()
+        if (it.children) setPath([...path, nextIndex(it.children.filter(Boolean), -1, 1)])
+        else { close(); it.onClick?.() }
+      }
+    }
     window.addEventListener('mousedown', onDown, true)
-    window.addEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
     window.addEventListener('blur', close)
     window.addEventListener('resize', close)
     document.addEventListener('wheel', close, { passive: true })
     return () => {
       window.removeEventListener('mousedown', onDown, true)
-      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onKey, true)
       window.removeEventListener('blur', close)
       window.removeEventListener('resize', close)
       document.removeEventListener('wheel', close)
     }
-  }, [menu, close])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menu, path, close])
 
   if (!menu) return null
   return (
-    <div ref={ref} className="menu" style={{ left: pos?.x ?? menu.x, top: pos?.y ?? menu.y, visibility: pos ? 'visible' : 'hidden' }}>
-      <MenuItems items={menu.items} close={close} />
+    <div ref={ref} className="menu" role="menu" style={{ left: pos?.x ?? menu.x, top: pos?.y ?? menu.y, visibility: pos ? 'visible' : 'hidden' }} onContextMenu={(e) => e.preventDefault()}>
+      <MenuList items={menu.items} depth={0} path={path} setPath={setPath} close={close} />
     </div>
   )
 }
 
-function MenuItems({ items, close }) {
-  const [sub, setSub] = useState(-1)
-  return items.filter(Boolean).map((it, i) => {
-    if (it === '-') return <div key={i} className="menu-sep" />
+function MenuList({ items, depth, path, setPath, close }) {
+  const list = items.filter(Boolean)
+  return list.map((it, i) => {
+    if (it === '-') return <div key={i} className="menu-sep" role="separator" />
     const Ic = it.icon
+    const expanded = !!it.children && path[depth] === i && path.length > depth + 1
+    const highlighted = path[depth] === i && (path.length - 1 === depth || expanded)
     return (
       <div
         key={i}
-        className={`menu-item ${it.danger ? 'danger' : ''} ${it.disabled ? 'disabled' : ''} ${sub === i ? 'active' : ''}`}
-        onMouseEnter={() => setSub(it.children ? i : -1)}
+        role={it.checked !== undefined ? 'menuitemcheckbox' : 'menuitem'}
+        aria-checked={it.checked}
+        aria-disabled={it.disabled || undefined}
+        aria-haspopup={it.children ? 'menu' : undefined}
+        className={`menu-item ${it.danger ? 'danger' : ''} ${it.disabled ? 'disabled' : ''} ${highlighted ? 'active' : ''}`}
+        onMouseEnter={() => !it.disabled && setPath(it.children ? [...path.slice(0, depth), i, -1] : [...path.slice(0, depth), i])}
         onClick={() => {
-          if (it.disabled || it.children) return
+          if (it.disabled) return
+          if (it.children) return setPath([...path.slice(0, depth), i, -1])
           close()
           it.onClick?.()
         }}
       >
         <span className="menu-label">{it.label}</span>
         {it.children ? <Icon.ChevronRight size={14} /> : Ic ? <Ic size={16} /> : it.checked ? <Icon.Check size={16} /> : null}
-        {it.children && sub === i && (
-          <div className="menu submenu">
-            <MenuItems items={it.children} close={close} />
-          </div>
+        {expanded && (
+          <Submenu>
+            <MenuList items={it.children} depth={depth + 1} path={path} setPath={setPath} close={close} />
+          </Submenu>
         )}
       </div>
     )
   })
+}
+
+// 子菜单：默认在右侧展开，空间不够时翻到左侧，并保证不超出窗口上下边界
+function Submenu({ children }) {
+  const ref = useRef(null)
+  const [place, setPlace] = useState({ flip: false, dy: 0 })
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const flip = r.right > window.innerWidth - 8
+    let dy = 0
+    if (r.bottom > window.innerHeight - 8) dy = -(r.bottom - window.innerHeight + 8)
+    if (r.top + dy < 8) dy = 8 - r.top
+    setPlace({ flip, dy })
+  }, [])
+  return (
+    <div ref={ref} className="menu submenu" role="menu" style={{ top: -5 + place.dy, ...(place.flip ? { right: 'calc(100% - 4px)', left: 'auto' } : null) }}>
+      {children}
+    </div>
+  )
 }
 
 // ---------- 对话框（输入名称 / 确认） ----------
@@ -233,18 +322,23 @@ export function Dialog() {
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
   const inputRef = useRef(null)
+  const okRef = useRef(null)
+  const lastFocus = useRef(null)
 
   useEffect(() => {
     if (dialog) {
+      lastFocus.current = document.activeElement
       setValue(dialog.defaultValue || '')
       setBusy(false)
-      setTimeout(() => inputRef.current?.select(), 30)
+      setTimeout(() => (dialog.input ? inputRef.current?.select() : okRef.current?.focus()), 30)
+    } else if (lastFocus.current instanceof HTMLElement) {
+      lastFocus.current.focus?.() // 关闭后把焦点还给触发它的元素
     }
   }, [dialog])
 
   if (!dialog) return null
   const submit = async () => {
-    if (dialog.input && !value.trim()) return
+    if (busy || (dialog.input && !value.trim())) return
     setBusy(true)
     try {
       await dialog.onConfirm?.(value.trim())
@@ -254,17 +348,29 @@ export function Dialog() {
       setBusy(false)
     }
   }
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close() }
+    else if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') submit()
+    else if (e.key === 'Tab') {
+      // 焦点限制在对话框内
+      const els = [...e.currentTarget.querySelectorAll('input, button:not(:disabled)')]
+      if (!els.length) return
+      const first = els[0], last = els[els.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+    }
+  }
   return (
     <div className="dialog-mask" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-      <div className="dialog" onKeyDown={(e) => { if (e.key === 'Escape') close(); if (e.key === 'Enter') submit() }}>
+      <div className="dialog" role="dialog" aria-modal="true" aria-label={dialog.title} onKeyDown={onKeyDown}>
         <div className="dialog-title">{dialog.title}</div>
         {dialog.message && <div className="dialog-msg">{dialog.message}</div>}
         {dialog.input && (
-          <input ref={inputRef} className="input" value={value} placeholder={dialog.placeholder} onChange={(e) => setValue(e.target.value)} autoFocus />
+          <input ref={inputRef} className="input" value={value} maxLength={64} placeholder={dialog.placeholder} onChange={(e) => setValue(e.target.value)} />
         )}
         <div className="dialog-actions">
           <button className="btn" onClick={close}>取消</button>
-          <button className={`btn ${dialog.danger ? 'btn-danger' : 'btn-accent'}`} disabled={busy || (dialog.input && !value.trim())} onClick={submit}>
+          <button ref={okRef} className={`btn ${dialog.danger ? 'btn-danger' : 'btn-accent'}`} disabled={busy || (dialog.input && !value.trim())} onClick={submit}>
             {dialog.confirmText || '确定'}
           </button>
         </div>
@@ -275,7 +381,7 @@ export function Dialog() {
 
 export function Toast() {
   const toast = useUI((s) => s.toast)
-  return <div className={`toast ${toast ? 'show' : ''}`}>{toast?.text}</div>
+  return <div className={`toast ${toast ? 'show' : ''}`} role="status" aria-live="polite">{toast?.text}</div>
 }
 
 // ---------- 歌曲菜单 ----------
@@ -286,7 +392,10 @@ export function useSongMenu() {
     const p = usePlayer.getState()
     const one = songs.length === 1 ? songs[0] : null
     const pls = ui.playlists
+    const many = songs.length > 1
     return [
+      many && { label: `已选择 ${songs.length} 首歌曲`, disabled: true },
+      many && '-',
       { label: '播放下一首', icon: Icon.PlayNext, onClick: () => p.playNext(songs) },
       { label: '稍后播放', icon: Icon.PlayLater, onClick: () => p.addToQueue(songs) },
       '-',
@@ -303,7 +412,8 @@ export function useSongMenu() {
         ],
       },
       one && { label: one.favorite ? '取消喜欢' : '喜欢', icon: one.favorite ? Icon.HeartFill : Icon.Heart, onClick: () => p.toggleFavorite(one) },
-      one && '-',
+      many && { label: '喜欢', icon: Icon.Heart, onClick: () => ui.favoriteSongs(songs) },
+      '-',
       one?.albumId && { label: '前往专辑', icon: Icon.AlbumIcon, onClick: () => navigate(`/album/${one.albumId}`) },
       one?.artistId && { label: '前往艺人', icon: Icon.Mic, onClick: () => navigate(`/artist/${one.artistId}`) },
       ...(extra.length ? ['-', ...extra] : []),

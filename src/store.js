@@ -11,6 +11,17 @@ const LS = {
 const audio = new Audio()
 audio.preload = 'auto'
 
+// 整理菜单项：去掉假值，合并连续分隔线，去掉首尾分隔线（子菜单同理）
+function tidyMenu(items) {
+  const out = []
+  for (const it of items.filter(Boolean)) {
+    if (it === '-') { if (out.length && out[out.length - 1] !== '-') out.push('-'); continue }
+    out.push(it.children ? { ...it, children: tidyMenu(it.children) } : it)
+  }
+  while (out[out.length - 1] === '-') out.pop()
+  return out
+}
+
 // ---------- UI / 提示 / 菜单 ----------
 export const useUI = create((set, get) => ({
   toast: null,
@@ -20,17 +31,24 @@ export const useUI = create((set, get) => ({
   fullPlayer: false,
   playlists: [],
   theme: LS.get('theme', 'system'),
+  sidebarCollapsed: LS.get('sbCollapsed', false),
+  pageTitle: '', // 当前页面标题，滚动后显示在顶部导航条里
+  scrolled: false,
 
   showToast(text) {
     const id = Date.now()
     set({ toast: { id, text } })
     setTimeout(() => get().toast?.id === id && set({ toast: null }), 2200)
   },
-  openMenu: (x, y, items) => set({ menu: { x, y, items } }),
+  openMenu: (x, y, items) => set({ menu: { x, y, items: tidyMenu(items) } }),
   closeMenu: () => set({ menu: null }),
   openDialog: (dialog) => set({ dialog }),
   closeDialog: () => set({ dialog: null }),
   togglePanel: (p) => set((s) => ({ panel: s.panel === p ? null : p })),
+  closePanel: () => set({ panel: null }),
+  toggleSidebar: () => set((s) => { LS.set('sbCollapsed', !s.sidebarCollapsed); return { sidebarCollapsed: !s.sidebarCollapsed } }),
+  setPageTitle: (pageTitle) => set({ pageTitle }),
+  setScrolled: (scrolled) => set((s) => (s.scrolled === scrolled ? s : { scrolled })),
   setFullPlayer: (v) => set({ fullPlayer: v }),
   setTheme(mode) {
     LS.set('theme', mode)
@@ -52,6 +70,15 @@ export const useUI = create((set, get) => ({
       await get().loadPlaylists()
     }
     get().showToast(`已创建播放列表“${name}”`)
+  },
+  async favoriteSongs(songs) {
+    const todo = songs.filter((s) => !s.favorite)
+    if (!todo.length) return get().showToast('已在“喜欢的歌曲”中')
+    try {
+      await Promise.all(todo.map((s) => api.setFavorite(s.id, true)))
+      todo.forEach((s) => window.dispatchEvent(new CustomEvent('fn:favorite-changed', { detail: { id: s.id, favorite: true } })))
+      get().showToast(`已将 ${todo.length} 首歌曲添加到“喜欢的歌曲”`)
+    } catch (e) { get().showToast('操作失败：' + e.message) }
   },
   async addToPlaylist(pl, songs) {
     try {

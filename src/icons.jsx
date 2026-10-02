@@ -56,6 +56,7 @@ export const Sun = (p) => <I {...p}><circle cx="12" cy="12" r="4" /><path d="M12
 export const Moon = (p) => <I {...p}><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" /></I>
 export const Monitor = (p) => <I {...p}><rect x="3" y="4" width="18" height="12.5" rx="2" /><path d="M8.5 20.5h7M12 16.5v4" /></I>
 export const Expand = (p) => <I {...p}><path d="M14.5 4H20v5.5M9.5 20H4v-5.5M20 4l-6.5 6.5M4 20l6.5-6.5" /></I>
+export const Sidebar = (p) => <I {...p}><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" /><path d="M9.5 4.5v15" /></I>
 export const Check = (p) => <I {...p}><path d="m5 12.5 4.5 4.5L19 7.5" /></I>
 export const Disc = (p) => <I {...p}><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="2.5" /></I>
 export const Wave = (p) => <I {...p}><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 7v10M21 12h0" /></I>

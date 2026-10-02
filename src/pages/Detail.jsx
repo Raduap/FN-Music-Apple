@@ -5,7 +5,7 @@ import { usePlayer, useUI } from '../store'
 import { fmtTotal, useAsync } from '../lib'
 import { AlbumCard, Shelf } from '../components/Cards'
 import SongList from '../components/SongList'
-import { Cover, Empty, ErrorBox, Loading, PlayButtons, useFavoriteSync, useSongMenu } from '../components/common'
+import { Cover, Empty, ErrorBox, Loading, PlayButtons, useFavoriteSync, usePageTitle, useSongMenu } from '../components/common'
 import { deletePlaylist, renamePlaylist } from '../components/Sidebar'
 import * as Icon from '../icons'
 
@@ -23,6 +23,7 @@ export function AlbumDetail() {
     return album?.id ? album : { id, name: s0?.album || '专辑', artist: s0?.artist || '', artistId: s0?.artistId, coverId: s0?.coverId, year: s0?.year }
   }, [id])
   useFavoriteSync(setSongs)
+  usePageTitle(album?.name)
 
   if (loading && !album) return <div className="page"><Loading /></div>
   if (error) return <div className="page"><ErrorBox error={error} /></div>
@@ -46,9 +47,11 @@ export function AlbumDetail() {
             <PlayButtons songs={songs} />
             <button
               className="icon-btn round-more"
+              aria-label="更多"
+              title="更多"
               onClick={(e) => {
                 const r = e.currentTarget.getBoundingClientRect()
-                useUI.getState().openMenu(r.left, r.bottom + 6, songMenu(songs || []).filter((x) => x && !String(x.label).startsWith('前往专辑')))
+                useUI.getState().openMenu(r.left, r.bottom + 6, songMenu(songs || []).filter((x) => x && !String(x.label).startsWith('前往专辑') && !String(x.label).startsWith('已选择')))
               }}
             >
               <Icon.More size={18} />
@@ -81,6 +84,7 @@ export function ArtistDetail() {
   useFavoriteSync(setSongs)
   const [showAll, setShowAll] = useState(false)
   useEffect(() => setShowAll(false), [id])
+  usePageTitle(data?.artist?.name)
 
   if (loading && !data) return <div className="page"><Loading /></div>
   if (error) return <div className="page"><ErrorBox error={error} /></div>
@@ -91,7 +95,7 @@ export function ArtistDetail() {
   return (
     <div className="page artist-page">
       <div className="artist-hero">
-        <div className="artist-hero-bg"><Cover coverId={coverId} /></div>
+        <div className="artist-hero-bg"><Cover coverId={coverId} px={160} /></div>
         <div className="artist-hero-inner">
           <Cover coverId={coverId} round icon="person" className="artist-avatar" />
           <div>
@@ -136,11 +140,13 @@ export function PlaylistDetail() {
     return () => window.removeEventListener('fn:playlist-changed', h)
   }, [id])
   useFavoriteSync(setSongs)
+  usePageTitle(pl?.name)
 
-  const remove = async (song) => {
+  const remove = async (list) => {
+    const ids = new Set(list.map((x) => x.id))
     try {
-      await api.removeFromPlaylist(id, [song.id])
-      setSongs((s) => s.filter((x) => x.id !== song.id))
+      await api.removeFromPlaylist(id, [...ids])
+      setSongs((s) => s.filter((x) => !ids.has(x.id)))
       useUI.getState().loadPlaylists()
     } catch (e) {
       useUI.getState().showToast('移除失败：' + e.message)
@@ -161,12 +167,14 @@ export function PlaylistDetail() {
         <div className="detail-info">
           <div className="detail-kind">播放列表</div>
           <h1 className="detail-title">{pl?.name || '播放列表'}</h1>
-          <div className="detail-meta">{songs ? `${songs.length} 首歌曲 · ${fmtTotal(totalSec(songs))}` : ''}</div>
+          <div className="detail-meta">{songs ? `${songs.length} 首歌曲${songs.length ? ` · ${fmtTotal(totalSec(songs))}` : ''}` : ' '}</div>
           <div className="detail-actions">
             <PlayButtons songs={songs} />
             {pl && (
               <button
                 className="icon-btn round-more"
+                aria-label="更多"
+                title="更多"
                 onClick={(e) => {
                   const r = e.currentTarget.getBoundingClientRect()
                   useUI.getState().openMenu(r.left, r.bottom + 6, [
@@ -188,7 +196,7 @@ export function PlaylistDetail() {
       {error && <ErrorBox error={error} onRetry={load} />}
       {songs && !songs.length && <Empty title="这个播放列表是空的" sub="在任意歌曲上点按右键，选择“添加到播放列表”。" icon={Icon.ListIcon} />}
       {songs && songs.length > 0 && (
-        <SongList songs={songs} extraMenu={(song) => [{ label: '从播放列表中移除', icon: Icon.Trash, danger: true, onClick: () => remove(song) }]} />
+        <SongList songs={songs} extraMenu={(picked) => [{ label: '从播放列表中移除', icon: Icon.Trash, danger: true, onClick: () => remove(picked) }]} />
       )}
     </div>
   )

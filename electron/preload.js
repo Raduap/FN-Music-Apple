@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('fn', {
   setPrefs: (p) => ipcRenderer.invoke('prefs:set', p),
   setTheme: (mode) => ipcRenderer.send('theme:set', mode),
   setOverlay: (o) => ipcRenderer.send('overlay:set', o),
+  onNav: (cb) => { const h = (_e, d) => cb(d); ipcRenderer.on('nav', h); return () => ipcRenderer.removeListener('nav', h) },
   minimize: () => ipcRenderer.send('win:minimize'),
   toggleMaximize: () => ipcRenderer.send('win:toggle-maximize'),
   close: () => ipcRenderer.send('win:close'),

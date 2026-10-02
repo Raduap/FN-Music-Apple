@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { usePlayer, useUI } from '../store'
-import { Cover, useSongMenu } from './common'
+import { Cover } from './common'
 import * as Icon from '../icons'
 
 async function playAlbum(id, shuffle = false) {
@@ -15,17 +15,27 @@ async function playAlbum(id, shuffle = false) {
   }
 }
 
+// 卡片可用键盘操作：Tab 聚焦，Enter 打开，Shift+F10 / 菜单键打开菜单
+const cardKeys = (open, menu) => (e) => {
+  if (e.target !== e.currentTarget) return
+  if (e.key === 'Enter') { e.preventDefault(); open() }
+  else if (menu && (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) {
+    e.preventDefault()
+    const r = e.currentTarget.getBoundingClientRect()
+    menu({ preventDefault() {}, stopPropagation() {}, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })
+  }
+}
+
 export function AlbumCard({ album, sub }) {
   const navigate = useNavigate()
-  const songMenu = useSongMenu()
-  const onMenu = async (e) => {
+  const onMenu = (e) => {
     e.preventDefault()
     e.stopPropagation()
     const { clientX: x, clientY: y } = e
     const ui = useUI.getState()
-    const lazy = async (fn) => { const s = await api.albumSongs(album.id); fn(s) }
-    // 专辑菜单：前几项直接执行，添加到歌单需要先取歌曲
-    const base = songMenu([{ id: '', albumId: album.id, artistId: album.artistId }])
+    const lazy = async (fn) => {
+      try { fn(await api.albumSongs(album.id)) } catch (err) { ui.showToast('操作失败：' + err.message) }
+    }
     ui.openMenu(x, y, [
       { label: '播放', icon: Icon.Play, onClick: () => playAlbum(album.id) },
       { label: '随机播放', icon: Icon.Shuffle, onClick: () => playAlbum(album.id, true) },
@@ -43,19 +53,20 @@ export function AlbumCard({ album, sub }) {
           ...ui.playlists.map((pl) => ({ label: pl.name, onClick: () => lazy((s) => ui.addToPlaylist(pl, s)) })),
         ],
       },
-      '-',
-      ...base.filter((it) => it && it.label === '前往艺人'),
+      album.artistId && '-',
+      album.artistId && { label: '前往艺人', icon: Icon.Mic, onClick: () => navigate(`/artist/${album.artistId}`) },
     ])
   }
+  const open = () => navigate(`/album/${album.id}`)
   return (
-    <div className="card" onClick={() => navigate(`/album/${album.id}`)} onContextMenu={onMenu}>
+    <div className="card" role="link" tabIndex={0} aria-label={`${album.name}，${album.artist}`} onClick={open} onKeyDown={cardKeys(open, onMenu)} onContextMenu={onMenu}>
       <div className="card-art">
-        <Cover coverId={album.coverId} alt={album.name} />
+        <Cover coverId={album.coverId} alt="" />
         <div className="card-hover">
-          <button className="card-play" title="播放" onClick={(e) => { e.stopPropagation(); playAlbum(album.id) }}>
-            <Icon.Play size={18} />
+          <button className="card-play" tabIndex={-1} title="播放" aria-label={`播放 ${album.name}`} onClick={(e) => { e.stopPropagation(); playAlbum(album.id) }}>
+            <Icon.Play size={16} />
           </button>
-          <button className="card-more" title="更多" onClick={onMenu}>
+          <button className="card-more" tabIndex={-1} title="更多" aria-label="更多" onClick={onMenu}>
             <Icon.More size={16} />
           </button>
         </div>
@@ -63,7 +74,7 @@ export function AlbumCard({ album, sub }) {
       <div className="card-title" title={album.name}>{album.name}</div>
       <div className="card-sub">
         {sub ?? (album.artistId ? (
-          <Link to={`/artist/${album.artistId}`} onClick={(e) => e.stopPropagation()}>{album.artist}</Link>
+          <Link to={`/artist/${album.artistId}`} tabIndex={-1} onClick={(e) => e.stopPropagation()}>{album.artist}</Link>
         ) : album.artist)}
       </div>
     </div>
@@ -72,10 +83,11 @@ export function AlbumCard({ album, sub }) {
 
 export function ArtistCard({ artist }) {
   const navigate = useNavigate()
+  const open = () => navigate(`/artist/${artist.id}`)
   return (
-    <div className="card artist-card" onClick={() => navigate(`/artist/${artist.id}`)}>
+    <div className="card artist-card" role="link" tabIndex={0} aria-label={artist.name} onClick={open} onKeyDown={cardKeys(open)}>
       <div className="card-art round">
-        <Cover coverId={artist.coverId} round icon="person" alt={artist.name} />
+        <Cover coverId={artist.coverId} round icon="person" alt="" />
       </div>
       <div className="card-title center" title={artist.name}>{artist.name}</div>
     </div>
@@ -87,37 +99,44 @@ export function PlaylistCard({ playlist }) {
   const [coverId, setCoverId] = useState(playlist.coverId)
   useEffect(() => {
     let dead = false
+    setCoverId(playlist.coverId)
     if (!playlist.coverId) api.playlistCover(playlist.id).then((c) => !dead && setCoverId(c)).catch(() => {})
     return () => { dead = true }
   }, [playlist.id, playlist.coverId])
+  const open = () => navigate(`/playlist/${playlist.id}`)
   return (
-    <div className="card" onClick={() => navigate(`/playlist/${playlist.id}`)}>
+    <div className="card" role="link" tabIndex={0} aria-label={`${playlist.name}，${playlist.trackCount} 首歌曲`} onClick={open} onKeyDown={cardKeys(open)}>
       <div className="card-art">
         <Cover coverId={coverId} icon="note" />
         <div className="card-hover">
           <button
             className="card-play"
+            tabIndex={-1}
             title="播放"
+            aria-label={`播放 ${playlist.name}`}
             onClick={async (e) => {
               e.stopPropagation()
-              const s = await api.playlistSongs(playlist.id)
-              if (s.length) usePlayer.getState().play(s, 0, { shuffle: false })
+              try {
+                const s = await api.playlistSongs(playlist.id)
+                if (s.length) usePlayer.getState().play(s, 0, { shuffle: false })
+                else useUI.getState().showToast('这个播放列表是空的')
+              } catch (err) { useUI.getState().showToast('播放失败：' + err.message) }
             }}
           >
-            <Icon.Play size={18} />
+            <Icon.Play size={16} />
           </button>
         </div>
       </div>
-      <div className="card-title">{playlist.name}</div>
+      <div className="card-title" title={playlist.name}>{playlist.name}</div>
       <div className="card-sub">{playlist.trackCount} 首歌曲</div>
     </div>
   )
 }
 
-// 横向滚动货架（带左右翻页按钮）
+// 横向滚动货架（带左右翻页按钮；内容不足一屏时自动隐藏按钮）
 export function Shelf({ title, to, children }) {
   const ref = useRef(null)
-  const [edge, setEdge] = useState({ l: true, r: false })
+  const [edge, setEdge] = useState({ l: true, r: true })
   const update = () => {
     const el = ref.current
     if (!el) return
@@ -129,17 +148,17 @@ export function Shelf({ title, to, children }) {
     if (ref.current) ro.observe(ref.current)
     return () => ro.disconnect()
   }, [children])
-  const page = (dir) => ref.current?.scrollBy({ left: dir * ref.current.clientWidth * 0.9, behavior: 'smooth' })
+  const page = (dir) => ref.current?.scrollBy({ left: dir * ref.current.clientWidth * 0.85, behavior: 'smooth' })
   return (
-    <section className="shelf">
+    <section className="shelf" aria-label={title}>
       <div className="shelf-head">
         {to ? <Link to={to} className="shelf-title link">{title}<Icon.ChevronRight size={18} /></Link> : <h2 className="shelf-title">{title}</h2>}
+        <div className="shelf-pager">
+          <button className="icon-btn" disabled={edge.l} onClick={() => page(-1)} aria-label="向左翻页" tabIndex={-1}><Icon.ChevronLeft size={18} /></button>
+          <button className="icon-btn" disabled={edge.r} onClick={() => page(1)} aria-label="向右翻页" tabIndex={-1}><Icon.ChevronRight size={18} /></button>
+        </div>
       </div>
-      <div className="shelf-wrap">
-        <button className={`shelf-nav left ${edge.l ? 'hide' : ''}`} onClick={() => page(-1)}><Icon.ChevronLeft size={22} /></button>
-        <div className="shelf-row" ref={ref} onScroll={update}>{children}</div>
-        <button className={`shelf-nav right ${edge.r ? 'hide' : ''}`} onClick={() => page(1)}><Icon.ChevronRight size={22} /></button>
-      </div>
+      <div className="shelf-row" ref={ref} onScroll={update}>{children}</div>
     </section>
   )
 }

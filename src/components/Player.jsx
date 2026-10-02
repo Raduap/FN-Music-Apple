@@ -1,54 +1,83 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { api } from '../api'
 import { useShallow } from 'zustand/react/shallow'
+import { api } from '../api'
 import { usePlayer, useUI, useCurrent } from '../store'
-import { fmtTime, parseLrc, useCoverColor } from '../lib'
+import { fmtTime, parseLrc, useCoverColor, useViewport } from '../lib'
 import { Cover, Spinner, useSongMenu } from './common'
 import * as Icon from '../icons'
 
-// ---------- 滑块（进度 / 音量） ----------
-export function Slider({ value, max = 1, onChange, onCommit, className = '', disabled }) {
+// ---------- 滑块（进度 / 音量）：指针拖动、键盘、滚轮、悬停时间提示 ----------
+export function Slider({ value, max = 1, onChange, onCommit, className = '', disabled, label, step, tip, valueText }) {
   const ref = useRef(null)
   const [drag, setDrag] = useState(null)
-  const pct = max > 0 ? Math.min(1, Math.max(0, (drag ?? value) / max)) : 0
-  const at = (e) => {
+  const [hover, setHover] = useState(null) // 悬停位置（0~1）
+  const cur = drag ?? value
+  const pct = max > 0 ? Math.min(1, Math.max(0, cur / max)) : 0
+  const frac = (e) => {
     const r = ref.current.getBoundingClientRect()
-    return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * max
+    return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))
   }
+  const apply = (v) => (onCommit || onChange)?.(Math.min(max, Math.max(0, v)))
+  const inc = step ?? max / 20
+
   return (
     <div
       ref={ref}
+      role="slider"
+      tabIndex={disabled ? -1 : 0}
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={Math.round(max * 100) / 100}
+      aria-valuenow={Math.round(cur * 100) / 100}
+      aria-valuetext={valueText ? valueText(cur) : undefined}
+      aria-disabled={disabled || undefined}
       className={`slider ${drag !== null ? 'dragging' : ''} ${disabled ? 'disabled' : ''} ${className}`}
       onPointerDown={(e) => {
-        if (disabled) return
+        if (disabled || e.button !== 0) return
         e.currentTarget.setPointerCapture(e.pointerId)
-        const v = at(e)
+        const v = frac(e) * max
         setDrag(v)
         onChange?.(v)
       }}
       onPointerMove={(e) => {
-        if (drag === null) return
-        const v = at(e)
-        setDrag(v)
-        onChange?.(v)
+        const f = frac(e)
+        if (drag === null) return setHover(f)
+        setDrag(f * max)
+        onChange?.(f * max)
       }}
+      onPointerLeave={() => setHover(null)}
       onPointerUp={(e) => {
         if (drag === null) return
-        const v = at(e)
+        const v = frac(e) * max
         setDrag(null)
         onCommit?.(v)
       }}
       onPointerCancel={() => setDrag(null)}
-      onWheel={(e) => {
-        if (disabled || !onCommit) return
-        onCommit(Math.min(max, Math.max(0, (drag ?? value) - Math.sign(e.deltaY) * max * 0.05)))
+      onWheel={(e) => !disabled && apply(cur - Math.sign(e.deltaY) * inc)}
+      onKeyDown={(e) => {
+        if (disabled) return
+        const k = e.key
+        let v = null
+        if (k === 'ArrowRight' || k === 'ArrowUp') v = cur + inc
+        else if (k === 'ArrowLeft' || k === 'ArrowDown') v = cur - inc
+        else if (k === 'PageUp') v = cur + inc * 4
+        else if (k === 'PageDown') v = cur - inc * 4
+        else if (k === 'Home') v = 0
+        else if (k === 'End') v = max
+        if (v === null) return
+        e.preventDefault()
+        e.stopPropagation()
+        apply(v)
       }}
     >
       <div className="slider-track">
         <div className="slider-fill" style={{ width: `${pct * 100}%` }} />
       </div>
       <div className="slider-thumb" style={{ left: `${pct * 100}%` }} />
+      {tip && hover !== null && !disabled && (
+        <div className="slider-tip" style={{ left: `${(drag !== null ? pct : hover) * 100}%` }}>{tip(drag !== null ? drag : hover * max)}</div>
+      )}
     </div>
   )
 }
@@ -72,22 +101,23 @@ export function Transport({ big = false }) {
     useShallow((s) => ({ playing: s.playing, loading: s.loading, shuffle: s.shuffle, repeat: s.repeat, toggle: s.toggle, next: s.next, prev: s.prev, toggleShuffle: s.toggleShuffle, cycleRepeat: s.cycleRepeat }))
   )
   const has = usePlayer((s) => s.queue.length > 0)
-  const sz = big ? 1.5 : 1
+  const sz = big ? 1.4 : 1
+  const repeatLabel = { off: '重复：关闭', all: '重复：全部', one: '重复：单曲' }[repeat]
   return (
-    <div className={`transport ${big ? 'big' : ''}`}>
-      <button className={`icon-btn tbtn toggle ${shuffle ? 'on' : ''}`} onClick={toggleShuffle} title="随机播放">
+    <div className={`transport ${big ? 'big' : ''}`} role="group" aria-label="播放控制">
+      <button className={`icon-btn tbtn toggle ${shuffle ? 'on' : ''}`} onClick={toggleShuffle} title={shuffle ? '随机播放：开' : '随机播放：关'} aria-label="随机播放" aria-pressed={shuffle}>
         <Icon.Shuffle size={16 * sz} />
       </button>
-      <button className="icon-btn tbtn" onClick={prev} disabled={!has} title="上一首">
-        <Icon.Prev size={20 * sz} />
+      <button className="icon-btn tbtn" onClick={prev} disabled={!has} title="上一首" aria-label="上一首">
+        <Icon.Prev size={19 * sz} />
       </button>
-      <button className="icon-btn tbtn main" onClick={toggle} disabled={!has} title={playing ? '暂停' : '播放'}>
-        {loading && playing ? <Spinner size={18 * sz} /> : playing ? <Icon.Pause size={24 * sz} /> : <Icon.Play size={24 * sz} />}
+      <button className="icon-btn tbtn main" onClick={toggle} disabled={!has} title={playing ? '暂停 (空格)' : '播放 (空格)'} aria-label={playing ? '暂停' : '播放'}>
+        {loading && playing ? <Spinner size={20 * sz} /> : playing ? <Icon.Pause size={22 * sz} /> : <Icon.Play size={22 * sz} />}
       </button>
-      <button className="icon-btn tbtn" onClick={() => next()} disabled={!has} title="下一首">
-        <Icon.Next size={20 * sz} />
+      <button className="icon-btn tbtn" onClick={() => next()} disabled={!has} title="下一首" aria-label="下一首">
+        <Icon.Next size={19 * sz} />
       </button>
-      <button className={`icon-btn tbtn toggle ${repeat !== 'off' ? 'on' : ''}`} onClick={cycleRepeat} title={{ off: '重复：关', all: '重复：全部', one: '重复：单曲' }[repeat]}>
+      <button className={`icon-btn tbtn toggle ${repeat !== 'off' ? 'on' : ''}`} onClick={cycleRepeat} title={repeatLabel} aria-label={repeatLabel} aria-pressed={repeat !== 'off'}>
         {repeat === 'one' ? <Icon.RepeatOne size={16 * sz} /> : <Icon.Repeat size={16 * sz} />}
       </button>
     </div>
@@ -102,17 +132,18 @@ export function VolumeControl() {
   const v = muted ? 0 : volume
   return (
     <div className="volume">
-      <button className="icon-btn" onClick={toggleMute} title={muted ? '取消静音' : '静音'}>
+      <button className="icon-btn" onClick={toggleMute} title={muted ? '取消静音' : '静音'} aria-label={muted ? '取消静音' : '静音'}>
         {v === 0 ? <Icon.Mute size={17} /> : v < 0.5 ? <Icon.VolumeLow size={17} /> : <Icon.Volume size={17} />}
       </button>
-      <Slider className="vol-slider" value={v} max={1} onChange={setVolume} onCommit={setVolume} />
+      <Slider className="vol-slider" label="音量" value={v} max={1} step={0.05} onChange={setVolume} onCommit={setVolume} valueText={(x) => `${Math.round(x * 100)}%`} tip={(x) => `${Math.round(x * 100)}%`} />
     </div>
   )
 }
 
+const LOSSLESS = ['FLAC', 'ALAC', 'WAV', 'APE', 'AIFF', 'DSD', 'DSF', 'DFF']
 function qualityLabel(song) {
   if (!song) return ''
-  const lossless = ['FLAC', 'ALAC', 'WAV', 'APE', 'AIFF', 'DSD', 'DSF', 'DFF'].includes(song.codec)
+  const lossless = LOSSLESS.includes(song.codec)
   if (lossless && song.bitDepth && song.sampleRate) {
     const hi = song.bitDepth > 16 || song.sampleRate > 48000
     return `${hi ? '高解析度无损' : '无损'} · ${song.bitDepth}-bit/${(song.sampleRate / 1000).toFixed(song.sampleRate % 1000 ? 1 : 0)} kHz`
@@ -121,62 +152,97 @@ function qualityLabel(song) {
   return [song.codec, song.bitrate ? song.bitrate + ' kbps' : ''].filter(Boolean).join(' · ')
 }
 
-// ---------- 顶部栏 ----------
-export function TopBar() {
+function QualityBadge({ song }) {
+  if (!song) return null
+  const hi = song.bitDepth > 16 || song.sampleRate > 48000
+  const lossless = LOSSLESS.includes(song.codec)
+  if (!lossless && !(song.codec === 'MP3' && song.bitrate >= 256)) return null
+  return (
+    <span className={`quality-badge ${lossless ? (hi ? 'hires' : 'lossless') : ''}`} title={qualityLabel(song)}>
+      {lossless ? (hi ? 'Hi-Res' : '无损') : `${song.bitrate}k`}
+    </span>
+  )
+}
+
+// ---------- 底部播放栏 ----------
+export function PlayerBar() {
   const song = useCurrent()
   const panel = useUI((s) => s.panel)
   const togglePanel = useUI((s) => s.togglePanel)
   const setFull = useUI((s) => s.setFullPlayer)
+  const toggleFavorite = usePlayer((s) => s.toggleFavorite)
   const scrub = useScrub()
   const songMenu = useSongMenu()
 
   return (
-    <header className="topbar">
-      <Transport />
-      <div className={`lozenge ${song ? '' : 'empty'}`}>
+    <footer className="playerbar" aria-label="播放器">
+      <div className="pb-left">
         {song ? (
           <>
-            <button className="loz-cover" onClick={() => setFull(true)} title="打开全屏播放器">
-              <Cover coverId={song.coverId} size={44} px={160} />
-              <span className="loz-expand"><Icon.Expand size={16} /></span>
+            <button className="pb-cover" onClick={() => setFull(true)} title="展开正在播放" aria-label="展开正在播放">
+              <Cover coverId={song.coverId} size={52} px={160} />
+              <span className="pb-expand"><Icon.Expand size={16} /></span>
             </button>
-            <div className="loz-info">
-              <div className="loz-title">{song.title}</div>
-              <div className="loz-sub">
-                {song.artistId ? <Link to={`/artist/${song.artistId}`}>{song.artist}</Link> : song.artist}
-                {song.album && <> — {song.albumId ? <Link to={`/album/${song.albumId}`}>{song.album}</Link> : song.album}</>}
-              </div>
-              <div className="loz-progress">
-                <span className="loz-time">{fmtTime(scrub.shown)}</span>
-                <Slider className="loz-slider" value={scrub.shown} max={scrub.duration || 1} onChange={scrub.onChange} onCommit={scrub.onCommit} />
-                <span className="loz-time right">-{fmtTime(Math.max(0, scrub.duration - scrub.shown))}</span>
+            <div className="pb-meta">
+              <div className="pb-title" title={song.title}>{song.title}</div>
+              <div className="pb-sub">
+                {song.artistId ? <Link to={`/artist/${song.artistId}`}>{song.artist}</Link> : <span>{song.artist}</span>}
+                {song.album && <><span className="pb-dot">·</span>{song.albumId ? <Link to={`/album/${song.albumId}`}>{song.album}</Link> : <span>{song.album}</span>}</>}
               </div>
             </div>
-            <button
-              className="icon-btn loz-more"
-              onClick={(e) => {
-                const r = e.currentTarget.getBoundingClientRect()
-                useUI.getState().openMenu(r.left, r.bottom + 6, songMenu([song]))
-              }}
-              title="更多"
-            >
-              <Icon.More size={16} />
-            </button>
+            <div className="pb-actions">
+              <button className={`icon-btn ${song.favorite ? 'on' : ''}`} onClick={() => toggleFavorite(song)} title={song.favorite ? '取消喜欢' : '喜欢'} aria-label={song.favorite ? '取消喜欢' : '喜欢'} aria-pressed={song.favorite}>
+                {song.favorite ? <Icon.HeartFill size={17} /> : <Icon.Heart size={17} />}
+              </button>
+              <button
+                className="icon-btn"
+                aria-label="更多"
+                title="更多"
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect()
+                  useUI.getState().openMenu(r.left, r.top - 6, songMenu([song]))
+                }}
+              >
+                <Icon.More size={17} />
+              </button>
+            </div>
           </>
         ) : (
-          <div className="loz-logo"><Icon.Note size={22} /></div>
+          <div className="pb-idle"><Icon.Note size={20} /><span>未在播放</span></div>
         )}
       </div>
-      <div className="topbar-right">
+
+      <div className="pb-center">
+        <Transport />
+        <div className="pb-progress">
+          <span className="pb-time">{fmtTime(scrub.shown)}</span>
+          <Slider
+            className="pb-slider"
+            label="播放进度"
+            disabled={!song}
+            value={scrub.shown}
+            max={scrub.duration || 1}
+            step={5}
+            onChange={scrub.onChange}
+            onCommit={scrub.onCommit}
+            valueText={(x) => `${fmtTime(x)} / ${fmtTime(scrub.duration)}`}
+            tip={fmtTime}
+          />
+          <span className="pb-time right">-{fmtTime(Math.max(0, scrub.duration - scrub.shown))}</span>
+        </div>
+      </div>
+
+      <div className="pb-right">
+        <QualityBadge song={song} />
         <VolumeControl />
-        <button className={`icon-btn ${panel === 'lyrics' ? 'on' : ''}`} onClick={() => togglePanel('lyrics')} title="歌词">
+        <button className={`icon-btn ${panel === 'lyrics' ? 'on' : ''}`} onClick={() => togglePanel('lyrics')} title="歌词 (Ctrl+L)" aria-label="歌词" aria-pressed={panel === 'lyrics'}>
           <Icon.Lyrics size={18} />
         </button>
-        <button className={`icon-btn ${panel === 'queue' ? 'on' : ''}`} onClick={() => togglePanel('queue')} title="播放队列">
+        <button className={`icon-btn ${panel === 'queue' ? 'on' : ''}`} onClick={() => togglePanel('queue')} title="播放队列" aria-label="播放队列" aria-pressed={panel === 'queue'}>
           <Icon.QueueIcon size={18} />
         </button>
       </div>
-    </header>
+    </footer>
   )
 }
 
@@ -230,7 +296,7 @@ export function LyricsView({ song, big = false }) {
 
   if (!song) return <div className="lyrics-empty">未在播放</div>
   if (loading) return <div className="lyrics-empty"><Spinner /></div>
-  if (!lines.length) return <div className="lyrics-empty">暂无歌词</div>
+  if (!lines.length) return <div className="lyrics-empty"><Icon.Lyrics size={36} /><span>暂无歌词</span></div>
 
   return (
     <div
@@ -267,10 +333,9 @@ export function QueueView({ dark = false }) {
   const songMenu = useSongMenu()
   const cur = queue[index]
   const upcoming = queue.slice(index + 1)
-  const ref = useRef(null)
 
   return (
-    <div className={`queue ${dark ? 'dark' : ''}`} ref={ref}>
+    <div className={`queue ${dark ? 'dark' : ''}`}>
       {cur && (
         <>
           <div className="queue-head"><span>正在播放</span></div>
@@ -278,10 +343,11 @@ export function QueueView({ dark = false }) {
         </>
       )}
       <div className="queue-head">
-        <span>接下来</span>
+        <span>接下来{upcoming.length > 0 && <em className="queue-count">{upcoming.length}</em>}</span>
         {upcoming.length > 0 && <button className="link-btn" onClick={clearUpcoming}>清除</button>}
       </div>
-      {upcoming.length === 0 && <div className="queue-empty">队列中没有更多歌曲</div>}
+      {!cur && <div className="queue-empty">播放队列是空的。双击任意歌曲即可开始播放。</div>}
+      {cur && upcoming.length === 0 && <div className="queue-empty">队列中没有更多歌曲</div>}
       {upcoming.slice(0, 300).map((s, k) => {
         const i = index + 1 + k
         return (
@@ -297,41 +363,68 @@ export function QueueView({ dark = false }) {
           />
         )
       })}
+      {upcoming.length > 300 && <div className="queue-empty">仅显示接下来的 300 首</div>}
     </div>
   )
 }
 
 function QueueItem({ song, active, playing, onPlay, onRemove, onMenu }) {
   return (
-    <div className={`queue-item ${active ? 'active' : ''}`} onDoubleClick={onPlay} onContextMenu={onMenu}>
+    <div
+      className={`queue-item ${active ? 'active' : ''}`}
+      tabIndex={onPlay ? 0 : undefined}
+      onDoubleClick={onPlay}
+      onContextMenu={onMenu}
+      onKeyDown={(e) => { if (onPlay && e.key === 'Enter') onPlay(); if (onRemove && (e.key === 'Delete' || e.key === 'Backspace')) onRemove() }}
+    >
       <div className="qi-cover">
         <Cover coverId={song.coverId} size={40} px={160} />
         {active ? <span className="qi-eq"><Icon.Bars playing={playing} /></span> : (
-          <button className="qi-play" onClick={onPlay}><Icon.Play size={14} /></button>
+          <button className="qi-play" onClick={onPlay} aria-label={`播放 ${song.title}`}><Icon.Play size={14} /></button>
         )}
       </div>
       <div className="qi-text">
-        <div className="qi-title">{song.title}</div>
+        <div className="qi-title" title={song.title}>{song.title}</div>
         <div className="qi-sub">{song.artist}</div>
       </div>
-      {onRemove && <button className="icon-btn qi-remove" onClick={onRemove} title="移除"><Icon.Close size={14} /></button>}
+      {onRemove && <button className="icon-btn qi-remove" onClick={onRemove} title="移除" aria-label="从队列中移除"><Icon.Close size={14} /></button>}
       <span className="qi-time">{fmtTime(song.duration)}</span>
     </div>
   )
 }
 
-// ---------- 右侧面板 ----------
+// ---------- 右侧面板（宽屏时推开内容；窄屏时作为浮层覆盖在内容上方） ----------
+export const PANEL_OVERLAY_MAX = 1239
 export function SidePanel() {
   const panel = useUI((s) => s.panel)
   const togglePanel = useUI((s) => s.togglePanel)
+  const closePanel = useUI((s) => s.closePanel)
   const song = useCurrent()
+  const { w } = useViewport()
+  const overlay = w <= PANEL_OVERLAY_MAX
+  const ref = useRef(null)
+
+  // 浮层模式：点击面板外部、按 Esc 即关闭
+  useEffect(() => {
+    if (!panel || !overlay) return
+    const onDown = (e) => {
+      if (ref.current?.contains(e.target) || e.target.closest?.('.playerbar, .menu, .dialog-mask')) return
+      closePanel()
+    }
+    const onKey = (e) => e.key === 'Escape' && !useUI.getState().menu && !useUI.getState().dialog && closePanel()
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('pointerdown', onDown, true); window.removeEventListener('keydown', onKey) }
+  }, [panel, overlay, closePanel])
+
   return (
-    <aside className={`sidepanel ${panel ? 'open' : ''}`}>
+    <aside ref={ref} className={`sidepanel ${panel ? 'open' : ''} ${overlay ? 'overlay' : ''}`} aria-label={panel === 'queue' ? '播放队列面板' : '歌词面板'} inert={!panel}>
       <div className="sp-tabs">
-        <div className="seg">
-          <button className={panel === 'lyrics' ? 'on' : ''} onClick={() => panel !== 'lyrics' && togglePanel('lyrics')}>歌词</button>
-          <button className={panel === 'queue' ? 'on' : ''} onClick={() => panel !== 'queue' && togglePanel('queue')}>播放队列</button>
+        <div className="seg" role="tablist">
+          <button role="tab" aria-selected={panel === 'lyrics'} className={panel === 'lyrics' ? 'on' : ''} onClick={() => panel !== 'lyrics' && togglePanel('lyrics')}>歌词</button>
+          <button role="tab" aria-selected={panel === 'queue'} className={panel === 'queue' ? 'on' : ''} onClick={() => panel !== 'queue' && togglePanel('queue')}>播放队列</button>
         </div>
+        <button className="icon-btn" onClick={closePanel} title="关闭" aria-label="关闭面板"><Icon.Close size={16} /></button>
       </div>
       <div className="sp-body">
         {panel === 'lyrics' && <LyricsView song={song} />}
@@ -353,45 +446,51 @@ export function FullPlayer() {
   const scrub = useScrub()
   const navigate = useNavigate()
   const songMenu = useSongMenu()
+  const closeRef = useRef(null)
 
   useEffect(() => {
     if (!open) return
-    const k = (e) => e.key === 'Escape' && setFull(false)
+    const k = (e) => e.key === 'Escape' && !useUI.getState().menu && setFull(false)
     window.addEventListener('keydown', k)
+    closeRef.current?.focus()
     return () => window.removeEventListener('keydown', k)
   }, [open, setFull])
 
   const go = useCallback((path) => { setFull(false); navigate(path) }, [navigate, setFull])
 
   return (
-    <div className={`fullplayer ${open ? 'open' : ''}`} style={{ '--np-r': r, '--np-g': g, '--np-b': b }}>
+    <div className={`fullplayer ${open ? 'open' : ''}`} style={{ '--np-r': r, '--np-g': g, '--np-b': b }} role="dialog" aria-modal="true" aria-label="正在播放" inert={!open}>
       <div className="fp-bg">
-        {song?.coverId && <Cover coverId={song.coverId} px={160} className="fp-bg-img a" />}
-        {song?.coverId && <Cover coverId={song.coverId} px={160} className="fp-bg-img b" />}
+        {open && song?.coverId && <Cover coverId={song.coverId} px={160} className="fp-bg-img a" />}
+        {open && song?.coverId && <Cover coverId={song.coverId} px={160} className="fp-bg-img b" />}
         <div className="fp-bg-tint" />
       </div>
       <div className="fp-top">
-        <button className="fp-close" onClick={() => setFull(false)} title="收起 (Esc)"><Icon.ChevronDown size={22} /></button>
+        <button ref={closeRef} className="fp-close" onClick={() => setFull(false)} title="收起 (Esc)" aria-label="收起全屏播放器"><Icon.ChevronDown size={22} /></button>
       </div>
       {song ? (
         <div className={`fp-main ${tab ? 'with-side' : ''}`}>
           <div className="fp-left">
-            <div className={`fp-art ${playing ? 'playing' : ''}`}>
-              <Cover coverId={song.coverId} px={1024} />
+            <div className="fp-art-wrap">
+              <div className={`fp-art ${playing ? 'playing' : ''}`}>
+                <Cover coverId={song.coverId} px={1024} />
+              </div>
             </div>
             <div className="fp-meta">
               <div className="fp-meta-text">
-                <div className="fp-title">{song.title}</div>
+                <div className="fp-title" title={song.title}>{song.title}</div>
                 <div className="fp-artist">
-                  <span className="lnk" onClick={() => song.artistId && go(`/artist/${song.artistId}`)}>{song.artist}</span>
-                  {song.album && <> — <span className="lnk" onClick={() => song.albumId && go(`/album/${song.albumId}`)}>{song.album}</span></>}
+                  <button className="lnk" onClick={() => song.artistId && go(`/artist/${song.artistId}`)}>{song.artist}</button>
+                  {song.album && <><span className="fp-dash">—</span><button className="lnk" onClick={() => song.albumId && go(`/album/${song.albumId}`)}>{song.album}</button></>}
                 </div>
               </div>
-              <button className={`fp-round ${song.favorite ? 'fav' : ''}`} onClick={() => toggleFavorite(song)} title="喜欢">
+              <button className={`fp-round ${song.favorite ? 'fav' : ''}`} onClick={() => toggleFavorite(song)} title={song.favorite ? '取消喜欢' : '喜欢'} aria-label={song.favorite ? '取消喜欢' : '喜欢'} aria-pressed={song.favorite}>
                 {song.favorite ? <Icon.HeartFill size={18} /> : <Icon.Heart size={18} />}
               </button>
               <button
                 className="fp-round"
+                aria-label="更多"
+                title="更多"
                 onClick={(e) => {
                   const rc = e.currentTarget.getBoundingClientRect()
                   useUI.getState().openMenu(rc.left, rc.bottom + 6, songMenu([song]).map((it) => (it && it.label?.startsWith('前往') ? { ...it, onClick: () => go(it.label === '前往专辑' ? `/album/${song.albumId}` : `/artist/${song.artistId}`) } : it)))
@@ -401,7 +500,7 @@ export function FullPlayer() {
               </button>
             </div>
             <div className="fp-progress">
-              <Slider className="fp-slider" value={scrub.shown} max={scrub.duration || 1} onChange={scrub.onChange} onCommit={scrub.onCommit} />
+              <Slider className="fp-slider" label="播放进度" value={scrub.shown} max={scrub.duration || 1} step={5} onChange={scrub.onChange} onCommit={scrub.onCommit} valueText={(x) => `${fmtTime(x)} / ${fmtTime(scrub.duration)}`} tip={fmtTime} />
               <div className="fp-times">
                 <span>{fmtTime(scrub.shown)}</span>
                 <span className="fp-quality">{qualityLabel(song)}</span>
@@ -412,8 +511,8 @@ export function FullPlayer() {
             <div className="fp-bottom">
               <VolumeControl />
               <div className="fp-tabs">
-                <button className={`fp-round ${tab === 'lyrics' ? 'on' : ''}`} onClick={() => setTab(tab === 'lyrics' ? null : 'lyrics')} title="歌词"><Icon.Lyrics size={18} /></button>
-                <button className={`fp-round ${tab === 'queue' ? 'on' : ''}`} onClick={() => setTab(tab === 'queue' ? null : 'queue')} title="播放队列"><Icon.QueueIcon size={18} /></button>
+                <button className={`fp-round ${tab === 'lyrics' ? 'on' : ''}`} onClick={() => setTab(tab === 'lyrics' ? null : 'lyrics')} title="歌词" aria-label="歌词" aria-pressed={tab === 'lyrics'}><Icon.Lyrics size={18} /></button>
+                <button className={`fp-round ${tab === 'queue' ? 'on' : ''}`} onClick={() => setTab(tab === 'queue' ? null : 'queue')} title="播放队列" aria-label="播放队列" aria-pressed={tab === 'queue'}><Icon.QueueIcon size={18} /></button>
               </div>
             </div>
           </div>

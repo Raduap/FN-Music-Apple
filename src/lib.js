@@ -70,6 +70,21 @@ export function useCoverColor(coverId) {
   return color
 }
 
+// ---------- 视口尺寸（短定时器节流；不用 rAF，窗口被遮挡/后台时 rAF 会被暂停，状态会滞后） ----------
+export function useViewport() {
+  const [v, setV] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }))
+  useEffect(() => {
+    let t = 0
+    const f = () => {
+      clearTimeout(t)
+      t = setTimeout(() => setV((o) => (o.w === window.innerWidth && o.h === window.innerHeight ? o : { w: window.innerWidth, h: window.innerHeight })), 30)
+    }
+    window.addEventListener('resize', f)
+    return () => { window.removeEventListener('resize', f); clearTimeout(t) }
+  }, [])
+  return v
+}
+
 // ---------- 异步数据 ----------
 export function useAsync(fn, deps) {
   const [state, setState] = useState({ data: null, loading: true, error: null })
