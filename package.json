@@ -49,6 +49,7 @@
       "dist/**/*",
       "electron/**/*",
       "build/icon.png",
+      "build/tray/*.png",
       "package.json"
     ],
     "win": {

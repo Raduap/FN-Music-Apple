@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, protocol, net, session, safeStorage, nativeTheme, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, net, session, safeStorage, nativeTheme, shell, nativeImage } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { sha256, newDeviceId, normalizeBase, hostOf, authx, friendlyError } = require('./util')
-const { createTray } = require('./tray')
+const { createTray, BALL_MODES } = require('./tray')
+const { createBall } = require('./ball')
 const { createCoverCache, coverKey } = require('./coverCache')
 
 const isDev = process.env.NODE_ENV === 'development'
@@ -106,9 +107,11 @@ function writePrefs(p) {
   try { fs.writeFileSync(prefsFile(), JSON.stringify(p)) } catch {}
 }
 
-// ---------- 主窗口与托盘 ----------
+// ---------- 主窗口、托盘与悬浮球 ----------
 let mainWindow = null
 let tray = null
+let ball = null
+let mainHidden = false // 主窗口被用户隐藏到托盘或最小化（启动时窗口还没显示出来不算）
 let quitting = false // 为 true 时关闭窗口即退出，不再最小化到托盘
 
 // 关闭窗口时最小化到托盘：Windows 默认开启，可在账户菜单或托盘菜单中关闭
@@ -126,13 +129,69 @@ function quitApp() {
   app.quit()
 }
 
+// 播放控制命令统一由主窗口的渲染进程执行（播放器在那里）
+const playerCommand = (cmd, arg) => mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.send('player:command', cmd, arg)
+
+// 悬浮球显示方式：always 始终显示｜hidden 主窗口隐藏或最小化时显示（默认）｜off 关闭
+const ballMode = () => (BALL_MODES.some(([m]) => m === readPrefs().ballMode) ? readPrefs().ballMode : 'hidden')
+function setBallMode(mode) {
+  writePrefs({ ...readPrefs(), ballMode: mode })
+  syncBall()
+  tray?.refresh()
+}
+function syncBall() {
+  if (!ball) return
+  const mode = ballMode()
+  ball.setVisible(!quitting && (mode === 'always' || (mode === 'hidden' && mainHidden)))
+}
+
+// 托盘菜单里显示的当前歌曲封面（从封面磁盘缓存读取）
+async function coverImage(coverId) {
+  if (!covers || !state.base) return null
+  const r = await covers.get(coverKey(state.base, coverId, 160), `${state.base}/api/v1/static/cover?coverId=${encodeURIComponent(coverId)}&size=160`)
+  if (r.status !== 200) return null
+  const src = nativeImage.createFromBuffer(r.body) // SVG 等格式无法解码时为空
+  if (src.isEmpty()) return null
+  const img = src.resize({ width: 16, height: 16, quality: 'best' })
+  img.addRepresentation({ scaleFactor: 2, width: 16, height: 16, buffer: src.resize({ width: 32, height: 32, quality: 'best' }).toPNG() })
+  return img
+}
+
+function loadPage(win, page) {
+  if (isDev) win.loadURL(`http://localhost:5173/${page}`)
+  else win.loadFile(path.join(__dirname, '..', 'dist', page))
+}
+
+function setupBall() {
+  ball = createBall({
+    preload: path.join(__dirname, 'ballPreload.js'),
+    load: (win) => loadPage(win, 'ball.html'),
+    readPrefs,
+    writePrefs,
+    command: playerCommand,
+    showMain: showMainWindow,
+    menu: () => [
+      { label: '显示飞牛音乐', click: showMainWindow },
+      { type: 'separator' },
+      { label: '悬浮球', submenu: BALL_MODES.map(([mode, label]) => ({ label, type: 'radio', checked: ballMode() === mode, click: () => setBallMode(mode) })) },
+      { label: '隐藏悬浮球', click: () => setBallMode('off') },
+      { type: 'separator' },
+      { label: '退出', click: quitApp },
+    ],
+  })
+  syncBall()
+}
+
 function setupTray() {
   try {
     tray = createTray({
       show: showMainWindow,
-      command: (cmd) => mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.send('player:command', cmd),
+      command: playerCommand,
       getCloseToTray: closeToTray,
       setCloseToTray: (on) => writePrefs({ ...readPrefs(), closeToTray: on }),
+      getBallMode: ballMode,
+      setBallMode,
+      coverImage,
       quit: quitApp,
     })
   } catch (e) {
@@ -398,9 +457,9 @@ function registerIpc() {
   ipcMain.handle('covers:clear', async () => { await covers?.clear(); return true })
   ipcMain.handle('app:info', () => ({ version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }))
   ipcMain.handle('prefs:get', () => readPrefs())
-  ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); tray?.refresh(); return true })
-  ipcMain.handle('tray:info', () => ({ available: !!tray, closeToTray: closeToTray() }))
-  ipcMain.on('player:state', (_e, s) => tray?.setPlayer(s))
+  ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); tray?.refresh(); syncBall(); return true })
+  ipcMain.handle('tray:info', () => ({ available: !!tray, closeToTray: closeToTray(), ballMode: ballMode() }))
+  ipcMain.on('player:state', (_e, s) => { tray?.setPlayer(s); ball?.setState(s) })
 
   ipcMain.on('win:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
   ipcMain.on('win:toggle-maximize', (e) => {
@@ -467,6 +526,12 @@ function createWindow() {
   })
   // Windows 注销 / 关机时直接退出，不能拦着
   win.on('session-end', () => { quitting = true })
+  // 主窗口隐藏 / 最小化时按设置显示悬浮球
+  for (const [ev, hidden] of [['hide', true], ['minimize', true], ['show', false], ['restore', false]]) {
+    win.on(ev, () => { mainHidden = hidden && !quitting; syncBall() })
+  }
+  // 主窗口真正关闭（未最小化到托盘）时退出应用；悬浮球窗口不应让应用继续留在后台
+  win.on('closed', () => { if (mainWindow === win) app.quit() })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) shell.openExternal(url)
@@ -488,8 +553,7 @@ function createWindow() {
     else if (cmd === 'browser-forward') win.webContents.send('nav', 1)
   })
 
-  if (isDev) win.loadURL('http://localhost:5173')
-  else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
+  loadPage(win, 'index.html')
   return win
 }
 
@@ -511,6 +575,7 @@ if (!gotLock) {
     registerIpc()
     mainWindow = createWindow()
     setupTray()
+    setupBall()
     app.on('activate', showMainWindow)
   })
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

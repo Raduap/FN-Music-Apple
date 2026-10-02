@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { api, streamUrl, invalidate } from './api'
 import { acquireCover, prefetchCover } from './covers'
+import { lineAt, loadLyrics } from './lyrics'
 import { shuffled } from './lib'
 import { applyMotion } from './motion'
 
@@ -406,21 +407,57 @@ if ('mediaSession' in navigator) {
   h('nexttrack', () => usePlayer.getState().next())
   h('seekto', (d) => usePlayer.getState().seek(d.seekTime))
 }
-// ---------- 系统托盘：同步当前歌曲，并接收托盘菜单里的播放控制 ----------
-let trayKey = ''
-usePlayer.subscribe((s) => {
+// ---------- 托盘与悬浮球：同步播放状态，并接收它们发来的播放控制 ----------
+// 歌曲、播放状态、歌词行等变化时立即发送；进度只在跳转或每秒同步一次，悬浮球自己按时间推算进度
+let lyricFor = ''
+let lyricLines = []
+let lastKey = ''
+let lastSync = { at: 0, time: 0, playing: false }
+function broadcast() {
+  const s = usePlayer.getState()
   const song = s.queue[s.index]
-  const state = { title: song?.title || '', artist: song?.artist || '', playing: s.playing }
+  if ((song?.id || '') !== lyricFor) {
+    lyricFor = song?.id || ''
+    lyricLines = []
+    if (song) {
+      const id = song.id
+      loadLyrics(id).then((lines) => { if (lyricFor === id) { lyricLines = lines; broadcast() } })
+    }
+  }
+  const line = lineAt(lyricLines, s.currentTime + 0.25)
+  const state = {
+    title: song?.title || '',
+    artist: song?.artist || '',
+    album: song?.album || '',
+    coverId: song?.coverId || '',
+    favorite: !!song?.favorite,
+    playing: s.playing,
+    loading: s.loading,
+    duration: s.duration || song?.duration || 0,
+    volume: s.muted ? 0 : s.volume,
+    lyric: line >= 0 ? lyricLines[line].text : '',
+    motion: useUI.getState().motion,
+  }
   const key = JSON.stringify(state)
-  if (key === trayKey) return
-  trayKey = key
-  window.fn?.setPlayerState?.(state)
-})
-window.fn?.onPlayerCommand?.((cmd) => {
+  const now = Date.now()
+  const expected = lastSync.time + (lastSync.playing ? (now - lastSync.at) / 1000 : 0)
+  const jumped = Math.abs(s.currentTime - expected) > 1.2
+  if (key === lastKey && !jumped && now - lastSync.at < 1000) return
+  lastKey = key
+  lastSync = { at: now, time: s.currentTime, playing: s.playing }
+  window.fn?.setPlayerState?.({ ...state, currentTime: s.currentTime, at: now })
+}
+usePlayer.subscribe(broadcast)
+useUI.subscribe((s, prev) => { if (s.motion !== prev.motion) broadcast() })
+
+window.fn?.onPlayerCommand?.((cmd, arg) => {
   const p = usePlayer.getState()
+  const song = p.queue[p.index]
   if (cmd === 'toggle') p.toggle()
   else if (cmd === 'next') p.next()
   else if (cmd === 'prev') p.prev()
+  else if (cmd === 'favorite' && song) p.toggleFavorite(song)
+  else if (cmd === 'volume' && Number.isFinite(arg)) p.setVolume((p.muted ? 0 : p.volume) + arg)
 })
 
 audio.addEventListener('play', () => { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing' })

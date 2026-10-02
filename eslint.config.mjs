@@ -30,7 +30,7 @@ export default [
     languageOptions: { ecmaVersion: 'latest', sourceType: 'commonjs', globals: globals.node },
   },
   {
-    files: ['test/**/*.js', '*.config.{js,mjs}'],
+    files: ['test/**/*.js', 'scripts/**/*.mjs', '*.config.{js,mjs}'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', globals: globals.node },
   },
   {
