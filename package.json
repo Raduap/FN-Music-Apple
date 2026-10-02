@@ -1,0 +1,76 @@
+{
+  "name": "fn-music-apple",
+  "version": "1.0.0",
+  "description": "飞牛音乐 Windows 桌面客户端 · Apple Music 风格",
+  "main": "electron/main.js",
+  "author": "FN Music",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
+    "build": "vite build",
+    "start": "vite build && electron .",
+    "mock": "node dev/mock-server.js",
+    "dist": "vite build && electron-builder --win"
+  },
+  "devDependencies": {
+    "@tanstack/react-virtual": "^3.14.13",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.4",
+    "vite": "^8.3.2",
+    "wait-on": "^9.5.1",
+    "zustand": "^5.0.15"
+  },
+  "productName": "飞牛音乐",
+  "build": {
+    "appId": "com.fnmusic.apple",
+    "productName": "飞牛音乐",
+    "copyright": "MIT",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "shortcutName": "飞牛音乐",
+      "uninstallDisplayName": "飞牛音乐",
+      "artifactName": "FN-Music-Setup-${version}.${ext}"
+    },
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    },
+    "portable": {
+      "artifactName": "FN-Music-Portable-${version}.${ext}"
+    }
+  }
+}
