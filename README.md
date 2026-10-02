@@ -70,7 +70,13 @@ Linux 上没有显示器时，端到端测试用 `xvfb-run -a npm run test:e2e` 
 ### 持续集成与发布
 
 - 每次推送到 `main` 或提交 Pull Request，GitHub Actions 会运行 lint、单元测试、端到端测试，并打包 Windows 版作为构建产物
-- 发布新版本：修改 `package.json` 的 `version` 并更新 `CHANGELOG.md`，然后推送同名标签（如 `git tag v1.1.0 && git push origin v1.1.0`），会自动构建并发布到 GitHub Releases
+- **自动发布**：把 `package.json` 的 `version` 改成新版本号，并在 `CHANGELOG.md` 里加上同名段落（如 `## 1.2.0`），合并到 `main` 后会自动：
+  1. 检查该版本是否已发布（已有 `v1.2.0` 标签则跳过）
+  2. 运行 lint、单元测试、端到端测试
+  3. 在 Windows 上打包安装版与便携版
+  4. 创建 `v1.2.0` 标签和 GitHub Release，发布说明取自 `CHANGELOG.md` 中该版本的段落
+- 版本号带 `-`（如 `1.2.0-beta.1`）时发布为预发布版本
+- 也可以手动推送标签（`git tag v1.2.0 && git push origin v1.2.0`），或在 Actions 页面手动运行 Release 工作流
 
 ### 没有 NAS 时用模拟服务器调试
 

@@ -25,7 +25,7 @@
 
 ### 工程
 - ESLint、Vitest 单元测试、Playwright 驱动 Electron 的端到端测试
-- GitHub Actions：每次提交运行检查并打包 Windows 版；推送 `v*` 标签自动发布
+- GitHub Actions：每次提交运行检查并打包 Windows 版；版本号变更合并到 main 后自动测试、打包并发布 GitHub Release（发布说明取自本文件）
 - 补充 LICENSE
 
 ## 1.0.0
