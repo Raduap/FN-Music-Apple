@@ -68,6 +68,17 @@ npm run check        # lint + 单元测试 + 构建
 
 Linux 上没有显示器时，端到端测试用 `xvfb-run -a npm run test:e2e` 运行。
 
+### 宣传片
+
+`npm run promo` 会用展示数据（虚构的艺人、专辑与抽象画封面）启动模拟服务器和真实的应用，按分镜录下操作画面，再合成为 1080p 宣传片 `promo-build/fn-music-promo.mp4`：
+
+- `scripts/promo/capture.mjs`：录制素材（逐帧图片 + 光标轨迹）
+- `scripts/promo/compose.html` / `compose.js`：时间轴与画面（标题、窗口推拉、光标、转场），`renderAt(t)` 按时间逐帧绘制
+- `scripts/promo/music.mjs`：代码合成的配乐（90 BPM，场景切换落在小节线上）
+- `scripts/promo/render.mjs`：逐帧渲染并用 ffmpeg 编码；加 `--sheet` 只生成每秒一帧的预览图
+
+需要 ffmpeg 与 Chromium（`PLAYWRIGHT_CHROMIUM` 可指定路径）。Linux 无显示器时用 `xvfb-run -a -s "-screen 0 2400x1600x24" npm run promo`；中文字体建议安装 Noto Sans CJK。
+
 ### 持续集成与发布
 
 - 每次推送到 `main` 或提交 Pull Request，GitHub Actions 会运行 lint、单元测试、端到端测试，并打包 Windows 版作为构建产物
@@ -105,6 +116,7 @@ src/components/      播放栏、侧边栏、歌曲列表、卡片、菜单、�
 src/pages/           各页面
 dev/mock-server.js   API 模拟服务器
 test/                单元测试
+scripts/promo/       宣传片制作脚本
 e2e/                 端到端测试
 ```
 

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>飞牛音乐 · 宣传片</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: #0b0b0f; }
+  body { font-family: 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', sans-serif; color: #fff; -webkit-font-smoothing: antialiased; }
+  #stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; }
+  .layer { position: absolute; inset: 0; opacity: 0; will-change: opacity, transform; }
+
+  /* 背景：缓慢漂移的大光斑，颜色随场景变化 */
+  #bg { opacity: 1; background: #0d0b12; }
+  .blob { position: absolute; width: 1100px; height: 1100px; border-radius: 50%; filter: blur(140px); opacity: 0.55; }
+
+  /* 片头 / 片尾 */
+  .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+  .app-icon { width: 168px; height: 168px; border-radius: 38px; background: linear-gradient(160deg, #ff5b72, #fa233b 55%, #c90f2c);
+    display: grid; place-items: center; box-shadow: 0 30px 80px -20px rgba(250, 35, 59, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+  .app-icon svg { width: 96px; height: 96px; }
+  .brand { margin-top: 40px; font-size: 92px; font-weight: 700; letter-spacing: 0.04em; }
+  .tagline { margin-top: 18px; font-size: 34px; font-weight: 400; color: rgba(255, 255, 255, 0.72); letter-spacing: 0.06em; }
+  .mosaic { position: absolute; inset: -200px; display: grid; grid-template-columns: repeat(9, 260px); gap: 28px; transform: rotate(-12deg); opacity: 0.22; }
+  .mosaic img { width: 260px; height: 260px; border-radius: 18px; }
+  .vignette { position: absolute; inset: 0; background: radial-gradient(60% 60% at 50% 50%, rgba(11, 11, 15, 0.2), rgba(11, 11, 15, 0.92)); }
+
+  /* 演示场景：标题 + 应用窗口 */
+  .caption { position: absolute; left: 0; right: 0; top: 54px; text-align: center; }
+  .caption h1 { font-size: 56px; font-weight: 700; letter-spacing: 0.03em; }
+  .caption p { margin-top: 12px; font-size: 26px; color: rgba(255, 255, 255, 0.7); letter-spacing: 0.05em; }
+  .window { position: absolute; left: 270px; top: 210px; width: 1380px; height: 865px; border-radius: 14px; overflow: hidden;
+    box-shadow: 0 50px 120px -30px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.08); background: #fff; }
+  .content { position: absolute; left: 0; top: 0; width: 1380px; height: 865px; transform-origin: 0 0; }
+  .content img.frame { position: absolute; left: 0; top: 0; width: 1380px; height: 865px; }
+  .cursor { position: absolute; left: 0; top: 0; width: 30px; height: 30px; pointer-events: none; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35)); }
+  .ripple { position: absolute; width: 70px; height: 70px; margin: -35px 0 0 -35px; border-radius: 50%; border: 3px solid rgba(255, 255, 255, 0.95);
+    background: rgba(255, 255, 255, 0.18); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15); opacity: 0; }
+
+  /* 悬浮球：桌面 */
+  #desktop .wall { position: absolute; inset: -60px; filter: blur(30px) saturate(1.2);
+    background: #0b1f2a radial-gradient(60% 50% at 20% 25%, #2dd4bf 0, transparent 70%), radial-gradient(55% 45% at 80% 30%, #6366f1 0, transparent 70%), radial-gradient(70% 60% at 50% 90%, #0ea5e9 0, transparent 70%); }
+  .taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 64px; background: rgba(20, 24, 32, 0.72); backdrop-filter: blur(20px);
+    display: flex; justify-content: center; align-items: center; gap: 14px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+  .taskbar i { width: 40px; height: 40px; border-radius: 10px; background: rgba(255, 255, 255, 0.14); }
+  .taskbar i.fn { background: linear-gradient(160deg, #ff5b72, #e3112f); }
+  .tray { position: absolute; right: 22px; bottom: 0; height: 64px; display: flex; align-items: center; gap: 16px; font-size: 18px; color: rgba(255, 255, 255, 0.85); }
+  .ball-wrap { position: absolute; left: 880px; top: 470px; width: 960px; height: 270px; } /* 384×108 的窗口放大 2.5 倍 */
+  .ball-wrap img { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #desktop .caption { top: auto; left: 140px; right: auto; top: 400px; text-align: left; }
+  #desktop .caption h1 { font-size: 64px; }
+  #desktop .caption p { max-width: 620px; line-height: 1.6; }
+
+  /* 细节功能 */
+  #features h2 { position: absolute; top: 150px; left: 0; right: 0; text-align: center; font-size: 58px; font-weight: 700; letter-spacing: 0.03em; }
+  .cards { position: absolute; left: 230px; right: 230px; top: 320px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 34px; }
+  .card { height: 250px; border-radius: 26px; padding: 40px 40px; background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 30px 60px -30px rgba(0, 0, 0, 0.6); backdrop-filter: blur(20px); }
+  .card .ic { width: 64px; height: 64px; border-radius: 18px; display: grid; place-items: center; }
+  .card .ic svg { width: 34px; height: 34px; }
+  .card h3 { margin-top: 26px; font-size: 32px; font-weight: 700; }
+  .card p { margin-top: 10px; font-size: 21px; color: rgba(255, 255, 255, 0.62); line-height: 1.5; }
+
+  /* 片尾 */
+  .outro-meta { margin-top: 36px; display: flex; gap: 22px; }
+  .chip { padding: 12px 26px; border-radius: 999px; font-size: 24px; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.14); }
+  .url { margin-top: 34px; font-size: 30px; color: rgba(255, 255, 255, 0.85); letter-spacing: 0.02em; font-family: 'Noto Sans Mono CJK SC', monospace; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="bg" class="layer"><div class="blob" id="b1"></div><div class="blob" id="b2"></div><div class="blob" id="b3"></div></div>
+
+  <section id="intro" class="layer">
+    <div class="mosaic" id="mosaic"></div>
+    <div class="vignette"></div>
+    <div class="center">
+      <div class="app-icon" id="introIcon"></div>
+      <div class="brand" id="introBrand">飞牛音乐</div>
+      <div class="tagline" id="introTag">你的 NAS 音乐库，从未如此好听</div>
+    </div>
+  </section>
+
+  <section id="scene" class="layer">
+    <div class="caption"><h1 id="capTitle"></h1><p id="capSub"></p></div>
+    <div class="window" id="win">
+      <div class="content" id="content">
+        <img class="frame" id="frame" alt="">
+        <div class="ripple" id="ripple"></div>
+        <svg class="cursor" id="cursor" viewBox="0 0 24 24"><path d="M5 2.5 19.2 15.6l-6.4.6 3.9 7.4-3 1.5-3.8-7.5L5 22z" fill="#111" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg>
+      </div>
+    </div>
+  </section>
+
+  <section id="desktop" class="layer">
+    <div class="wall"></div>
+    <div class="caption"><h1>桌面悬浮球</h1><p>不打开窗口，也能看歌词、切歌、点喜欢。随手拖到屏幕任意位置。</p></div>
+    <div class="ball-wrap" id="ballWrap">
+      <img id="ballFrame" alt="">
+      <div class="ripple" id="ballRipple"></div>
+      <svg class="cursor" id="ballCursor" viewBox="0 0 24 24"><path d="M5 2.5 19.2 15.6l-6.4.6 3.9 7.4-3 1.5-3.8-7.5L5 22z" fill="#111" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg>
+    </div>
+    <div class="taskbar"><i></i><i></i><i class="fn"></i><i></i><i></i></div>
+    <div class="tray"><span>中</span><span id="clock">21:30</span></div>
+  </section>
+
+  <section id="features" class="layer">
+    <h2 id="featTitle">细节，都替你想好了</h2>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section id="outro" class="layer">
+    <div class="center">
+      <div class="app-icon" id="outroIcon"></div>
+      <div class="brand" id="outroBrand">飞牛音乐</div>
+      <div class="tagline">为 fnOS 打造的桌面音乐播放器</div>
+      <div class="outro-meta" id="outroMeta"><span class="chip">免费开源</span><span class="chip">Windows</span><span class="chip" id="ver">v1.2.0</span></div>
+      <div class="url" id="outroUrl">github.com/Raduap/FN-Music-Apple</div>
+    </div>
+  </section>
+</div>
+<script src="compose.js"></script>
+</body>
+</html>

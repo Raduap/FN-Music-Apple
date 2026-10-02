@@ -16,9 +16,16 @@ const hex = (n) => n.toString(16).padStart(8, '0')
 const hash = (s) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7)
 
 // ---------- 数据 ----------
-const ARTIST_NAMES = ['周杰伦', '林俊杰', '陈奕迅', '邓紫棋', '五月天', '李荣浩', '薛之谦', '王菲', 'Taylor Swift', 'Ed Sheeran', 'Adele', 'Coldplay']
-const WORDS = ['夜曲', '晴天', '稻香', '七里香', '星空', '海阔天空', '光年之外', '浮夸', '十年', '后来', '告白气球', '最长的电影', '彩虹', '背对背拥抱', '江南', '修炼爱情', '那些年', '小幸运', '成都', '平凡之路', 'Blank Space', 'Shape of You', 'Hello', 'Yellow', 'Fix You', 'Viva la Vida', 'Love Story', 'Someone Like You']
+// MOCK_SHOWCASE=1：展示用数据（虚构的艺人、专辑、歌词与抽象画封面），用于截图与宣传片
+const SHOWCASE = process.env.MOCK_SHOWCASE === '1'
+const ARTIST_NAMES = SHOWCASE
+  ? ['北岸', '白昼航线', '苏木', '鲸落', '南风知意', '纸月亮', '林间小站', 'Velvet Tide', 'Northbound', 'Aurora Lane', 'Glass Garden', 'Midnight Atlas']
+  : ['周杰伦', '林俊杰', '陈奕迅', '邓紫棋', '五月天', '李荣浩', '薛之谦', '王菲', 'Taylor Swift', 'Ed Sheeran', 'Adele', 'Coldplay']
+const WORDS = SHOWCASE
+  ? ['晚风邮差', '海边的信', '夏夜漫游', '一万光年', '旧城往事', '山间来信', '慢一点', '月光航线', '落日飞行', '人海', '晴朗', '城市边缘', '微光', '长街', '十七岁的雨', '雾中风景', '候鸟', '星河渡口', '午后三点', '小镇烟火', 'Blue Hour', 'Neon Rain', 'Weightless', 'Starlit Road', 'Low Tide', 'Afterglow', 'Paper Sky', 'Slow Motion City']
+  : ['夜曲', '晴天', '稻香', '七里香', '星空', '海阔天空', '光年之外', '浮夸', '十年', '后来', '告白气球', '最长的电影', '彩虹', '背对背拥抱', '江南', '修炼爱情', '那些年', '小幸运', '成都', '平凡之路', 'Blank Space', 'Shape of You', 'Hello', 'Yellow', 'Fix You', 'Viva la Vida', 'Love Story', 'Someone Like You']
 const GENRES = ['流行', '摇滚', '民谣', 'R&B', '电子', '古典']
+const SHOWCASE_ALBUMS = ['夏日来信', '慢速城市', '海风与灯塔', '远行', '夜航船', '小幸福', '云层之上', '日落公路', '回声', '温柔的光', '第七个夏天', '漫游者', '山与海', '星期天的猫', '午夜电台', '晨雾', 'Coastline', 'Neon Dreams', 'Golden Days', 'Wildflowers', 'Night Drive', 'Open Skies', 'Lighthouse', 'Paper Hearts', 'Northern Lights', 'Sunday Morning', 'Echoes', 'Daydream', 'Silver Lining', 'Long Way Home', 'Hideaway', 'Moonrise', 'Tidal', 'Small Hours', 'Horizon', 'Wanderlust']
 
 const artists = ARTIST_NAMES.map((name, i) => ({
   guid: 'ar' + i, name, coverId: 'artist_' + hex(i), albumCount: 0, trackCount: 0,
@@ -30,16 +37,16 @@ artists.forEach((ar, ai) => {
   const cnt = 2 + (ai % 3)
   for (let k = 0; k < cnt; k++) {
     const alb = {
-      guid: 'al' + albums.length, name: WORDS[(ai * 3 + k * 5) % WORDS.length] + (k ? ' ' + (k + 1) : ''),
+      guid: 'al' + albums.length, name: SHOWCASE ? SHOWCASE_ALBUMS[albums.length % SHOWCASE_ALBUMS.length] : WORDS[(ai * 3 + k * 5) % WORDS.length] + (k ? ' ' + (k + 1) : ''),
       // 最后一位艺人的第一张专辑没有封面（真实资料库里常见），用来测试无封面时的界面
-      coverId: ai === ARTIST_NAMES.length - 1 && k === 0 ? '' : 'album_' + hex(albums.length), artists: [{ guid: ar.guid, name: ar.name }],
+      coverId: !SHOWCASE && ai === ARTIST_NAMES.length - 1 && k === 0 ? '' : 'album_' + hex(albums.length), artists: [{ guid: ar.guid, name: ar.name }],
       releaseDate: `${2005 + ((ai + k * 3) % 19)}-0${1 + (k % 9)}-15`, trackCount: 0,
       newTrackAddedAt: 1700000000 + albums.length * 86400,
     }
     albums.push(alb)
     const tc = 8 + ((ai + k) % 5)
     for (let t = 0; t < tc; t++) {
-      const title = WORDS[(ai * 7 + k * 3 + t * 11) % WORDS.length] + (t >= 6 ? ' (Live)' : '')
+      const title = WORDS[(ai * 7 + k * 3 + t * 11) % WORDS.length] + (t >= 6 && !SHOWCASE ? ' (Live)' : '')
       tracks.push({
         guid: 'tr' + n++, title, coverId: alb.coverId,
         album: { guid: alb.guid, name: alb.name, coverId: alb.coverId },
@@ -57,8 +64,8 @@ artists.forEach((ar, ai) => {
 })
 // 与真实接口一致：歌单自带的 coverId 是无效的裸 GUID，客户端会改用第一首歌的封面
 const playlists = [
-  { guid: 'pl0', name: '通勤路上', trackCount: 0, coverId: crypto.randomBytes(16).toString('hex'), trackIds: tracks.slice(0, 12).map((t) => t.guid) },
-  { guid: 'pl1', name: '深夜单曲循环', trackCount: 0, coverId: crypto.randomBytes(16).toString('hex'), trackIds: tracks.slice(30, 40).map((t) => t.guid) },
+  { guid: 'pl0', name: SHOWCASE ? '周末的清晨' : '通勤路上', trackCount: 0, coverId: crypto.randomBytes(16).toString('hex'), trackIds: tracks.slice(0, 12).map((t) => t.guid) },
+  { guid: 'pl1', name: SHOWCASE ? '深夜的公路' : '深夜单曲循环', trackCount: 0, coverId: crypto.randomBytes(16).toString('hex'), trackIds: tracks.slice(30, 40).map((t) => t.guid) },
 ]
 const syncPl = () => playlists.forEach((p) => (p.trackCount = p.trackIds.length))
 syncPl()
@@ -77,7 +84,31 @@ const sortBy = (list, q) => {
 }
 const body = (req) => new Promise((r) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { try { r(JSON.parse(b || '{}')) } catch { r({}) } }) })
 
+// 展示用封面：按 ID 生成几种风格的抽象画（日落山峦、层叠波浪、光球、几何）
+function showcaseCover(id) {
+  const r = (k) => (hash(id + k) % 1000) / 1000
+  const h = Math.floor(r('h') * 360), h2 = (h + 30 + Math.floor(r('h2') * 80)) % 360
+  const style = hash(id) % 4
+  const bg = `<defs><linearGradient id="g" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stop-color="hsl(${h},65%,${style === 3 ? 18 : 62}%)"/><stop offset="1" stop-color="hsl(${h2},70%,${style === 3 ? 10 : 30}%)"/></linearGradient>
+<filter id="b"><feGaussianBlur stdDeviation="40"/></filter><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2"/><feColorMatrix values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.06 0"/></filter></defs>
+<rect width="600" height="600" fill="url(#g)"/>`
+  let art
+  if (style === 0) { // 日落与山峦
+    art = `<circle cx="${200 + r('x') * 200}" cy="${230 + r('y') * 60}" r="${80 + r('s') * 50}" fill="hsl(${(h + 20) % 360},95%,78%)" opacity=".95"/>` +
+      [0, 1, 2].map((i) => `<path d="M0 ${380 + i * 60} Q ${150 + r('m' + i) * 100} ${300 + i * 50 - r('p' + i) * 60} 300 ${370 + i * 55} T 600 ${360 + i * 60} V600 H0Z" fill="hsl(${h2},45%,${32 - i * 9}%)" opacity=".92"/>`).join('')
+  } else if (style === 1) { // 层叠波浪
+    art = [0, 1, 2, 3, 4].map((i) => `<path d="M0 ${200 + i * 80} C 150 ${150 + i * 80 + r('a' + i) * 90}, 400 ${260 + i * 80 - r('b' + i) * 90}, 600 ${190 + i * 80} V600 H0Z" fill="hsl(${(h + i * 12) % 360},70%,${70 - i * 11}%)" opacity=".55"/>`).join('')
+  } else if (style === 2) { // 光球
+    art = `<g filter="url(#b)"><circle cx="${150 + r('x') * 150}" cy="${170 + r('y') * 100}" r="170" fill="hsl(${(h + 180) % 360},90%,65%)"/><circle cx="${380 + r('x2') * 80}" cy="${380 + r('y2') * 80}" r="190" fill="hsl(${(h + 300) % 360},90%,60%)"/></g>`
+  } else { // 几何：同心圆环与网格
+    art = [0, 1, 2, 3, 4, 5].map((i) => `<circle cx="300" cy="300" r="${60 + i * 42}" fill="none" stroke="hsl(${(h + i * 25) % 360},85%,${60 + i * 4}%)" stroke-width="${10 - i}" opacity="${0.9 - i * 0.12}"/>`).join('') +
+      `<circle cx="300" cy="300" r="34" fill="hsl(${(h + 40) % 360},95%,70%)"/>`
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">${bg}${art}<rect width="600" height="600" filter="url(#n)"/></svg>`
+}
+
 function cover(id) {
+  if (SHOWCASE) return showcaseCover(id)
   const h = hash(id) % 360
   const label = id.startsWith('artist_') ? '♪' : String(parseInt(id.split('_')[1], 16) || 0)
   return `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
@@ -105,7 +136,12 @@ function wav(track) {
 }
 const wavCache = new Map()
 
+const SHOWCASE_LYRICS = ['晚风把街灯一盏盏点亮', '我把想说的话写进信里', '寄给明天的自己', '路过的云都慢下来', '像在等一首歌唱完', '你说远方并不远', '只要旋律还在耳边', '海浪替我们记住', '那年夏天的形状', '走过人海 也走过长街', '每一步都踩着节拍', '如果你也在听', '就让这一刻再长一点', '灯光落进眼睛里', '像星星落进海里', '我们终会在某个路口', '把故事轻轻讲完', '晚安 城市', '晚安 我的歌']
 function lyric(track) {
+  if (SHOWCASE) {
+    const dur = Math.min(90, track.duration / 1000), step = (dur - 4) / SHOWCASE_LYRICS.length
+    return SHOWCASE_LYRICS.map((l, i) => { const t = 2 + i * step; return `[${String(Math.floor(t / 60)).padStart(2, '0')}:${(t % 60).toFixed(2).padStart(5, '0')}]${l}` }).join('\n')
+  }
   const lines = ['(前奏)', `${track.title}`, `作词：${track.artists[0].name}`, '这是演示用的歌词', '用来展示逐行滚动', '当前行会高亮放大', '其余行淡出模糊', '就像 Apple Music 一样', '你可以点击任意一行跳转', '继续往下听', '让旋律慢慢流淌', '夜色温柔地落下', '星光洒在窗台上', '把所有的烦恼都忘掉', '只剩下音乐和你', '(间奏)', '再唱一遍', '这一刻刚刚好', '感谢你的聆听', '— 终 —']
   const dur = Math.min(90, track.duration / 1000)
   const step = (dur - 4) / lines.length
