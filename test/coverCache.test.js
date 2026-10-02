@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -65,7 +65,7 @@ describe('封面磁盘缓存', () => {
     const release = nas.hold()
     const c = createCoverCache({ dir, fetchUpstream: nas })
     const ps = [1, 2, 3].map(() => c.get('c'.repeat(40), 'u'))
-    await new Promise((r) => setTimeout(r, 10))
+    await vi.waitFor(() => expect(nas.calls).toHaveLength(1)) // 第一个请求已发出并被挂起
     release()
     const rs = await Promise.all(ps)
     expect(rs.every((r) => r.status === 200)).toBe(true)
@@ -77,9 +77,8 @@ describe('封面磁盘缓存', () => {
     const release = nas.hold()
     const c = createCoverCache({ dir, fetchUpstream: nas, concurrency: 2 })
     const ps = ['1', '2', '3', '4', '5'].map((n) => c.get(n.repeat(40), 'u' + n))
-    await new Promise((r) => setTimeout(r, 10))
+    await vi.waitFor(() => expect(c.stats()).toMatchObject({ active: 2, waiting: 3 }))
     expect(nas.calls).toHaveLength(2)
-    expect(c.stats()).toMatchObject({ active: 2, waiting: 3 })
     release()
     await Promise.all(ps)
     expect(nas.calls).toHaveLength(5)
@@ -122,9 +121,8 @@ describe('封面磁盘缓存', () => {
     const stale = await c.get('e'.repeat(40), 'u')
     expect(stale.source).toBe('disk')
     expect(stale.body.length).toBe(10)
-    await new Promise((r) => setTimeout(r, 20))
-    expect(nas.calls).toHaveLength(2)
-    expect((await c.get('e'.repeat(40), 'u')).body.length).toBe(20)
+    await vi.waitFor(async () => expect((await c.get('e'.repeat(40), 'u')).body.length).toBe(20))
+    expect(nas.calls).toHaveLength(2) // 后台只更新了一次
   })
 
   it('超过大小上限时淘汰最久未使用的封面', async () => {
@@ -136,7 +134,8 @@ describe('封面磁盘缓存', () => {
     await c.get('1'.repeat(40), 'a') // 读一次，1 比 2 更近使用
     await c.get('3'.repeat(40), 'c') // 总 30 > 25，淘汰到 22.5 以下：去掉最久未用的 2
     expect(c.stats()).toMatchObject({ count: 2, bytes: 20 })
-    expect(readdirSync(dir).sort()).toEqual(['1'.repeat(40) + '.png', '3'.repeat(40) + '.png'])
+    // 文件删除是异步的，不阻塞返回
+    await vi.waitFor(() => expect(readdirSync(dir).sort()).toEqual(['1'.repeat(40) + '.png', '3'.repeat(40) + '.png']))
   })
 
   it('文件被外部删除时重新请求', async () => {
@@ -153,9 +152,8 @@ describe('封面磁盘缓存', () => {
     writeFileSync(join(dir, 'a'.repeat(40) + '.png.123.tmp'), 'x')
     const c = createCoverCache({ dir, fetchUpstream: fakeNas() })
     await c.init()
-    await new Promise((r) => setTimeout(r, 10))
     expect(c.stats().count).toBe(0)
-    expect(readdirSync(dir)).toEqual(['readme.txt'])
+    await vi.waitFor(() => expect(readdirSync(dir)).toEqual(['readme.txt']))
   })
 
   it('clear 清空磁盘与“不存在”记录', async () => {
@@ -165,9 +163,8 @@ describe('封面磁盘缓存', () => {
     await c.get('a'.repeat(40), 'u')
     await c.get('b'.repeat(40), 'bad')
     await c.clear()
-    await new Promise((r) => setTimeout(r, 10))
     expect(c.stats()).toMatchObject({ count: 0, bytes: 0 })
-    expect(readdirSync(dir)).toEqual([])
+    await vi.waitFor(() => expect(readdirSync(dir)).toEqual([]))
     await c.get('b'.repeat(40), 'bad')
     expect(nas.calls.filter((u) => u === 'bad')).toHaveLength(2)
   })
