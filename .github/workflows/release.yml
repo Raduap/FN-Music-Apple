@@ -1,0 +1,32 @@
+name: Release
+
+# 推送 v* 标签（例如 git tag v1.1.0 && git push origin v1.1.0）时构建 Windows 安装版与便携版并发布到 GitHub Releases
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - name: 检查标签与 package.json 版本一致
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "标签 $GITHUB_REF_NAME 与 package.json 版本 $v 不一致"; exit 1; }
+      - run: npm run dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.exe
+          generate_release_notes: true

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
-import { useUI } from '../store'
+import { favoritesSettled, useUI } from '../store'
 import { useAsync } from '../lib'
 import { AlbumCard, ArtistCard, PlaylistCard } from '../components/Cards'
 import SongList from '../components/SongList'
@@ -106,11 +106,12 @@ export function Songs() {
 export function Favorites() {
   usePageTitle('喜欢的歌曲')
   const [state, setState] = useState({ items: null, error: null })
-  const load = () => api.favorites().then((items) => setState({ items, error: null })).catch((error) => setState({ items: null, error }))
+  // 先等进行中的“喜欢”请求写入服务器，再读取列表
+  const load = () => favoritesSettled().then(() => api.favorites()).then((items) => setState({ items, error: null })).catch((error) => setState({ items: null, error }))
   useEffect(() => { load() }, [])
   // 取消喜欢后从列表移除；新增喜欢则重新拉取
   useEffect(() => {
-    const h = (e) => (e.detail.favorite ? setTimeout(load, 400) : setState((s) => ({ ...s, items: s.items?.filter((x) => x.id !== e.detail.id) })))
+    const h = (e) => (e.detail.favorite ? load() : setState((s) => ({ ...s, items: s.items?.filter((x) => x.id !== e.detail.id) })))
     window.addEventListener('fn:favorite-changed', h)
     return () => window.removeEventListener('fn:favorite-changed', h)
   }, [])

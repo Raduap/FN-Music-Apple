@@ -14,6 +14,15 @@ audio.preload = 'auto'
 // 尚未加载音频（启动后恢复的队列）时记下的起始位置，真正开始播放时再跳转过去
 let pendingSeek = 0
 
+// 尚未完成的“喜欢”写请求。界面会先乐观更新，“喜欢的歌曲”页面读取列表前要等这些请求完成，否则会读到旧数据
+const favoriteWrites = new Set()
+function trackFavorite(p) {
+  favoriteWrites.add(p)
+  p.catch(() => {}).finally(() => favoriteWrites.delete(p))
+  return p
+}
+export const favoritesSettled = () => Promise.allSettled([...favoriteWrites])
+
 // 整理菜单项：去掉假值，合并连续分隔线，去掉首尾分隔线（子菜单同理）
 function tidyMenu(items) {
   const out = []
@@ -84,7 +93,7 @@ export const useUI = create((set, get) => ({
     const todo = songs.filter((s) => !s.favorite)
     if (!todo.length) return get().showToast('已在“喜欢的歌曲”中')
     try {
-      await Promise.all(todo.map((s) => api.setFavorite(s.id, true)))
+      await Promise.all(todo.map((s) => trackFavorite(api.setFavorite(s.id, true))))
       todo.forEach((s) => window.dispatchEvent(new CustomEvent('fn:favorite-changed', { detail: { id: s.id, favorite: true } })))
       get().showToast(`已将 ${todo.length} 首歌曲添加到“喜欢的歌曲”`)
     } catch (e) { get().showToast('操作失败：' + e.message) }
@@ -294,9 +303,10 @@ export const usePlayer = create((set, get) => ({
     const on = !song.favorite
     const patch = (list) => list.map((s) => (s.id === song.id ? { ...s, favorite: on } : s))
     set({ queue: patch(get().queue), original: patch(get().original) })
+    const req = trackFavorite(api.setFavorite(song.id, on))
     window.dispatchEvent(new CustomEvent('fn:favorite-changed', { detail: { id: song.id, favorite: on } }))
     try {
-      await api.setFavorite(song.id, on)
+      await req
       useUI.getState().showToast(on ? '已添加到“喜欢的歌曲”' : '已从“喜欢的歌曲”移除')
     } catch (e) {
       const undo = (list) => list.map((s) => (s.id === song.id ? { ...s, favorite: !on } : s))

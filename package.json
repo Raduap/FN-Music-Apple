@@ -1,6 +1,6 @@
 {
   "name": "fn-music-apple",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "飞牛音乐 Windows 桌面客户端 · Apple Music 风格",
   "main": "electron/main.js",
   "author": "FN Music",
@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:e2e": "vite build && node --test --test-concurrency=1 \"e2e/**/*.test.mjs\"",
     "check": "npm run lint && npm test && npm run build",
-    "dist": "vite build && electron-builder --win"
+    "dist": "vite build && electron-builder --win --publish never"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
