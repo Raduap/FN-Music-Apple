@@ -107,6 +107,24 @@ test('搜索', async () => {
   await win.locator('.artist-card, .card').first().waitFor()
 })
 
+test('切换页面后立刻搜索，输入不丢字；离开搜索页后清空搜索框', async () => {
+  // 回归：路由切换以 transition 提交，晚到的“清空搜索框”曾吞掉刚输入的字
+  const nav = win.getByRole('navigation', { name: '主导航' })
+  const input = win.locator('[data-search-input]')
+  for (let i = 0; i < 6; i++) {
+    const q = i % 2 ? '林俊杰' : '陈奕迅' // 每次搜不同的词：离开上一个搜索页时，新输入不能被“清空搜索框”吞掉
+    await nav.getByRole('link', { name: i % 2 ? '歌曲' : '专辑', exact: true }).click()
+    await win.keyboard.press('Control+F')
+    await win.keyboard.type(q)
+    assert.equal(await input.inputValue(), q, `第 ${i + 1} 次输入被清空`)
+    await win.getByRole('heading', { name: `“${q}”的搜索结果` }).waitFor()
+    assert.equal(await input.inputValue(), q, '跳到搜索页后应保留输入')
+  }
+  await nav.getByRole('link', { name: '主页', exact: true }).click()
+  await win.getByRole('heading', { name: '主页' }).waitFor()
+  await until(async () => (await input.inputValue()) === '', '离开搜索页后应清空搜索框')
+})
+
 test('重启后保持登录并恢复播放队列与位置', async () => {
   const bar = win.getByRole('contentinfo', { name: '播放器' })
   await bar.getByRole('slider', { name: '播放进度' }).focus()

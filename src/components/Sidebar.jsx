@@ -25,9 +25,16 @@ export default function Sidebar({ rail }) {
   }
 
   useEffect(() => () => clearTimeout(timer.current), [])
+  // 离开搜索页时清空搜索框。路由切换以 transition 方式提交，可能晚于用户开始打字，
+  // 所以只在搜索框里仍是刚才搜索的内容时清空；用户已经输入了新内容就保留，否则刚打的字会被吞掉
+  const prevLoc = useRef(location)
   useEffect(() => {
-    if (location.pathname !== '/search') setQ('')
-  }, [location.pathname])
+    const was = prevLoc.current
+    prevLoc.current = location
+    if (was.pathname !== '/search' || location.pathname === '/search') return
+    const searched = (new URLSearchParams(was.search).get('q') || '').trim()
+    setQ((cur) => (cur.trim() === searched ? '' : cur))
+  }, [location])
 
   const ui = useUI.getState
   const playlistMenu = (e, pl) => {
