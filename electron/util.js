@@ -49,4 +49,16 @@ function friendlyError(e) {
   return msg
 }
 
-module.exports = { sha256, md5, newDeviceId, normalizeBase, hostOf, signPayload, authx, friendlyError }
+// 按字符（而非 UTF-16 码元）截断，避免把 emoji 等切成半个
+function truncate(text, max) {
+  const chars = Array.from(String(text || ''))
+  return chars.length <= max ? chars.join('') : chars.slice(0, max - 1).join('') + '…'
+}
+
+// 托盘提示文字。Windows 限制最多 127 个字符
+function trayTooltip({ title, artist, playing } = {}) {
+  if (!title) return '飞牛音乐'
+  return truncate(`飞牛音乐\n${playing ? '' : '已暂停：'}${title}${artist ? ' — ' + artist : ''}`, 127)
+}
+
+module.exports = { sha256, md5, newDeviceId, normalizeBase, hostOf, signPayload, authx, friendlyError, truncate, trayTooltip }

@@ -37,10 +37,12 @@ export default function Sidebar({ rail }) {
     ])
   }
 
-  const userMenu = (e) => {
+  const userMenu = async (e) => {
     const r = e.currentTarget.getBoundingClientRect()
     const theme = ui().theme
     const motion = ui().motion
+    const tray = await window.fn.trayInfo?.().catch(() => null)
+    const setCloseToTray = (on) => window.fn.setPrefs({ closeToTray: on }).then(() => ui().showToast(on ? '关闭窗口后将停留在系统托盘' : '关闭窗口将退出应用'))
     ui().openMenu(rail ? r.right + 8 : r.left, rail ? r.bottom : r.top - 8, [
       { label: `${username} @ ${server.replace(/^https?:\/\//, '').replace(/\/music$/, '')}`, disabled: true },
       '-',
@@ -58,6 +60,13 @@ export default function Sidebar({ rail }) {
           { label: '开启', checked: motion === 'on', onClick: () => ui().setMotion('on') },
           { label: '跟随系统', checked: motion === 'system', onClick: () => ui().setMotion('system') },
           { label: '关闭', checked: motion === 'off', onClick: () => ui().setMotion('off') },
+        ],
+      },
+      tray?.available && {
+        label: '关闭窗口时',
+        children: [
+          { label: '最小化到托盘', checked: tray.closeToTray, onClick: () => setCloseToTray(true) },
+          { label: '退出应用', checked: !tray.closeToTray, onClick: () => setCloseToTray(false) },
         ],
       },
       { label: '刷新资料库', onClick: () => { clearCache(); ui().loadPlaylists(); window.dispatchEvent(new CustomEvent('fn:refresh')) } },
