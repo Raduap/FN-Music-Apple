@@ -7,8 +7,7 @@ const PAD = 24 // 窗口四周留给阴影的边距（阴影不能超出窗口�
 const PANEL = 336 // 展开后胶囊的宽度（含球）
 const WIN_W = PANEL + PAD * 2
 const WIN_H = BALL + PAD * 2
-const SNAP = 56 // 距离屏幕边缘多近时吸附
-const EDGE = 10 // 吸附后与屏幕边缘的距离
+const EDGE = 4 // 与屏幕边缘至少留出的距离
 
 /** 球心在工作区右半边时面板向左展开 */
 function anchorFor(ball, workArea) {
@@ -21,20 +20,16 @@ function windowBounds(ball, anchor) {
   return { x: Math.round(x), y: Math.round(ball.y - PAD), width: WIN_W, height: WIN_H }
 }
 
-/** 限制在工作区内，靠近左右边缘时吸附 */
-function snapBall(ball, workArea) {
+/** 自由放置：松手的位置就是最终位置，只保证整颗球留在工作区内（不会被拖到屏幕外或任务栏下面） */
+function clampBall(ball, workArea) {
   const minX = workArea.x + EDGE, maxX = workArea.x + workArea.width - BALL - EDGE
   const minY = workArea.y + EDGE, maxY = workArea.y + workArea.height - BALL - EDGE
-  let x = Math.min(maxX, Math.max(minX, ball.x))
-  const y = Math.min(maxY, Math.max(minY, ball.y))
-  if (x - workArea.x < SNAP) x = minX
-  else if (workArea.x + workArea.width - (x + BALL) < SNAP) x = maxX
-  return { x: Math.round(x), y: Math.round(y) }
+  return { x: Math.round(Math.min(maxX, Math.max(minX, ball.x))), y: Math.round(Math.min(maxY, Math.max(minY, ball.y))) }
 }
 
 /** 默认位置：主屏幕右侧、略低于中线 */
 function defaultBall(workArea) {
-  return { x: workArea.x + workArea.width - BALL - EDGE, y: Math.round(workArea.y + workArea.height * 0.62) }
+  return { x: workArea.x + workArea.width - BALL - 16, y: Math.round(workArea.y + workArea.height * 0.62) }
 }
 
 /** 保存的位置是否仍在某个屏幕的工作区里（显示器可能已拔掉或分辨率变了） */
@@ -43,4 +38,4 @@ function isOnScreen(ball, workAreas) {
   return workAreas.some((w) => cx >= w.x && cx <= w.x + w.width && cy >= w.y && cy <= w.y + w.height)
 }
 
-module.exports = { BALL, PAD, PANEL, WIN_W, WIN_H, anchorFor, windowBounds, snapBall, defaultBall, isOnScreen }
+module.exports = { BALL, PAD, PANEL, WIN_W, WIN_H, EDGE, anchorFor, windowBounds, clampBall, defaultBall, isOnScreen }
