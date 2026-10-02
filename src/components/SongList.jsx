@@ -129,7 +129,7 @@ const Row = memo(function Row({ song, index, top, variant, albumArtist, isCurren
       <div className="c-title">
         {variant !== 'album' && (
           <div className="row-cover">
-            <Cover coverId={song.coverId} size={38} />
+            <Cover coverId={song.coverId} size={38} px={160} />
             <div className={`row-cover-overlay ${isCurrent ? 'show' : ''}`}>
               {isCurrent && <span className="eq-wrap"><Icon.Bars playing={playing} /></span>}
               {playBtn}

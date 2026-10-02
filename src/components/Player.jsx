@@ -137,7 +137,7 @@ export function TopBar() {
         {song ? (
           <>
             <button className="loz-cover" onClick={() => setFull(true)} title="打开全屏播放器">
-              <Cover coverId={song.coverId} size={44} />
+              <Cover coverId={song.coverId} size={44} px={160} />
               <span className="loz-expand"><Icon.Expand size={16} /></span>
             </button>
             <div className="loz-info">
@@ -305,7 +305,7 @@ function QueueItem({ song, active, playing, onPlay, onRemove, onMenu }) {
   return (
     <div className={`queue-item ${active ? 'active' : ''}`} onDoubleClick={onPlay} onContextMenu={onMenu}>
       <div className="qi-cover">
-        <Cover coverId={song.coverId} size={40} />
+        <Cover coverId={song.coverId} size={40} px={160} />
         {active ? <span className="qi-eq"><Icon.Bars playing={playing} /></span> : (
           <button className="qi-play" onClick={onPlay}><Icon.Play size={14} /></button>
         )}
@@ -366,8 +366,8 @@ export function FullPlayer() {
   return (
     <div className={`fullplayer ${open ? 'open' : ''}`} style={{ '--np-r': r, '--np-g': g, '--np-b': b }}>
       <div className="fp-bg">
-        {song?.coverId && <Cover coverId={song.coverId} className="fp-bg-img a" />}
-        {song?.coverId && <Cover coverId={song.coverId} className="fp-bg-img b" />}
+        {song?.coverId && <Cover coverId={song.coverId} px={160} className="fp-bg-img a" />}
+        {song?.coverId && <Cover coverId={song.coverId} px={160} className="fp-bg-img b" />}
         <div className="fp-bg-tint" />
       </div>
       <div className="fp-top">
@@ -377,7 +377,7 @@ export function FullPlayer() {
         <div className={`fp-main ${tab ? 'with-side' : ''}`}>
           <div className="fp-left">
             <div className={`fp-art ${playing ? 'playing' : ''}`}>
-              <Cover coverId={song.coverId} />
+              <Cover coverId={song.coverId} px={1024} />
             </div>
             <div className="fp-meta">
               <div className="fp-meta-text">

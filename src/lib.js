@@ -64,7 +64,7 @@ export function useCoverColor(coverId) {
         if (!dead) setColor(col)
       } catch {}
     }
-    img.src = coverUrl(coverId)
+    img.src = coverUrl(coverId, 160)
     return () => { dead = true }
   }, [coverId])
   return color

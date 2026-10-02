@@ -147,7 +147,7 @@ export function PlaylistDetail() {
     }
   }
 
-  const coverId = pl?.coverId || songs?.[0]?.coverId
+  const coverId = songs?.find((x) => x.coverId)?.coverId
   const covers = [...new Set((songs || []).map((s) => s.coverId).filter(Boolean))].slice(0, 4)
 
   return (

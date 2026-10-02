@@ -247,6 +247,9 @@ h1, h2 { margin: 0; }
 .cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.3s; }
 .cover img.loaded { opacity: 1; }
 .cover-fallback { position: absolute; inset: 0; display: grid; place-items: center; color: var(--fallback-icon); }
+.cover-skeleton { position: absolute; inset: 0; background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.35) 50%, transparent 80%) 0 0 / 200% 100%, var(--fallback); animation: shimmer 1.4s linear infinite; }
+@media (prefers-color-scheme: dark) { .cover-skeleton { background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.07) 50%, transparent 80%) 0 0 / 200% 100%, var(--fallback); } }
+@keyframes shimmer { from { background-position: 200% 0, 0 0; } to { background-position: -100% 0, 0 0; } }
 
 /* ============ 卡片 / 货架 / 网格 ============ */
 .card { min-width: 0; content-visibility: auto; contain-intrinsic-size: 180px 240px; }

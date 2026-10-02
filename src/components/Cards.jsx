@@ -84,10 +84,16 @@ export function ArtistCard({ artist }) {
 
 export function PlaylistCard({ playlist }) {
   const navigate = useNavigate()
+  const [coverId, setCoverId] = useState(playlist.coverId)
+  useEffect(() => {
+    let dead = false
+    if (!playlist.coverId) api.playlistCover(playlist.id).then((c) => !dead && setCoverId(c)).catch(() => {})
+    return () => { dead = true }
+  }, [playlist.id, playlist.coverId])
   return (
     <div className="card" onClick={() => navigate(`/playlist/${playlist.id}`)}>
       <div className="card-art">
-        <Cover coverId={playlist.coverId} icon="note" />
+        <Cover coverId={coverId} icon="note" />
         <div className="card-hover">
           <button
             className="card-play"
