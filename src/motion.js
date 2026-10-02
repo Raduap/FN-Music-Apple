@@ -36,10 +36,24 @@ function toggleFull(open) {
       root.classList.remove('vt-old-bar', 'vt-old-full')
       root.classList.add(open ? 'vt-new-full' : 'vt-new-bar')
     })
-    t.finished.catch(() => {}).finally(clear)
+    t.finished.catch(() => {}).finally(() => {
+      clear()
+      settleEntranceAnimations()
+    })
   } catch {
     clear()
     ui.setFullPlayer(open)
+  }
+}
+
+// 过渡期间全屏播放页内的动画是关闭的（否则新快照会截到动画第一帧：封面透明）。
+// 过渡结束、恢复动画时，浏览器会把封面、歌名等一次性的入场动画从头播一遍——封面先消失再淡入，看起来“闪一下”。
+// 这里把这些有限次的动画直接跳到结束状态；循环动画（音柱、旋转等）不受影响
+function settleEntranceAnimations() {
+  const el = document.querySelector('.fullplayer')
+  if (!el?.getAnimations) return
+  for (const a of el.getAnimations({ subtree: true })) {
+    if (a.effect?.getTiming?.().iterations !== Infinity) a.finish()
   }
 }
 
