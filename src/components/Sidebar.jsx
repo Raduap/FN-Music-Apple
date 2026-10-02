@@ -47,7 +47,6 @@ export default function Sidebar({ rail }) {
 
   const userMenu = async (e) => {
     const r = e.currentTarget.getBoundingClientRect()
-    const theme = ui().theme
     const motion = ui().motion
     const [tray, coverCache] = await Promise.all([window.fn.trayInfo?.().catch(() => null), window.fn.coverCacheStats?.().catch(() => null)])
     const setBallMode = (mode) => window.fn.setPrefs({ ballMode: mode }).then(() => ui().showToast({ always: '悬浮球将始终显示', hidden: '主窗口隐藏或最小化时显示悬浮球', off: '已关闭悬浮球' }[mode]))
@@ -55,14 +54,7 @@ export default function Sidebar({ rail }) {
     ui().openMenu(rail ? r.right + 8 : r.left, rail ? r.bottom : r.top - 8, [
       { label: `${username} @ ${server.replace(/^https?:\/\//, '').replace(/\/music$/, '')}`, disabled: true },
       '-',
-      {
-        label: '外观',
-        children: [
-          { label: '跟随系统', checked: theme === 'system', onClick: () => ui().setTheme('system') },
-          { label: '浅色', checked: theme === 'light', onClick: () => ui().setTheme('light') },
-          { label: '深色', checked: theme === 'dark', onClick: () => ui().setTheme('dark') },
-        ],
-      },
+      { label: '外观、主题色与壁纸…', onClick: () => ui().openAppearance() },
       {
         label: '动画效果',
         children: [

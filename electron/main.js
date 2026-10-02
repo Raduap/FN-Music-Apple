@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, net, session, safeStorage, nativeTheme, shell, nativeImage } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, net, session, safeStorage, nativeTheme, shell, nativeImage, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { sha256, newDeviceId, normalizeBase, hostOf, authx, friendlyError } = require('./util')
@@ -334,6 +334,34 @@ function relogin() {
   return reloginInFlight
 }
 
+// ---------- 自定义壁纸 ----------
+// 选中的图片复制到 userData/wallpaper/，原图被移动或删除也不影响；渲染进程通过 IPC 取回字节生成 blob URL
+const WALLPAPER_TYPES = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', avif: 'image/avif' }
+const WALLPAPER_MAX = 40 * 1024 * 1024
+const wallpaperDir = () => path.join(app.getPath('userData'), 'wallpaper')
+function wallpaperFile() {
+  try {
+    const name = fs.readdirSync(wallpaperDir()).find((f) => /^wallpaper\.\w+$/.test(f))
+    return name ? path.join(wallpaperDir(), name) : null
+  } catch { return null }
+}
+async function chooseWallpaper(win) {
+  const r = await dialog.showOpenDialog(win, {
+    title: '选择壁纸',
+    properties: ['openFile'],
+    filters: [{ name: '图片', extensions: Object.keys(WALLPAPER_TYPES) }],
+  })
+  if (r.canceled || !r.filePaths[0]) return { ok: false, cancelled: true }
+  const src = r.filePaths[0]
+  const ext = path.extname(src).slice(1).toLowerCase()
+  if (!WALLPAPER_TYPES[ext]) return { ok: false, error: '不支持的图片格式' }
+  if (fs.statSync(src).size > WALLPAPER_MAX) return { ok: false, error: '图片太大（超过 40 MB）' }
+  fs.rmSync(wallpaperDir(), { recursive: true, force: true })
+  fs.mkdirSync(wallpaperDir(), { recursive: true })
+  fs.copyFileSync(src, path.join(wallpaperDir(), `wallpaper.${ext}`))
+  return { ok: true }
+}
+
 // ---------- 封面磁盘缓存 ----------
 let covers = null
 const signedGet = (url) => {
@@ -455,6 +483,13 @@ function registerIpc() {
 
   ipcMain.handle('covers:stats', () => covers?.init().then(() => covers.stats()) ?? { count: 0, bytes: 0 })
   ipcMain.handle('covers:clear', async () => { await covers?.clear(); return true })
+  ipcMain.handle('wallpaper:choose', (e) => chooseWallpaper(BrowserWindow.fromWebContents(e.sender)).catch((err) => ({ ok: false, error: err.message })))
+  ipcMain.handle('wallpaper:get', () => {
+    const f = wallpaperFile()
+    if (!f) return null
+    try { return { data: fs.readFileSync(f), type: WALLPAPER_TYPES[path.extname(f).slice(1).toLowerCase()] } } catch { return null }
+  })
+  ipcMain.handle('wallpaper:clear', () => { fs.rmSync(wallpaperDir(), { recursive: true, force: true }); return true })
   ipcMain.handle('app:info', () => ({ version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }))
   ipcMain.handle('prefs:get', () => readPrefs())
   ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); tray?.refresh(); syncBall(); return true })

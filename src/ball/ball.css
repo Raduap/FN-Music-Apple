@@ -158,7 +158,15 @@ button:focus { outline: none; }
   background: var(--surface);
   box-shadow: inset 0 0.5px 1.5px rgba(0, 0, 0, 0.35);
 }
-.disc.idle { background: linear-gradient(180deg, #ff5b70, #e3112f); color: #fff; animation: none; }
+.disc.idle { background: linear-gradient(180deg, var(--brand-1, #ff5b70), var(--brand-2, #e3112f)); color: #fff; animation: none; }
+
+/* 跟随主窗口的主题色：喜欢按钮、未播放时的圆球 */
+.stage[data-palette='green'] { --accent: #0f7a5a; --brand-1: #34b386; --brand-2: #0f7a5a; }
+.stage[data-palette='blue'] { --accent: #0a66d8; --brand-1: #4ea2ff; --brand-2: #0a66d8; }
+@media (prefers-color-scheme: dark) {
+  .stage[data-palette='green'] { --accent: #3cc490; }
+  .stage[data-palette='blue'] { --accent: #4a9dff; }
+}
 .disc.idle::before, .disc.idle::after { display: none; }
 
 /* ---------- 展开后的内容 ---------- */

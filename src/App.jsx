@@ -5,6 +5,7 @@ import { useViewport } from './lib'
 import Sidebar from './components/Sidebar'
 import { PlayerBar, SidePanel, FullPlayer } from './components/Player'
 import { ContextMenu, Dialog, ErrorBoundary, ScrollCtx, Spinner, Toast } from './components/common'
+import { AppearancePanel, Wallpaper, useActiveWallpaper } from './components/Appearance'
 import * as Icon from './icons'
 import Login from './pages/Login'
 import Home from './pages/Home'
@@ -187,6 +188,8 @@ function Shell() {
   useEffect(() => { useUI.setState({ rail }) }, [rail])
   useEffect(() => { restorePlayer() }, [])
   return (
+    <>
+    <Wallpaper />
     <div className={`app ${rail ? 'rail' : ''}`}>
       <Sidebar rail={rail} />
       <div className="main-col">
@@ -199,12 +202,15 @@ function Shell() {
       <PlayerBar />
       <FullPlayer />
     </div>
+    <AppearancePanel />
+    </>
   )
 }
 
 export default function App() {
   const status = useAuth((s) => s.status)
   const restore = useAuth((s) => s.restore)
+  const wallpaper = useActiveWallpaper()
   useThemeSync()
 
   useEffect(() => {
@@ -216,7 +222,7 @@ export default function App() {
 
   return (
     <HashRouter>
-      <div className={`root platform-${window.fn?.platform}`}>
+      <div className={`root platform-${window.fn?.platform} ${status === 'in' && wallpaper.on ? 'wp' : ''}`} style={status === 'in' ? wallpaper.vars || undefined : undefined}>
         {status === 'loading' && <div className="boot"><Spinner size={32} /></div>}
         {status === 'out' && <Login />}
         {status === 'in' && <Shell />}

@@ -173,6 +173,53 @@ test('封面磁盘缓存：重启后不再向 NAS 请求已显示过的封面', 
   await bar.getByRole('button', { name: '暂停', exact: true }).waitFor()
 })
 
+test('外观：切换主题色与壁纸（含自选图片），重启后保持', async () => {
+  const cssVar = (name) => win.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim(), name)
+  const openPanel = async () => {
+    await win.getByRole('button', { name: '账户菜单' }).click()
+    await win.getByText('外观、主题色与壁纸…').click()
+    return win.getByRole('dialog', { name: '外观' })
+  }
+  // 文件对话框无法自动操作，用桩代替：选中应用图标作为壁纸
+  const stubDialog = () => app.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] }) }, join(root, 'build/icon.png'))
+
+  let panel = await openPanel()
+  await panel.getByRole('radio', { name: '墨绿' }).click()
+  assert.equal(await win.evaluate(() => document.documentElement.dataset.palette), 'green')
+  assert.equal(await cssVar('--accent'), '#0f7a5a')
+
+  await panel.getByRole('radio', { name: '极光' }).click()
+  await win.locator('.wallpaper.wp-aurora').waitFor({ state: 'attached' })
+  assert.ok(await win.locator('.root.wp').count(), '有壁纸时界面应切换为半透明')
+
+  await stubDialog()
+  await panel.getByRole('radio', { name: '选择图片…' }).click()
+  await until(async () => /^url\("blob:/.test(await win.locator('.wallpaper').evaluate((el) => el.style.backgroundImage)), '应显示自选图片壁纸')
+  await panel.getByRole('radio', { name: '自选图片' }).waitFor()
+  await win.keyboard.press('Escape')
+  await panel.waitFor({ state: 'detached' })
+
+  // 重启后主题色与自选壁纸都还在
+  await app.close()
+  await launch()
+  await win.getByRole('contentinfo', { name: '播放器' }).waitFor()
+  assert.equal(await win.evaluate(() => document.documentElement.dataset.palette), 'green')
+  await until(async () => /^url\("blob:/.test((await win.locator('.wallpaper').evaluate((el) => el.style.backgroundImage).catch(() => '')) || ''), '重启后应保留自选壁纸')
+
+  // 恢复默认，并移除自选图片
+  panel = await openPanel()
+  await panel.getByRole('button', { name: '移除自选图片' }).click()
+  await win.locator('.wallpaper').waitFor({ state: 'detached' })
+  await panel.getByRole('radio', { name: '经典红' }).click()
+  assert.equal(await cssVar('--accent'), '#fa233b')
+  await panel.getByRole('button', { name: '完成' }).click()
+
+  // 恢复播放，供后面的测试使用
+  const bar = win.getByRole('contentinfo', { name: '播放器' })
+  await bar.getByRole('button', { name: '播放', exact: true }).click()
+  await bar.getByRole('button', { name: '暂停', exact: true }).waitFor()
+})
+
 test('悬浮球：显示当前歌曲，并能控制播放', async (t) => {
   const bar = win.getByRole('contentinfo', { name: '播放器' })
   const title = await bar.locator('.pb-title').innerText()
