@@ -7,6 +7,7 @@ const PORT = process.env.PORT || 5666
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex')
 const USER = { username: 'demo', password: sha('demo') }
 const TOKEN = crypto.randomBytes(16).toString('hex')
+const codes = new Set()
 
 const hash = (s) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7)
 
@@ -116,8 +117,39 @@ const server = http.createServer(async (req, res) => {
   const p = u.pathname.replace(/^\/music/, ''), q = u.searchParams
   const json = (o, code = 200) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(o)) }
 
+  // ---- 模拟 fnOS 官方登录页（OAuth）----
+  if (u.pathname === '/signin') {
+    const redirect = q.get('redirect_uri') || ''
+    // 已登录过 fnOS（有会话 Cookie）时直接带授权码跳回，用于测试静默续期
+    if ((req.headers.cookie || '').includes('fnos_session=1')) {
+      const code = crypto.randomBytes(8).toString('hex'); codes.add(code)
+      res.writeHead(302, { location: redirect + '?code=' + code }); return res.end()
+    }
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    return res.end(`<!doctype html><meta charset="utf-8"><title>fnOS</title><body style="font-family:sans-serif;display:grid;place-items:center;height:90vh">
+<form action="/signin/submit" method="post"><h2>fnOS 登录（模拟）</h2><input type="hidden" name="r" value="${redirect.replace(/"/g, '')}">
+<p><input name="u" placeholder="用户名"></p><p><input name="p" type="password" placeholder="密码"></p><button id="ok">登录</button></form>`)
+  }
+  if (u.pathname === '/signin/submit' && req.method === 'POST') {
+    let raw = ''; for await (const c of req) raw += c
+    const f = new URLSearchParams(raw), code = crypto.randomBytes(8).toString('hex'); codes.add(code)
+    // 与真实 fnOS 登录页一致：先写入会话，再由页面脚本跳转回调地址
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'set-cookie': 'fnos_session=1; Path=/; Max-Age=2592000' })
+    return res.end(`<!doctype html><script>location.replace(${JSON.stringify(f.get('r') + '?code=' + code)})</script>`)
+  }
+  if (p === '/api/v1/sys/config') return json(ok({ nasOAuth: { clientId: 'MOCKCLIENT' }, serverName: 'MOCK-NAS', serverVersion: '1.0.10' }))
+  if (p === '/api/v1/initialization/state') return json(ok({ initialized: true }))
+  if (p === '/api/v1/user/auth-login' && req.method === 'POST') {
+    const b = await body(req)
+    if (!codes.delete(b.code)) return json({ code: 120002, msg: 'invalid code' })
+    return json(ok({ userToken: TOKEN, user: { username: 'nas-admin' } }))
+  }
+  if (p === '/api/v1/user/logout') return json(ok({}))
+
   if (p === '/api/v1/user/password-login' && req.method === 'POST') {
     const b = await body(req)
+    // 真实 NAS 上用 fnOS 系统账号走密码登录会返回 HTTP 500
+    if (b.username === 'admin') { res.writeHead(500, { 'content-type': 'text/plain' }); return res.end('Internal Server Error') }
     if (b.username === USER.username && b.password === USER.password) return json(ok({ userToken: TOKEN, deviceId: b.deviceId }))
     return json({ code: 10001, msg: '用户名或密码错误' })
   }

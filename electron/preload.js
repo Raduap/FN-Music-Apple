@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('fn', {
   platform: process.platform,
   restore: () => ipcRenderer.invoke('auth:restore'),
+  serverInfo: (server) => ipcRenderer.invoke('auth:server-info', { server }),
   login: (payload) => ipcRenderer.invoke('auth:login', payload),
   relogin: () => ipcRenderer.invoke('auth:relogin'),
   logout: () => ipcRenderer.invoke('auth:logout'),
