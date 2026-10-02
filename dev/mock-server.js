@@ -31,7 +31,8 @@ artists.forEach((ar, ai) => {
   for (let k = 0; k < cnt; k++) {
     const alb = {
       guid: 'al' + albums.length, name: WORDS[(ai * 3 + k * 5) % WORDS.length] + (k ? ' ' + (k + 1) : ''),
-      coverId: 'album_' + hex(albums.length), artists: [{ guid: ar.guid, name: ar.name }],
+      // 最后一位艺人的第一张专辑没有封面（真实资料库里常见），用来测试无封面时的界面
+      coverId: ai === ARTIST_NAMES.length - 1 && k === 0 ? '' : 'album_' + hex(albums.length), artists: [{ guid: ar.guid, name: ar.name }],
       releaseDate: `${2005 + ((ai + k * 3) % 19)}-0${1 + (k % 9)}-15`, trackCount: 0,
       newTrackAddedAt: 1700000000 + albums.length * 86400,
     }

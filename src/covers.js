@@ -203,11 +203,12 @@ export function useCover(ref, coverId, size) {
   if (!coverId) return { status: 'none', url: '', placeholder: '' }
   const p = plan.current
   if (p) return { status: p.target.status, url: p.target.status === 'done' ? p.target.url : '', placeholder: p.ph?.url || '' }
-  // 尚未进入可视范围：内存里已有就直接显示（例如返回上一页），避免闪一下骨架屏
+  // 尚未进入可视范围（首次渲染）：内存里已有就直接显示（例如返回上一页），只有较小尺寸时先拿来垫底。
+  // 打开全屏播放页时，过渡动画在首次渲染就截图；这里若显示骨架屏，展开动画会闪一下
   const ready = doneAtLeast(coverId, size)
   if (ready) return { status: 'done', url: ready.url, placeholder: '' }
   const e = entries.get(`${coverId}@${size || ''}`)
-  return { status: e?.status === 'missing' ? 'missing' : 'idle', url: '', placeholder: '' }
+  return { status: e?.status === 'missing' ? 'missing' : 'idle', url: '', placeholder: doneSmaller(coverId, size)?.url || '' }
 }
 
 // 刷新资料库时调用：清空内存缓存（磁盘缓存由主进程处理）

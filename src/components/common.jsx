@@ -27,7 +27,7 @@ export function Cover({ coverId, size, px = 600, round, className = '', alt = ''
     <div ref={ref} className={`cover ${round ? 'round' : ''} ${className}`} data-cover={coverId ? `${coverId}@${px || ''}` : undefined} style={size ? { width: size, height: size } : undefined}>
       {failed && !placeholder && (
         <div className="cover-fallback">
-          <Fallback size={size ? Math.max(14, Math.round(size * 0.4)) : 44} />
+          <Fallback />
         </div>
       )}
       {!failed && !shown && !placeholder && <div className="cover-skeleton" />}
