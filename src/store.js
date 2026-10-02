@@ -398,6 +398,23 @@ if ('mediaSession' in navigator) {
   h('nexttrack', () => usePlayer.getState().next())
   h('seekto', (d) => usePlayer.getState().seek(d.seekTime))
 }
+// ---------- 系统托盘：同步当前歌曲，并接收托盘菜单里的播放控制 ----------
+let trayKey = ''
+usePlayer.subscribe((s) => {
+  const song = s.queue[s.index]
+  const state = { title: song?.title || '', artist: song?.artist || '', playing: s.playing }
+  const key = JSON.stringify(state)
+  if (key === trayKey) return
+  trayKey = key
+  window.fn?.setPlayerState?.(state)
+})
+window.fn?.onPlayerCommand?.((cmd) => {
+  const p = usePlayer.getState()
+  if (cmd === 'toggle') p.toggle()
+  else if (cmd === 'next') p.next()
+  else if (cmd === 'prev') p.prev()
+})
+
 audio.addEventListener('play', () => { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing' })
 audio.addEventListener('pause', () => { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused' })
 

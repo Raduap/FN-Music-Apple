@@ -105,3 +105,33 @@ test('重启后保持登录并恢复播放队列与位置', async () => {
   await bar2.getByRole('button', { name: '播放', exact: true }).click()
   await bar2.getByRole('button', { name: '暂停', exact: true }).waitFor()
 })
+
+test('关闭窗口后停留在托盘，音乐继续播放', async () => {
+  const info = await win.evaluate(() => window.fn.trayInfo())
+  assert.ok(info.available, '应已创建托盘图标')
+  await win.evaluate(() => window.fn.setPrefs({ closeToTray: true }))
+  await win.waitForFunction(() => !document.title.startsWith('⏸') && document.title !== '飞牛音乐')
+
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
+  const visible = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isVisible()))
+  assert.deepEqual(visible, [false], '窗口应隐藏而不是关闭')
+  // 窗口隐藏后 requestAnimationFrame 不再触发，waitForFunction 必须改用定时轮询
+  const poll = { polling: 250 }
+  const before = await win.evaluate(() => document.querySelector('.pb-time').textContent)
+  await win.waitForFunction((t) => document.querySelector('.pb-time').textContent !== t, before, poll)
+
+  // 托盘菜单的“暂停”：主进程向渲染进程发送播放控制命令
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('player:command', 'toggle'))
+  await win.waitForFunction(() => document.title.startsWith('⏸'), null, poll)
+
+  // 再次启动应用（第二个实例）时调出窗口
+  await app.evaluate(({ app }) => app.emit('second-instance'))
+  assert.deepEqual(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isVisible())), [true])
+})
+
+test('关闭“最小化到托盘”后，关闭窗口即退出', async () => {
+  await win.evaluate(() => window.fn.setPrefs({ closeToTray: false }))
+  const exited = new Promise((resolve) => app.process().once('exit', resolve))
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
+  await exited
+})

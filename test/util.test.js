@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import util from '../electron/util.js'
 
-const { normalizeBase, hostOf, authx, signPayload, md5, sha256, friendlyError } = util
+const { normalizeBase, hostOf, authx, signPayload, md5, sha256, friendlyError, truncate, trayTooltip } = util
 
 describe('normalizeBase', () => {
   it.each([
@@ -50,5 +50,21 @@ describe('其他', () => {
     expect(friendlyError(new Error('net::ERR_CONNECTION_REFUSED'))).toBe('无法连接到服务器，请检查地址与网络')
     expect(friendlyError(new Error('net::ERR_CERT_AUTHORITY_INVALID'))).toBe('HTTPS 证书不受信任')
     expect(friendlyError(new Error('其他错误'))).toBe('其他错误')
+  })
+})
+
+describe('托盘文字', () => {
+  it('truncate 按字符截断并加省略号', () => {
+    expect(truncate('abc', 5)).toBe('abc')
+    expect(truncate('abcdef', 5)).toBe('abcd…')
+    expect(truncate('😀😀😀', 2)).toBe('😀…')
+  })
+  it('未在播放时只显示应用名', () => expect(trayTooltip({})).toBe('飞牛音乐'))
+  it('播放中 / 已暂停', () => {
+    expect(trayTooltip({ title: '晴天', artist: '周杰伦', playing: true })).toBe('飞牛音乐\n晴天 — 周杰伦')
+    expect(trayTooltip({ title: '晴天', artist: '', playing: false })).toBe('飞牛音乐\n已暂停：晴天')
+  })
+  it('不超过 Windows 的 127 字符限制', () => {
+    expect(Array.from(trayTooltip({ title: '长'.repeat(300), artist: 'x', playing: true }))).toHaveLength(127)
   })
 })

@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, protocol, net, session, safeStorage, native
 const path = require('path')
 const fs = require('fs')
 const { sha256, newDeviceId, normalizeBase, hostOf, authx, friendlyError } = require('./util')
+const { createTray } = require('./tray')
 
 const isDev = process.env.NODE_ENV === 'development'
 // 自定义数据目录（自动化测试用，让每次测试都从干净的状态开始）
@@ -102,6 +103,41 @@ function readPrefs() {
 }
 function writePrefs(p) {
   try { fs.writeFileSync(prefsFile(), JSON.stringify(p)) } catch {}
+}
+
+// ---------- 主窗口与托盘 ----------
+let mainWindow = null
+let tray = null
+let quitting = false // 为 true 时关闭窗口即退出，不再最小化到托盘
+
+// 关闭窗口时最小化到托盘：Windows 默认开启，可在账户菜单或托盘菜单中关闭
+const closeToTray = () => readPrefs().closeToTray ?? process.platform === 'win32'
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) { mainWindow = createWindow(); return }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function quitApp() {
+  quitting = true
+  app.quit()
+}
+
+function setupTray() {
+  try {
+    tray = createTray({
+      show: showMainWindow,
+      command: (cmd) => mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.send('player:command', cmd),
+      getCloseToTray: closeToTray,
+      setCloseToTray: (on) => writePrefs({ ...readPrefs(), closeToTray: on }),
+      quit: quitApp,
+    })
+  } catch (e) {
+    // 某些 Linux 桌面没有托盘区域，此时关闭窗口就直接退出
+    console.error('[tray] 创建失败：', e.message)
+  }
 }
 
 // ---------- 独立账号：用户名密码登录 ----------
@@ -338,7 +374,9 @@ function registerIpc() {
 
   ipcMain.handle('app:info', () => ({ version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }))
   ipcMain.handle('prefs:get', () => readPrefs())
-  ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); return true })
+  ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); tray?.refresh(); return true })
+  ipcMain.handle('tray:info', () => ({ available: !!tray, closeToTray: closeToTray() }))
+  ipcMain.on('player:state', (_e, s) => tray?.setPlayer(s))
 
   ipcMain.on('win:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
   ipcMain.on('win:toggle-maximize', (e) => {
@@ -391,7 +429,20 @@ function createWindow() {
     if (!win.isMaximized() && !win.isMinimized()) p.bounds = win.getBounds()
     writePrefs(p)
   }
-  win.on('close', persist)
+  win.on('close', (e) => {
+    persist()
+    if (quitting || !tray || !closeToTray()) return
+    // 最小化到托盘：隐藏窗口，音乐继续播放
+    e.preventDefault()
+    win.hide()
+    const p = readPrefs()
+    if (!p.trayHinted) {
+      tray.balloon('飞牛音乐仍在运行', '音乐会继续播放。单击托盘图标打开窗口，右键菜单可以退出。')
+      writePrefs({ ...p, trayHinted: true })
+    }
+  })
+  // Windows 注销 / 关机时直接退出，不能拦着
+  win.on('session-end', () => { quitting = true })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) shell.openExternal(url)
@@ -422,10 +473,9 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    const w = BrowserWindow.getAllWindows()[0]
-    if (w) { if (w.isMinimized()) w.restore(); w.focus() }
-  })
+  // 再次启动（例如双击桌面图标）时，把已在托盘中运行的窗口调出来
+  app.on('second-instance', () => app.isReady() && showMainWindow())
+  app.on('before-quit', () => { quitting = true })
   app.whenReady().then(() => {
     session.defaultSession.setCertificateVerifyProc(verifyCert)
     session.fromPartition(OAUTH_PARTITION).setCertificateVerifyProc(verifyCert)
@@ -433,8 +483,9 @@ if (!gotLock) {
     session.fromPartition(OAUTH_PARTITION).setUserAgent(app.userAgentFallback)
     registerProxy()
     registerIpc()
-    createWindow()
-    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+    mainWindow = createWindow()
+    setupTray()
+    app.on('activate', showMainWindow)
   })
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 }
