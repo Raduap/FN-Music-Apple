@@ -73,9 +73,9 @@ Linux 上没有显示器时，端到端测试用 `xvfb-run -a npm run test:e2e` 
 `npm run promo` 会用展示数据（虚构的艺人、专辑与抽象画封面）启动模拟服务器和真实的应用，按分镜录下操作画面，再合成为 1080p 宣传片 `promo-build/fn-music-promo.mp4`：
 
 - `scripts/promo/capture.mjs`：录制素材（逐帧图片 + 光标轨迹）
-- `scripts/promo/compose.html` / `compose.js`：时间轴与画面（标题、窗口推拉、光标、转场），`renderAt(t)` 按时间逐帧绘制
-- `scripts/promo/music.mjs`：代码合成的配乐（90 BPM，场景切换落在小节线上）
-- `scripts/promo/render.mjs`：逐帧渲染并用 ffmpeg 编码；加 `--sheet` 只生成每秒一帧的预览图
+- `scripts/promo/compose.html` / `compose.js`：时间轴与画面（苹果发布会风格：黑底大字、笔记本机身、推入屏幕的镜头、片尾第三方声明），`renderAt(t)` 按时间逐帧绘制
+- `scripts/promo/music.mjs`：代码合成的配乐（96 BPM，场景切换落在小节线上）
+- `scripts/promo/render.mjs`：逐帧渲染并用 ffmpeg 编码；加 `--sheet` 只生成每秒一帧的预览图，`--frames=5,12` 导出指定时刻的单帧；首次运行会从 npm 下载 Inter 与思源黑体可变字重字体（缓存在 `promo-build/fonts`）
 
 需要 ffmpeg 与 Chromium（`PLAYWRIGHT_CHROMIUM` 可指定路径）。Linux 无显示器时用 `xvfb-run -a -s "-screen 0 2400x1600x24" npm run promo`；中文字体建议安装 Noto Sans CJK。
 

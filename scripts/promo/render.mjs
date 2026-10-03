@@ -2,6 +2,7 @@
 // 先运行 capture.mjs 录好素材。
 // 运行：node scripts/promo/render.mjs              → promo-build/fn-music-promo.mp4
 //       node scripts/promo/render.mjs --sheet      → 每秒一帧的预览图 promo-build/sheet.png（快速检查用）
+//       node scripts/promo/render.mjs --frames=5,12 → 指定时刻的单帧 promo-build/frame-<秒>.png
 import { chromium } from 'playwright-core'
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -40,14 +41,46 @@ if (!existsSync(coverDir) || readdirSync(coverDir).length < 20) {
 }
 const covers = readdirSync(coverDir).filter((f) => f.endsWith('.svg')).map((f) => pathToFileURL(join(coverDir, f)).href)
 const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
+const icon = pathToFileURL(join(root, 'build', 'icon.png')).href
+
+// 字体：Inter（西文，接近苹果的 SF 字形）+ 思源黑体可变字重（中文），从 npm 下载一次后缓存
+const fontDir = join(build, 'fonts')
+const FONTS = [['@fontsource-variable/inter@5', 'inter', 'opsz.css'], ['@fontsource-variable/noto-sans-sc@5', 'noto-sans-sc', 'index.css']]
+let fontCss = ''
+for (const [spec, name, css] of FONTS) {
+  const dir = join(fontDir, name)
+  if (!existsSync(join(dir, css))) {
+    mkdirSync(dir, { recursive: true })
+    try {
+      const tgz = execFileSync('npm', ['pack', spec, '--silent', '--pack-destination', fontDir], { encoding: 'utf8' }).trim().split('\n').pop()
+      execFileSync('tar', ['xzf', join(fontDir, tgz), '-C', dir, '--strip-components=1'])
+    } catch (e) {
+      console.warn(`字体 ${spec} 下载失败，改用系统字体：${e.message}`)
+      continue
+    }
+  }
+  fontCss += readFileSync(join(dir, css), 'utf8').replaceAll('url(./files/', `url(${pathToFileURL(join(dir, 'files')).href}/`)
+}
 
 // ---------- 页面 ----------
 const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM || (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : undefined), args: ['--allow-file-access-from-files'] })
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 })
 page.on('pageerror', (e) => console.error('页面错误：', e.message))
-await page.addInitScript((data) => { window.PROMO = data }, { clips, covers, version: 'v' + version })
+await page.addInitScript((data) => { window.PROMO = data }, { clips, covers, icon, version: 'v' + version })
 await page.goto(pathToFileURL(join(import.meta.dirname, 'compose.html')).href)
+if (fontCss) await page.addStyleTag({ content: fontCss })
 const duration = await page.evaluate(() => window.DURATION)
+
+// --frames=3.2,10.5 → 把指定时刻的画面存成 promo-build/frame-<秒>.png（检查细节用）
+const only = process.argv.find((a) => a.startsWith('--frames='))
+if (only) {
+  for (const t of only.slice(9).split(',').map(Number)) {
+    await page.evaluate((t) => window.renderAt(t), t)
+    await page.screenshot({ path: join(build, `frame-${t}.png`) })
+  }
+  await browser.close()
+  process.exit(0)
+}
 
 if (sheet) {
   const shots = []

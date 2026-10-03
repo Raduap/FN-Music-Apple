@@ -1,28 +1,30 @@
 // 宣传片时间轴：renderAt(t) 把画面设置为第 t 秒的样子（纯函数式，逐帧渲染时调用）
-// 素材由 render.mjs 注入 window.PROMO = { clips: { 名称: meta + base }, covers: [文件地址], version }
+// 素材由 render.mjs 注入 window.PROMO = { clips: { 名称: meta + base }, covers: [文件地址], icon, version }
+// 风格参照苹果发布会：纯黑底、大号粗体标题由模糊中浮现、产品放在笔记本电脑里、镜头推入屏幕
 /* global PROMO */
 const $ = (id) => document.getElementById(id)
-const BAR = 60 / 90 * 4 // 配乐 90 BPM，一小节 2.667 秒；场景切换都落在小节线上
+const BAR = 60 / 96 * 4 // 配乐 96 BPM，一小节 2.5 秒；场景切换都落在小节线上（与 music.mjs 一致）
 const T = {
-  intro: [0, 2 * BAR],
-  library: [2 * BAR, 5 * BAR],
-  player: [5 * BAR, 9 * BAR],
-  themes: [9 * BAR, 13 * BAR],
-  ball: [13 * BAR, 16 * BAR],
-  features: [16 * BAR, 18 * BAR],
-  outro: [18 * BAR, 20 * BAR],
+  open: [0, 2 * BAR],
+  title: [2 * BAR, 4 * BAR],
+  library: [4 * BAR, 7 * BAR],
+  play: [7 * BAR, 11 * BAR],
+  themes: [11 * BAR, 15 * BAR],
+  ball: [15 * BAR, 18 * BAR],
+  features: [18 * BAR, 21 * BAR],
+  outro: [21 * BAR, 24 * BAR],
 }
-window.DURATION = 20 * BAR
+window.DURATION = 24 * BAR
 
 // ---------- 缓动 ----------
 const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x))
 const lerp = (a, b, k) => a + (b - a) * k
 const easeOut = (x) => 1 - Math.pow(1 - clamp(x), 3)
+const easeOutExpo = (x) => (x >= 1 ? 1 : 1 - Math.pow(2, -10 * clamp(x)))
 const easeInOut = (x) => { x = clamp(x); return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2 }
-const back = (x) => { x = clamp(x); const c = 1.5; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2) }
 const prog = (t, a, d) => clamp((t - a) / d)
 // 场景可见度：起止两端各有 fade 秒的交叉淡化
-const vis = (t, [a, b], fade = 0.5) => Math.min(clamp((t - a + fade / 2) / fade), clamp((b + fade / 2 - t) / fade))
+const vis = (t, [a, b], fade = 0.6) => Math.min(clamp((t - a + fade / 2) / fade), clamp((b + fade / 2 - t) / fade))
 
 // 关键帧插值：[[时间, 值...], ...]
 function keys(list, t) {
@@ -34,6 +36,22 @@ function keys(list, t) {
     }
   }
   return list[list.length - 1].slice(1)
+}
+
+// 颜色插值（#rrggbb）
+const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16))
+const mix = (a, b, k) => `rgb(${rgb(a).map((v, i) => Math.round(lerp(v, rgb(b)[i], k))).join(',')})`
+
+// 苹果式的文字出现：从模糊中浮现并轻轻上移，离场时再次虚化
+function reveal(el, t, a, b, { blur = 18, rise = 28, dur = 0.9, out = 0.5, scale = 0 } = {}) {
+  const i = easeOutExpo(prog(t, a, dur))
+  const o = b == null ? 0 : easeInOut(prog(t, b - out, out))
+  const v = i * (1 - o)
+  el.style.opacity = v
+  const bl = (1 - i) * blur + o * blur * 0.6
+  el.style.filter = bl > 0.05 ? `blur(${bl.toFixed(2)}px)` : 'none'
+  el.style.transform = `translateY(${((1 - i) * rise - o * rise * 0.5).toFixed(2)}px) scale(${1 + (1 - i) * scale})`
+  return v
 }
 
 // ---------- 素材：按片段时间取帧、取光标位置 ----------
@@ -52,7 +70,7 @@ function clipAt(name, ct) {
   const span = time(p1.t) - time(p0.t)
   const k = span > 0 ? clamp((ct - time(p0.t)) / span) : 0
   const cursor = { x: lerp(p0.x, p1.x, k), y: lerp(p0.y, p1.y, k) }
-  const click = c.clicks.map((q) => ({ ...q, age: ct - time(q.t) })).filter((q) => q.age >= 0 && q.age < 0.55).pop()
+  const click = c.clicks.map((q) => ({ ...q, age: ct - time(q.t) })).filter((q) => q.age >= 0 && q.age < 0.5).pop()
   return { frame, cursor, click }
 }
 
@@ -63,115 +81,128 @@ function setSrc(img, src) {
   decodes.push(img.decode().catch(() => {}))
 }
 const style = (el, o, tf) => { el.style.opacity = o; if (tf !== undefined) el.style.transform = tf }
+function ripple(el, click, k = 1) {
+  if (!click) { el.style.opacity = 0; return }
+  const a = click.age / 0.5
+  el.style.left = click.x * k + 'px'
+  el.style.top = click.y * k + 'px'
+  return a
+}
 
-// ---------- 演示场景（应用窗口里的三个片段） ----------
-const CSS2WIN = 1380 / 1280 // 应用窗口 CSS 像素 → 宣传片里窗口的像素
+// ---------- 开场：两句话 + 缓缓浮现的封面墙 ----------
+function setupOpen() {
+  const covers = PROMO.covers
+  $('wall').innerHTML = Array.from({ length: 70 }, (_, i) => `<img src="${covers[(i * 7) % covers.length]}">`).join('')
+  for (const id of ['titleIcon', 'outroIcon', 'taskIcon']) $(id).src = PROMO.icon
+}
+function renderOpen(t) {
+  const o = t < T.title[1] + 0.5 ? 1 : 0
+  style($('open'), o)
+  if (!o) return
+  reveal($('line1'), t, 0.3, 2.3)
+  reveal($('line2'), t, 2.55, 4.85)
+  // 封面墙：第二句话时浮现，片名期间压暗，片名结束前淡出
+  const w = 0.5 * easeOut(prog(t, 2.4, 2.2)) * (1 - 0.45 * easeInOut(prog(t, 4.6, 0.8))) * (1 - easeInOut(prog(t, 9.0, 0.9)))
+  $('wall').style.opacity = w
+  $('wall').style.transform = `rotate(-8deg) translate(${(-t * 24).toFixed(2)}px, ${(-t * 9).toFixed(2)}px)`
+}
+
+// ---------- 片名 ----------
+function renderTitle(t) {
+  const o = vis(t, T.title, 0.4)
+  style($('title'), o ? 1 : 0)
+  if (!o) return
+  const end = T.title[1] + 0.1
+  reveal($('titleIcon'), t, T.title[0] + 0.05, end, { blur: 24, rise: 0, dur: 1.1, scale: 0.35 })
+  reveal($('titleBrand'), t, T.title[0] + 0.45, end, { blur: 26, rise: 36, dur: 1.2 })
+  reveal($('titleLede'), t, T.title[0] + 1.2, end, { blur: 14, rise: 20 })
+  $('title').querySelector('.center').style.transform = `scale(${1 + 0.035 * prog(t, T.title[0], BAR * 2)})`
+}
+
+// ---------- 产品场景（笔记本屏幕里的四个片段） ----------
+const SW = 1180, SH = 737.5 // 屏幕尺寸
+const K = SW / 1280 // 应用窗口 CSS 像素 → 屏幕像素
 const SEGMENTS = [
-  {
-    clip: 'library', from: 0.2, to: 8.0, at: T.library,
-    title: '你的音乐库，焕然一新', sub: '简洁优雅的界面，专辑、艺人、歌单一目了然',
-    zoom: [[0, 1, 640, 400], [7.8, 1, 640, 400]], // 资料库保持全景：推近会切掉侧栏，显得残缺
-  },
-  {
-    clip: 'album', from: 0.5, to: 3.4, at: [T.player[0], T.player[0] + 2.9],
-    title: '沉浸式播放', sub: '封面取色背景 · 逐行同步歌词 · 无损音质一眼可辨',
-    zoom: [[0, 1.12, 560, 420], [3, 1.12, 560, 420]],
-  },
-  {
-    clip: 'player', from: 0.3, to: 0.3 + (T.player[1] - T.player[0] - 2.9), at: [T.player[0] + 2.9, T.player[1]],
-    title: '沉浸式播放', sub: '封面取色背景 · 逐行同步歌词 · 无损音质一眼可辨',
-    zoom: [[0, 1.12, 560, 420], [1.0, 1, 640, 400], [2.6, 1, 640, 400], [6.5, 1.2, 545, 400], [8.1, 1.2, 545, 400]], // 推近到歌词，同时保留完整的封面,
-  },
-  {
-    clip: 'themes', from: 0.8, to: 14.2, at: T.themes,
-    title: '主题色与壁纸，随心切换', sub: '经典红 · 墨绿 · 海蓝 · 深浅模式 · 自定义壁纸',
-    zoom: [[0, 1, 640, 400], [3.2, 1, 640, 400], [4.6, 1.32, 640, 400], [11.0, 1.32, 640, 410], [12.4, 1, 640, 400], [14.2, 1, 640, 400]],
-  },
+  { clip: 'library', from: 0.2, to: 8.0, at: T.library, zoom: [[0, 1, 640, 400]] },
+  { clip: 'album', from: 0.5, to: 3.4, at: [T.play[0], T.play[0] + 2.9], zoom: [[0, 1.1, 560, 420]] },
+  { clip: 'player', from: 0.3, to: 0.3 + (T.play[1] - T.play[0] - 2.9), at: [T.play[0] + 2.9, T.play[1]], zoom: [[0, 1.1, 560, 420], [1.0, 1, 640, 400]] },
+  { clip: 'themes', from: 0.8, to: 14.2, at: T.themes,
+    zoom: [[0, 1, 640, 400], [3.2, 1, 640, 400], [4.6, 1.32, 640, 400], [11.0, 1.32, 640, 410], [12.4, 1, 640, 400], [14.2, 1, 640, 400]] },
 ]
+const GRADS = {
+  red: 'linear-gradient(100deg, #ff7a8a, #fa2d48 55%, #ff9a5a)',
+  warm: 'linear-gradient(100deg, #fbbf24, #fb7185 60%, #e879f9)',
+  cool: 'linear-gradient(100deg, #34d399, #22d3ee 50%, #60a5fa)',
+}
+const CAPS = [
+  { at: [T.library[0] + 0.5, T.library[1] - 0.15], h: '整个音乐库，<em>焕然一新。</em>', p: '专辑、艺人与歌单，一目了然。', grad: GRADS.red },
+  { at: [T.play[0] + 0.25, T.play[0] + 4.3], h: '<em>沉浸</em>，从封面开始。', p: '封面取色背景 · 逐行同步歌词 · 无损音质标识', grad: GRADS.warm },
+  { at: [T.themes[0] + 0.25, T.themes[1] - 0.25], h: '你的颜色，<em>你来定。</em>', p: '经典红 · 墨绿 · 海蓝 · 浅色与深色 · 自定义壁纸', grad: GRADS.cool },
+]
+// 推入屏幕：播放页打开后，镜头推进直到屏幕铺满画面，看一会儿歌词再拉回
+// 录屏在页面切换动画期间不出帧，播放页是“跳”出来的：让跳变发生在屏幕已经铺满时，再用一次闪切盖住
+const DIVE = { in: [T.play[0] + 4.6, 1.2], out: [T.play[1] - 1.4, 1.3] }
+const CUTS = [{ clip: 'player', ct: 3.45 }]
+const DIVE_SCALE = 1920 / SW
+
+function setupScene() {
+  $('caps').innerHTML = CAPS.map((c) => `<div class="cap" style="--grad:${c.grad}"><h2>${c.h}</h2><p>${c.p}</p></div>`).join('')
+}
 
 function renderScene(t) {
-  const seg = SEGMENTS.find((s) => t < s.at[1]) || SEGMENTS[SEGMENTS.length - 1]
+  const o = vis(t, [T.library[0], T.themes[1]], 0.6)
+  style($('scene'), o ? 1 : 0)
+  if (!o) return
+
+  // 机身：从下方抬起并放平；离场时略微后退并淡出
+  const rise = easeOutExpo(prog(t, T.library[0] - 0.1, 1.8))
+  const leave = easeInOut(prog(t, T.themes[1] - 0.45, 0.6))
+  const dive = easeInOut(prog(t, ...DIVE.in)) * (1 - easeInOut(prog(t, ...DIVE.out)))
+  const s = lerp(1, DIVE_SCALE, dive) * (1 - 0.05 * leave)
+  $('rig').style.transform = `translateY(${((1 - rise) * 560).toFixed(2)}px) rotateX(${((1 - rise) * 38).toFixed(2)}deg) translateY(${(-118.75 * dive).toFixed(2)}px) scale(${s.toFixed(4)})`
+  $('rig').style.opacity = clamp(rise * 1.6) * (1 - leave)
+
+  // 标题
+  ;[...$('caps').children].forEach((el, i) => {
+    const c = CAPS[i]
+    if (t < c.at[0] - 0.1 || t > c.at[1] + 0.1) { el.style.opacity = 0; return }
+    reveal(el.querySelector('h2'), t, c.at[0], c.at[1])
+    reveal(el.querySelector('p'), t, c.at[0] + 0.3, c.at[1], { blur: 12, rise: 18 })
+    el.style.opacity = 1
+  })
+
+  // 屏幕内容
+  const seg = SEGMENTS.find((x) => t < x.at[1]) || SEGMENTS[SEGMENTS.length - 1]
   const local = t - seg.at[0]
   const speed = (seg.to - seg.from) / (seg.at[1] - seg.at[0])
   const ct = clamp(seg.from + local * speed, seg.from, seg.to)
   const { frame, cursor, click } = clipAt(seg.clip, ct)
   setSrc($('frame'), frame)
 
-  // 镜头推拉：关键帧给出缩放倍数与对准的点（应用窗口 CSS 像素）
-  const [s, fx, fy] = keys(seg.zoom, ct)
-  const W = 1380, H = 865
-  const tx = clamp(W / 2 - fx * CSS2WIN * s, W - W * s, 0)
-  const ty = clamp(H / 2 - fy * CSS2WIN * s, H - H * s, 0)
-  $('content').style.transform = `translate(${tx}px, ${ty}px) scale(${s})`
+  // 屏幕里的镜头推拉：关键帧给出缩放倍数与对准的点（应用窗口 CSS 像素）
+  const [z, fx, fy] = keys(seg.zoom, ct)
+  const tx = clamp(SW / 2 - fx * K * z, SW - SW * z, 0)
+  const ty = clamp(SH / 2 - fy * K * z, SH - SH * z, 0)
+  $('content').style.transform = `translate(${tx}px, ${ty}px) scale(${z})`
 
-  // 光标与点击波纹（在内容层里，跟着推拉一起缩放）
-  const cx = cursor.x * CSS2WIN, cy = cursor.y * CSS2WIN
-  $('cursor').style.transform = `translate(${cx - 6}px, ${cy - 3}px) scale(${1 / s})`
-  $('cursor').style.transformOrigin = '6px 3px'
-  if (click) {
-    $('ripple').style.left = click.x * CSS2WIN + 'px'
-    $('ripple').style.top = click.y * CSS2WIN + 'px'
-    style($('ripple'), 1 - click.age / 0.55, `scale(${(0.4 + easeOut(click.age / 0.55) * 0.9) / s})`)
-  } else $('ripple').style.opacity = 0
+  // 光标与点击（在内容层里，跟着推拉一起缩放）
+  $('cursor').style.transform = `translate(${cursor.x * K - 5}px, ${cursor.y * K - 3}px) scale(${1 / z})`
+  $('cursor').style.transformOrigin = '5px 3px'
+  const a = ripple($('ripple'), click, K)
+  if (a !== undefined) style($('ripple'), 1 - a, `scale(${(0.5 + easeOut(a) * 0.7) / z})`)
 
-  // 标题：同一标题的相邻片段不重复淡入
-  const first = SEGMENTS.find((x) => x.title === seg.title)
-  const titleStart = first.at[0]
-  const nextTitleSeg = SEGMENTS[SEGMENTS.indexOf(seg) + 1]
-  const titleEnd = nextTitleSeg && nextTitleSeg.title !== seg.title ? seg.at[1] : seg.at[1] + 99
-  const ci = easeOut(prog(t, titleStart + 0.1, 0.6))
-  const co = 1 - easeInOut(prog(t, titleEnd - 0.35, 0.3))
-  $('capTitle').textContent = seg.title
-  $('capSub').textContent = seg.sub
-  style($('capTitle').parentElement, ci * co, `translateY(${(1 - ci) * 24}px)`)
-  // 片段之间：画面短暂压暗，掩盖跳切
-  const edge = Math.min(local, seg.at[1] - t)
-  $('frame').style.filter = `brightness(${0.55 + 0.45 * clamp(edge / 0.22)})`
-}
+  // 片段之间：画面短暂压暗，掩盖跳切（首个片段开头不压暗）
+  let edge = Math.min(seg === SEGMENTS[0] ? 9 : local, seg.at[1] - t)
+  for (const c of CUTS) if (c.clip === seg.clip) edge = Math.min(edge, Math.abs(ct - c.ct) / speed)
+  const dip = clamp(edge / 0.2)
+  $('frame').style.filter = dip < 1 ? `brightness(${0.5 + 0.5 * dip}) blur(${((1 - dip) * 6).toFixed(2)}px)` : 'none'
 
-// ---------- 背景色 ----------
-const PALETTE = {
-  intro: ['#fa233b', '#7c3aed', '#0ea5e9'],
-  library: ['#fa233b', '#f97316', '#7c3aed'],
-  player: ['#16a34a', '#0f766e', '#22c55e'],
-  themes: ['#2563eb', '#0f7a5a', '#7c3aed'],
-  ball: ['#0ea5e9', '#6366f1', '#2dd4bf'],
-  features: ['#7c3aed', '#2563eb', '#fa233b'],
-  outro: ['#fa233b', '#7c3aed', '#f97316'],
-}
-function renderBg(t) {
-  const name = Object.keys(T).find((k) => t < T[k][1]) || 'outro'
-  const [c1, c2, c3] = PALETTE[name]
-  const blobs = [$('b1'), $('b2'), $('b3')]
-  const cs = [c1, c2, c3]
-  blobs.forEach((b, i) => {
-    b.style.background = cs[i]
-    const a = t * 0.18 + i * 2.1
-    b.style.transform = `translate(${[-200, 900, 300][i] + Math.cos(a) * 160}px, ${[-300, 200, 500][i] + Math.sin(a * 1.3) * 120}px)`
-    b.style.transition = 'background 0s'
-  })
-}
-
-// ---------- 片头 ----------
-const NOTE = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V6l11-2v12"/><circle cx="6.5" cy="18" r="2.5" fill="#fff"/><circle cx="17.5" cy="16" r="2.5" fill="#fff"/></svg>'
-function setupIntro() {
-  $('introIcon').innerHTML = NOTE
-  $('outroIcon').innerHTML = NOTE
-  const covers = PROMO.covers
-  $('mosaic').innerHTML = Array.from({ length: 54 }, (_, i) => `<img src="${covers[(i * 7) % covers.length]}">`).join('')
-}
-function renderIntro(t) {
-  const o = vis(t, T.intro)
-  style($('intro'), o)
-  if (!o) return
-  $('mosaic').style.transform = `rotate(-12deg) translate(${-t * 26}px, ${-t * 8}px)`
-  $('mosaic').style.opacity = 0.22 * easeOut(prog(t, 0, 1.2))
-  const k = back(prog(t, 0.3, 0.9))
-  style($('introIcon'), clamp(prog(t, 0.3, 0.3)), `scale(${0.4 + 0.6 * k})`)
-  const b = easeOut(prog(t, 0.9, 0.8))
-  style($('introBrand'), b, `translateY(${(1 - b) * 30}px)`)
-  const g = easeOut(prog(t, 1.5, 0.8))
-  style($('introTag'), g, `translateY(${(1 - g) * 20}px)`)
+  // 机身下方的彩色柔光：跟随场景变色，推入屏幕时收起
+  const color = t < T.play[0] ? mix('#fa233b', '#ff6b3d', prog(t, T.play[0] - 0.6, 0.6))
+    : t < T.themes[0] ? mix('#ff6b3d', '#12a27a', prog(t, T.themes[0] - 0.6, 0.6))
+      : mix('#12a27a', '#2f7cf6', prog(t, T.themes[0] + 4, 2))
+  $('glow').style.background = color
+  $('glow').style.opacity = 0.42 * rise * (1 - dive) * (1 - leave)
 }
 
 // ---------- 悬浮球 ----------
@@ -181,89 +212,100 @@ function renderBall(t) {
   if (!o) return
   const local = t - T.ball[0]
   const span = T.ball[1] - T.ball[0]
-  const ct = 0.4 + local * ((10.0 - 0.4) / span)
+  const ct = 0.7 + local * ((9.4 - 0.7) / span)
   const { frame, cursor, click } = clipAt('ball', ct)
   setSrc($('ballFrame'), frame)
   const S = 2.5 // 384×108 的悬浮球窗口放大 2.5 倍
-  $('ballCursor').style.transform = `translate(${cursor.x * S - 6}px, ${cursor.y * S - 3}px)`
-  if (click) {
-    $('ballRipple').style.left = click.x * S + 'px'
-    $('ballRipple').style.top = click.y * S + 'px'
-    style($('ballRipple'), 1 - click.age / 0.55, `scale(${0.4 + easeOut(click.age / 0.55) * 0.9})`)
-  } else $('ballRipple').style.opacity = 0
-  const c = easeOut(prog(local, 0.2, 0.8))
-  style($('desktop').querySelector('.caption'), c, `translateX(${(1 - c) * -40}px)`)
-  $('ballWrap').style.transform = `translateY(${Math.sin(local * 1.2) * 4}px)`
+  $('ballCursor').style.transform = `translate(${cursor.x * S - 5}px, ${cursor.y * S - 3}px)`
+  const a = ripple($('ballRipple'), click, S)
+  if (a !== undefined) style($('ballRipple'), 1 - a, `scale(${0.5 + easeOut(a) * 0.7})`)
+  const cap = $('ballCap')
+  reveal(cap.querySelector('h2'), t, T.ball[0] + 0.35, T.ball[1] + 1)
+  reveal(cap.querySelector('p'), t, T.ball[0] + 0.7, T.ball[1] + 1, { blur: 12, rise: 18 })
+  cap.style.opacity = 1
+  $('ballWrap').style.transform = `translateY(${(Math.sin(local * 1.2) * 4).toFixed(2)}px)`
 }
 
-// ---------- 细节功能 ----------
+// ---------- 更多细节：便当盒式网格 ----------
 const ICONS = {
   disk: '<path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z"/><path d="M4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
   resume: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
-  tray: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><circle cx="17" cy="13" r="1.4" fill="#fff"/>',
+  tray: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><circle cx="17" cy="13" r="1.2"/>',
   keys: '<rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
   lock: '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
   wave: '<path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 7v10"/>',
 }
-const FEATURES = [
-  ['disk', '#0ea5e9', '封面本地缓存', '看过的封面存在本地，再次打开瞬间显示'],
-  ['resume', '#f97316', '记住播放位置', '重启后从上次停下的地方继续'],
-  ['tray', '#22c55e', '托盘常驻', '关掉窗口，音乐不停'],
-  ['keys', '#a855f7', '系统媒体键', '键盘媒体键与 Windows 媒体浮窗'],
-  ['lock', '#fa233b', 'NAS 账号登录', '密码只在 fnOS 官方页面输入'],
-  ['wave', '#eab308', '无损 / Hi-Res 标识', 'FLAC、24-bit 音质一眼可辨'],
+const TILES = [
+  { ic: 'disk', color: '#38bdf8', wide: true, grad: 'linear-gradient(100deg, #38bdf8, #818cf8)', b: '封面，<em>瞬间显示。</em>', s: '看过的封面保存在本地磁盘，再次打开无需等待；最多占用 400 MB，旧的自动清理。' },
+  { ic: 'tray', color: '#34d399', b: '关窗不停播', s: '最小化到托盘，随时唤回。' },
+  { ic: 'keys', color: '#c084fc', b: '媒体键直控', s: '键盘媒体键与 Windows 媒体浮窗都能控制。' },
+  { ic: 'resume', color: '#fb923c', b: '接着听', s: '重启后从上次的位置继续。' },
+  { ic: 'wave', color: '#facc15', wide: true, grad: 'linear-gradient(100deg, #facc15, #fb7185)', b: '<em>Hi-Res</em>，一眼可辨。', s: '无损与高解析度无损音源，在播放栏直接标注位深与采样率。' },
+  { ic: 'lock', color: '#f87171', b: '凭据加密', s: '经系统加密，只存在本机。' },
 ]
 function setupFeatures() {
-  $('cards').innerHTML = FEATURES.map(([ic, color, h, p]) => `<div class="card"><div class="ic" style="background:${color}"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[ic]}</svg></div><h3>${h}</h3><p>${p}</p></div>`).join('')
+  $('bento').innerHTML = TILES.map((x) => `<div class="tile${x.wide ? ' wide' : ''}" style="--grad:${x.grad || 'none'}"><svg viewBox="0 0 24 24" fill="none" stroke="${x.color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[x.ic]}</svg><b>${x.b}</b><span>${x.s}</span></div>`).join('')
 }
 function renderFeatures(t) {
   const o = vis(t, T.features)
   style($('features'), o)
   if (!o) return
   const local = t - T.features[0]
-  const h = easeOut(prog(local, 0, 0.6))
-  style($('featTitle'), h, `translateY(${(1 - h) * 30}px)`)
-  ;[...$('cards').children].forEach((el, i) => {
-    const k = back(prog(local, 0.3 + i * 0.11, 0.7))
-    style(el, clamp(prog(local, 0.3 + i * 0.11, 0.35)), `translateY(${(1 - k) * 60}px) scale(${0.92 + 0.08 * k})`)
+  const cap = $('featCap')
+  reveal(cap.querySelector('h2'), t, T.features[0] + 0.25, T.features[1] + 1)
+  cap.style.opacity = 1
+  $('bento').style.transform = `scale(${1 + 0.025 * prog(local, 0, BAR * 3)})`
+  ;[...$('bento').children].forEach((el, i) => {
+    const k = easeOutExpo(prog(local, 0.75 + i * 0.1, 1.1))
+    el.style.opacity = clamp(k * 1.4)
+    el.style.transform = `translateY(${((1 - k) * 70).toFixed(2)}px) scale(${0.95 + 0.05 * k})`
+    el.style.filter = k < 0.99 ? `blur(${((1 - k) * 10).toFixed(2)}px)` : 'none'
   })
 }
 
 // ---------- 片尾 ----------
 function renderOutro(t) {
-  const o = vis(t, T.outro) * (1 - easeInOut(prog(t, window.DURATION - 0.7, 0.7)))
+  const o = vis(t, T.outro, 0.4) * (1 - easeInOut(prog(t, window.DURATION - 0.9, 0.9)))
   style($('outro'), o)
   if (!o) return
-  const local = t - T.outro[0]
-  const k = back(prog(local, 0.1, 0.9))
-  style($('outroIcon'), clamp(prog(local, 0.1, 0.3)), `scale(${0.5 + 0.5 * k})`)
-  const b = easeOut(prog(local, 0.5, 0.7))
-  style($('outroBrand'), b, `translateY(${(1 - b) * 24}px)`)
-  const m = easeOut(prog(local, 1.0, 0.7))
-  style($('outroMeta'), m, `translateY(${(1 - m) * 20}px)`)
-  const u = easeOut(prog(local, 1.4, 0.7))
-  style($('outroUrl'), u, `translateY(${(1 - u) * 16}px)`)
+  const a = T.outro[0]
+  reveal($('outroIcon'), t, a + 0.15, null, { blur: 20, rise: 0, dur: 1.0, scale: 0.3 })
+  reveal($('outroBrand'), t, a + 0.5, null, { blur: 22, rise: 30 })
+  reveal($('outroLede'), t, a + 0.95, null, { blur: 12, rise: 18 })
+  reveal($('outroChips'), t, a + 1.4, null, { blur: 10, rise: 16 })
+  reveal($('outroUrl'), t, a + 1.75, null, { blur: 10, rise: 14 })
+  reveal($('legal'), t, a + 2.2, null, { blur: 6, rise: 0, dur: 1.2 })
+}
+
+// 预加载所有用到的字形（中文字体按字符分片，按需下载）
+async function loadFonts() {
+  const text = document.body.textContent + CAPS.map((c) => c.h + c.p).join('') + TILES.map((x) => x.b + x.s).join('') + PROMO.version
+  const plain = text.replace(/<[^>]+>/g, '')
+  await Promise.all([400, 500, 600, 700, 800].flatMap((w) => [
+    document.fonts.load(`${w} 40px "Noto Sans SC Variable"`, plain),
+    document.fonts.load(`${w} 40px "Inter Variable"`, plain),
+  ]))
+  await document.fonts.ready
 }
 
 let ready = false
 window.renderAt = async function renderAt(t) {
   if (!ready) {
-    setupIntro()
+    setupOpen()
+    setupScene()
     setupFeatures()
     $('ver').textContent = PROMO.version
+    await loadFonts().catch(() => {})
     await Promise.all([...document.images].map((i) => i.decode().catch(() => {})))
     ready = true
   }
   decodes.length = 0
-  renderBg(t)
-  renderIntro(t)
-  const so = Math.max(vis(t, [T.library[0], T.themes[1]]))
-  style($('scene'), so)
-  if (so) renderScene(t)
+  if (!(t >= T.library[0] - 0.5 && t <= T.themes[1] + 0.5)) $('glow').style.opacity = 0
+  renderOpen(t)
+  renderTitle(t)
+  renderScene(t)
   renderBall(t)
   renderFeatures(t)
   renderOutro(t)
-  // 背景光斑在片头片尾之外压暗一些
-  $('bg').style.opacity = 1
   await Promise.all(decodes)
 }
