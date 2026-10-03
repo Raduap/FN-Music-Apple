@@ -4,6 +4,25 @@
 
 为 fnOS「飞牛音乐」打造的 Windows 桌面播放器，界面仿照 Apple Music。Electron + React 实现，直接对接飞牛音乐原生 API（`/music/api/v1`）。
 
+> [!NOTE]
+> 本项目是由独立开发者开发的**第三方** Windows 客户端，并非飞牛 fnOS 官方产品，与飞牛及 Apple Inc. 均无隶属、授权或合作关系。下方截图与宣传片中的曲目、专辑、艺人与封面均为演示用的虚构内容。
+
+## 宣传片
+
+[![观看宣传片](docs/media/promo-poster.jpg)](docs/media/promo.mp4)
+
+点击图片观看（1080p · 60 秒）；如果浏览器无法在线播放，可[下载 MP4](https://github.com/Raduap/FN-Music-Apple/raw/main/docs/media/promo.mp4)。
+
+## 界面预览
+
+| 主页 | 专辑详情 |
+| :---: | :---: |
+| ![主页：最近添加与为你推荐](docs/screenshots/home.jpg) | ![专辑详情与播放栏（Hi-Res 标识）](docs/screenshots/album.jpg) |
+| **全屏播放页**：封面取色背景，逐行同步歌词 | **墨绿 · 深色**：主题色与「林间」壁纸 |
+| ![全屏播放页与歌词](docs/screenshots/player.jpg) | ![墨绿深色主题与壁纸](docs/screenshots/theme-green.jpg) |
+| **外观设置**：主题色、深浅模式、壁纸、模糊与界面浓度 | **桌面悬浮球**：歌名、当前歌词、播放控制 |
+| ![外观设置面板（海蓝 · 极光）](docs/screenshots/appearance.jpg) | ![悬浮球展开状态](docs/screenshots/ball.png) |
+
 ## 功能
 
 - **布局**：整列通高的侧边栏，右侧为导航条、内容区和底部播放栏。窗口宽度 < 980 时侧栏自动收成图标栏（也可用 Ctrl+B 手动收起），< 1240 时歌词 / 队列面板改为浮层，不会挤压内容
@@ -68,6 +87,21 @@ npm run check        # lint + 单元测试 + 构建
 
 Linux 上没有显示器时，端到端测试用 `xvfb-run -a npm run test:e2e` 运行。
 
+### 宣传片
+
+`npm run promo` 会用展示数据（虚构的艺人、专辑与抽象画封面）启动模拟服务器和真实的应用，按分镜录下操作画面，再合成为 1080p 宣传片 `promo-build/fn-music-promo.mp4`：
+
+- `scripts/promo/capture.mjs`：录制素材（逐帧图片 + 光标轨迹）
+- `scripts/promo/compose.html` / `compose.js`：时间轴与画面（苹果发布会风格：黑底大字、笔记本机身、推入屏幕的镜头、片尾第三方声明），`renderAt(t)` 按时间逐帧绘制
+- `scripts/promo/music.mjs`：代码合成的配乐（96 BPM，场景切换落在小节线上）
+- `scripts/promo/render.mjs`：逐帧渲染并用 ffmpeg 编码；加 `--sheet` 只生成每秒一帧的预览图，`--frames=5,12` 导出指定时刻的单帧；首次运行会从 npm 下载 Inter 与思源黑体可变字重字体（缓存在 `promo-build/fonts`）
+
+需要 ffmpeg 与 Chromium（`PLAYWRIGHT_CHROMIUM` 可指定路径）。Linux 无显示器时用 `xvfb-run -a -s "-screen 0 2400x1600x24" npm run promo`；中文字体建议安装 Noto Sans CJK。
+
+### 界面截图
+
+`npm run screenshots` 用同一套展示数据启动应用，把 README 里的界面截图拍到 `docs/screenshots/`（1920×1200）。Linux 无显示器时同样用 `xvfb-run` 运行。
+
 ### 持续集成与发布
 
 - 每次推送到 `main` 或提交 Pull Request，GitHub Actions 会运行 lint、单元测试、端到端测试，并打包 Windows 版作为构建产物
@@ -105,6 +139,9 @@ src/components/      播放栏、侧边栏、歌曲列表、卡片、菜单、�
 src/pages/           各页面
 dev/mock-server.js   API 模拟服务器
 test/                单元测试
+scripts/promo/       宣传片制作脚本
+scripts/screenshots.mjs README 界面截图
+docs/                README 用的截图与宣传片
 e2e/                 端到端测试
 ```
 

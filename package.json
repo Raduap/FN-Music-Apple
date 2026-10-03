@@ -14,6 +14,8 @@
     "test": "vitest run",
     "test:e2e": "vite build && node --test --test-concurrency=1 \"e2e/**/*.test.mjs\"",
     "check": "npm run lint && npm test && npm run build",
+    "screenshots": "vite build && node scripts/screenshots.mjs",
+    "promo": "vite build && node scripts/promo/capture.mjs && node scripts/promo/render.mjs",
     "dist": "vite build && electron-builder --win --publish never"
   },
   "devDependencies": {

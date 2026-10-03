@@ -30,12 +30,17 @@ export default [
     languageOptions: { ecmaVersion: 'latest', sourceType: 'commonjs', globals: globals.node },
   },
   {
-    files: ['test/**/*.js', 'scripts/**/*.mjs', '*.config.{js,mjs}'],
+    files: ['test/**/*.js', '*.config.{js,mjs}'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', globals: globals.node },
   },
   {
-    // 端到端测试：Node 环境，传给 waitForFunction 的回调在页面里执行
-    files: ['e2e/**/*.mjs'],
+    // 宣传片合成页（在浏览器里运行）
+    files: ['scripts/promo/compose.js'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'script', globals: globals.browser },
+  },
+  {
+    // 端到端测试与宣传片脚本：Node 环境，传给 evaluate / waitForFunction 的回调在页面里执行
+    files: ['e2e/**/*.mjs', 'scripts/**/*.mjs'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', globals: { ...globals.node, ...globals.browser } },
   },
 ]

@@ -99,14 +99,24 @@ function useRing(ref, state) {
 }
 
 // 标题过长时，展开后来回滚动显示
+// 标题过长时滚动显示。面板展开有宽度动画，展开开始时容器还很窄，
+// 只量一次会把短标题也误判为过长而滚走，所以随容器尺寸变化重新测量
 function useMarquee(ref, deps) {
   useLayoutEffect(() => {
     const el = ref.current
-    if (!el) return
-    const over = el.scrollWidth - el.parentElement.clientWidth
-    el.style.setProperty('--shift', over > 2 ? `${-over}px` : '0px')
-    el.style.setProperty('--dur', `${Math.max(6, over / 18 + 4)}s`)
-    el.dataset.scroll = over > 2 ? '1' : '0'
+    const box = el?.parentElement
+    if (!el || !box) return
+    const measure = () => {
+      const over = el.scrollWidth - box.clientWidth
+      const scroll = over > 2 ? '1' : '0'
+      el.style.setProperty('--shift', over > 2 ? `${-over}px` : '0px')
+      el.style.setProperty('--dur', `${Math.max(6, over / 18 + 4)}s`)
+      if (el.dataset.scroll !== scroll) el.dataset.scroll = scroll
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(box)
+    return () => ro.disconnect()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps)
 }
