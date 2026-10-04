@@ -3,6 +3,8 @@
 // - 窗口比球大，透明部分默认让鼠标穿透（Windows / macOS），鼠标移到球或展开的面板上时才接收点击
 // - 拖动由主进程按鼠标的屏幕坐标移动窗口（不用 -webkit-app-region，否则球上的点击和悬停都会失效）：
 //   拖动期间主进程以 60fps 读取光标位置跟随，甩得再快窗口也跟得上；松手的位置就是最终位置（只保证留在屏幕内）
+// - 隐藏时直接销毁窗口，再显示时重新创建：Windows 上透明窗口隐藏再显示后，“穿透但转发鼠标移动”会失效，
+//   页面收不到鼠标移动，就再也无法切换为可点击，按钮和拖动都没反应；页面记着的悬停状态也已过期
 const { BrowserWindow, Menu, screen, ipcMain } = require('electron')
 const G = require('./ballGeometry')
 
@@ -45,9 +47,11 @@ function createBall({ preload, load, readPrefs, writePrefs, command, showMain, m
   }
 
   function create() {
-    ball = initialBall()
+    // 重新创建时沿用当前位置（已不在任何屏幕上时才回到保存的 / 默认位置）
+    const areas = screen.getAllDisplays().map((d) => d.workArea)
+    ball = ball && G.isOnScreen(ball, areas) ? G.clampBall(ball, workAreaFor(ball)) : initialBall()
     anchor = G.anchorFor(ball, workAreaFor(ball))
-    win = new BrowserWindow({
+    const w = win = new BrowserWindow({
       ...G.windowBounds(ball, anchor),
       frame: false,
       transparent: true,
@@ -64,14 +68,24 @@ function createBall({ preload, load, readPrefs, writePrefs, command, showMain, m
       title: '飞牛音乐 · 悬浮球',
       webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
     })
-    win.setAlwaysOnTop(true, 'floating')
-    win.setVisibleOnAllWorkspaces?.(true)
-    if (CAN_PASS_THROUGH) win.setIgnoreMouseEvents(true, { forward: true })
-    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-    win.webContents.on('will-navigate', (e) => e.preventDefault())
-    win.once('ready-to-show', () => { if (wanted) win.showInactive() })
-    win.on('closed', () => { win = null })
-    load(win)
+    w.setAlwaysOnTop(true, 'floating')
+    w.setVisibleOnAllWorkspaces?.(true)
+    if (CAN_PASS_THROUGH) w.setIgnoreMouseEvents(true, { forward: true })
+    w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    w.webContents.on('will-navigate', (e) => e.preventDefault())
+    w.once('ready-to-show', () => { if (wanted && win === w) w.showInactive() }) // 页面准备好后再显示，避免闪一下白底
+    w.on('closed', () => { if (win === w) win = null })
+    load(w)
+  }
+
+  function destroy() {
+    if (drag) endDrag()
+    if (!alive()) return
+    const w = win
+    win = null
+    w.hide()
+    // 可能正在处理这个窗口自己发来的消息（例如点击圆球打开主窗口），下一轮再销毁
+    setImmediate(() => { if (!w.isDestroyed()) w.destroy() })
   }
 
   // ---------- 拖动 ----------
@@ -136,9 +150,8 @@ function createBall({ preload, load, readPrefs, writePrefs, command, showMain, m
   return {
     setVisible(v) {
       wanted = v
-      if (!v) { if (alive()) win.hide(); return }
-      if (!alive()) return create() // 页面准备好后再显示，避免闪一下白底
-      if (!win.isVisible()) { win.showInactive(); send('ball:state', state) }
+      if (!v) return destroy()
+      if (!alive()) create()
     },
     setState(s) {
       state = s || {}

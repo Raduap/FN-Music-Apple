@@ -23,7 +23,7 @@ const ballVisible = async () => !!(await windows()).find((w) => w.ball)?.visible
 const closeMain = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('ball.html')).close())
 async function ballPage() {
   for (let i = 0; i < 100; i++) {
-    const p = app.windows().find((w) => w.url().includes('ball.html'))
+    const p = app.windows().find((w) => !w.isClosed() && w.url().includes('ball.html'))
     if (p) return p
     await new Promise((r) => setTimeout(r, 100))
   }
@@ -285,6 +285,46 @@ test('关闭窗口后停留在托盘，音乐继续播放', async () => {
   // 再次启动应用（第二个实例）时调出窗口
   await app.evaluate(({ app }) => app.emit('second-instance'))
   assert.equal(await mainVisible(), true)
+  await until(async () => !(await ballVisible()), '主窗口显示后应隐藏悬浮球')
+})
+
+// 回归：悬浮球隐藏再显示后（点圆球打开主窗口、再关掉主窗口），按钮和拖动都失效
+test('悬浮球：主窗口反复显示 / 隐藏后，悬浮球仍可控制', async () => {
+  const bar = win.getByRole('contentinfo', { name: '播放器' })
+  const poll = { polling: 250 }
+  const ballBounds = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('ball.html'))?.getBounds())
+  const nextOnBall = async () => {
+    const ball = await ballPage()
+    ball.setDefaultTimeout(15000)
+    await ball.locator('.orb').hover()
+    await ball.locator('.stage[data-expanded]').waitFor()
+    const title = await bar.locator('.pb-title').innerText()
+    await ball.getByRole('button', { name: '下一首' }).click()
+    await until(async () => (await bar.locator('.pb-title').innerText()) !== title, '悬浮球的“下一首”应切歌')
+    const playing = await win.evaluate(() => !document.title.startsWith('⏸'))
+    await ball.locator('.ctrl.main').click()
+    await win.waitForFunction((p) => document.title.startsWith('⏸') === p, playing, poll)
+    return ball
+  }
+
+  let lastBounds = null
+  for (let round = 0; round < 3; round++) {
+    await closeMain()
+    await until(ballVisible, `第 ${round + 1} 次隐藏主窗口后应显示悬浮球`)
+    const before = await ballBounds()
+    const ball = await nextOnBall()
+    // 点圆球打开主窗口：悬浮球随之隐藏
+    await ball.locator('.orb').click()
+    await until(mainVisible, '点击圆球应打开主窗口')
+    // Windows 上透明窗口隐藏再显示后鼠标转发会失效，所以悬浮球隐藏时必须销毁窗口、下次重新创建
+    await until(async () => !(await windows()).some((w) => w.ball), '悬浮球隐藏时应销毁窗口')
+    if (round) assert.deepEqual(lastBounds, before, '重新创建后应留在原位置')
+    lastBounds = before
+  }
+  await closeMain()
+  await until(ballVisible, '再次隐藏主窗口后应显示悬浮球')
+  await nextOnBall()
+  await app.evaluate(({ app }) => app.emit('second-instance'))
   await until(async () => !(await ballVisible()), '主窗口显示后应隐藏悬浮球')
 })
 
