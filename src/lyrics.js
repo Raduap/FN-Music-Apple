@@ -9,9 +9,42 @@ const pending = new Map() // id -> Promise<lines>
 // LRC 解析；没有时间戳的纯文本歌词也保留（time = -1，不滚动）
 export function toLines(text) {
   const lines = parseLrc(text)
-  if (lines.length || !text) return lines
-  return text.split(/\r?\n/).map((t) => t.replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean).map((t) => ({ time: -1, text: t }))
+  if (!lines.length) {
+    if (!text) return []
+    return text.split(/\r?\n/).map((t) => t.replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean).map((t) => ({ time: -1, text: t }))
+  }
+  return mergeTranslations(lines)
 }
+
+// 双语歌词的常见写法：原文与译文使用相同的时间戳（连续两行）。
+// 只有至少 3 个不同时间点都出现同时间歌词组时，才按该格式合并；
+// 避免普通重复歌词被误判成双语。
+const SAME_TIME = 0.005
+const hasText = (line) => !!String(line?.text || '').trim()
+function sameTimeGroups(lines) {
+  const groups = []
+  for (const l of lines) {
+    const prev = groups[groups.length - 1]
+    if (prev && Math.abs(prev.time - l.time) < SAME_TIME) prev.lines.push(l)
+    else groups.push({ time: l.time, lines: [l] })
+  }
+  return groups
+}
+function mergeTranslations(lines) {
+  const groups = sameTimeGroups(lines)
+  const translationGroups = groups.filter((g) => g.lines.filter(hasText).length >= 2)
+  if (translationGroups.length < 3) return lines.map((l) => ({ ...l }))
+  const out = []
+  for (const g of groups) {
+    const [first, ...rest] = g.lines
+    const translation = rest.map((l) => l.text).filter((t) => String(t || '').trim()).join('\n')
+    out.push(translation ? { ...first, translation } : { ...first })
+  }
+  return out
+}
+
+/** 歌词里是否含译文（用于决定要不要显示翻译开关） */
+export const hasTranslation = (lines) => lines.some((l) => l.translation)
 
 export const peekLyrics = (id) => done.get(id)
 
