@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, protocol, net, session, safeStorage, nativeTheme, shell, nativeImage, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { sha256, newDeviceId, normalizeBase, hostOf, authx, friendlyError } = require('./util')
+const { sha256, newDeviceId, normalizeBase, hostOf, authx, abortAfter, streamWithIdle, friendlyError } = require('./util')
 const { createTray, BALL_MODES } = require('./tray')
 const { createBall } = require('./ball')
 const { createCoverCache, coverKey } = require('./coverCache')
@@ -44,6 +44,15 @@ const trustedHosts = new Set()
 const trustHost = (url) => { const h = hostOf(url); if (h) trustedHosts.add(h) }
 const verifyCert = (req, cb) => cb(trustedHosts.has(String(req.hostname).toLowerCase().replace(/^\[(.*)\]$/, '$1')) ? 0 : -3)
 
+// 各类请求的超时（毫秒）。服务器卡住时必须主动中止，否则会一直占用
+// Chromium 对同一主机的连接池（HTTP/1.1 约 6 条），把其它无关请求也拖垮。
+const TIMEOUT = {
+  api: 15000,   // 普通 JSON 接口：覆盖到响应体读取完成
+  cover: 30000, // 封面（NAS 现场生成缩略图可能较慢）
+  stream: 30000,     // 音频流：仅覆盖到响应头返回
+  streamIdle: 15000, // 音频流响应体的数据空闲上限：卡住不传就中止，释放连接
+}
+
 // 带签名的 JSON 请求（主进程内部使用）
 async function apiFetch(base, apiPath, { method = 'GET', body, token } = {}) {
   const url = base + apiPath
@@ -51,11 +60,16 @@ async function apiFetch(base, apiPath, { method = 'GET', body, token } = {}) {
   const headers = { Accept: 'application/json', authx: authx(method, url, raw) }
   if (raw !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers.Cookie = `music-token=${token}`
-  const res = await net.fetch(url, { method, headers, body: raw })
-  const text = await res.text()
-  let json = null
-  try { json = JSON.parse(text) } catch {}
-  return { status: res.status, json, text, type: res.headers.get('content-type') || '' }
+  const { signal, clear } = abortAfter(TIMEOUT.api)
+  try {
+    const res = await net.fetch(url, { method, headers, body: raw, signal })
+    const text = await res.text()
+    let json = null
+    try { json = JSON.parse(text) } catch {}
+    return { status: res.status, json, text, type: res.headers.get('content-type') || '' }
+  } finally {
+    clear()
+  }
 }
 
 function saveSession() {
@@ -364,10 +378,18 @@ async function chooseWallpaper(win) {
 
 // ---------- 封面磁盘缓存 ----------
 let covers = null
-const signedGet = (url) => {
+const signedGet = async (url) => {
   const headers = { authx: authx('GET', url) }
   if (state.token) headers.Cookie = `music-token=${state.token}`
-  return net.fetch(url, { headers, bypassCustomProtocolHandlers: true })
+  // 封面体积小，读完整包再返回，超时覆盖响应头 + 响应体；卡住的请求会被中止，释放连接槽
+  const { signal, clear } = abortAfter(TIMEOUT.cover)
+  try {
+    const res = await net.fetch(url, { headers, bypassCustomProtocolHandlers: true, signal })
+    const body = Buffer.from(await res.arrayBuffer())
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers })
+  } finally {
+    clear()
+  }
 }
 const proxyError = (e) => new Response(JSON.stringify({ code: -1, msg: '无法连接服务器：' + e.message }), {
   status: 502,
@@ -402,16 +424,39 @@ function registerProxy() {
     const body = hasBody ? await request.arrayBuffer() : undefined
     headers.set('authx', authx(request.method, target, body && new Uint8Array(body)))
     if (state.token) headers.set('Cookie', `music-token=${state.token}`)
-    let upstream
+    // 普通接口：超时覆盖到读完整包。音频流特殊处理——响应头阶段超时；拿到响应头后
+    // 改为“数据空闲超时”，并把下游取消（切歌 / 换源）传播给上游，避免失效歌曲的死流
+    // 永久占住 Chromium 对同一主机的连接池，拖垮其它所有请求。
+    const isStream = u.pathname === '/api/v1/track/stream'
+    if (isStream) {
+      const controller = new AbortController()
+      const headerTimer = setTimeout(() => controller.abort(new Error('音频流响应超时')), TIMEOUT.stream)
+      try {
+        const upstream = await net.fetch(target, { method: request.method, headers, body, bypassCustomProtocolHandlers: true, signal: controller.signal })
+        clearTimeout(headerTimer)
+        const out = new Headers(upstream.headers)
+        out.set('access-control-allow-origin', '*')
+        out.delete('content-encoding')
+        const stream = streamWithIdle(upstream.body, { idleMs: TIMEOUT.streamIdle, abort: (reason) => controller.abort(reason) })
+        return new Response(stream, { status: upstream.status, statusText: upstream.statusText, headers: out })
+      } catch (e) {
+        clearTimeout(headerTimer)
+        return proxyError(e)
+      }
+    }
+    const { signal, clear } = abortAfter(TIMEOUT.api)
     try {
-      upstream = await net.fetch(target, { method: request.method, headers, body, bypassCustomProtocolHandlers: true })
+      const upstream = await net.fetch(target, { method: request.method, headers, body, bypassCustomProtocolHandlers: true, signal })
+      const out = new Headers(upstream.headers)
+      out.set('access-control-allow-origin', '*')
+      out.delete('content-encoding')
+      const buf = Buffer.from(await upstream.arrayBuffer())
+      return new Response(buf, { status: upstream.status, statusText: upstream.statusText, headers: out })
     } catch (e) {
       return proxyError(e)
+    } finally {
+      clear()
     }
-    const out = new Headers(upstream.headers)
-    out.set('access-control-allow-origin', '*')
-    out.delete('content-encoding')
-    return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: out })
   })
 }
 

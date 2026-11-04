@@ -42,9 +42,58 @@ function authx(method, url, body, { nonce = String(Math.floor(Math.random() * 9e
   return `nonce=${nonce}&timestamp=${ts}&sign=${sign}`
 }
 
+// 定时中止信号：ms 毫秒后自动中止请求。调用 clear() 可取消计时——
+// 长连接（音频流）在拿到响应头之后就不应再中止，否则播放中途会被切断。
+function abortAfter(ms, message = '服务器响应超时') {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error(message)), ms)
+  return { signal: controller.signal, clear: () => clearTimeout(timer) }
+}
+
+// 把上游响应体包一层，用于音频流：
+// - 失效歌曲常见表现是“响应头已到、响应体却迟迟不来”。此时播放器会主动索取数据，
+//   我们就在这里计时：超过 idleMs 仍拿不到数据 → 中止上游，释放连接。
+// - 只有在“消费者正在索取数据却拿不到”时才计时。消费者停止索取（例如播放器缓冲已满、
+//   不再 pull）时不计时，否则会误杀正常播放。
+// - 下游取消（切歌 / 换源）时把取消传播给上游，立即释放连接。
+function streamWithIdle(body, { idleMs, abort }) {
+  if (!body || typeof body.getReader !== 'function') return body
+  const reader = body.getReader()
+  let ctrlRef = null
+  let timer = null
+  const idle = () => {
+    const err = new Error('音频流空闲超时')
+    try { abort?.(err) } catch {}
+    try { ctrlRef?.error(err) } catch {} // 同时让下游停止等待，避免消费端悬挂
+  }
+  return new ReadableStream({
+    start(ctrl) { ctrlRef = ctrl },
+    async pull(ctrl) {
+      ctrlRef = ctrl
+      // 只在“消费者正在索取数据”时计时：拿到数据或消费者停止索取都不会触发
+      timer = setTimeout(idle, idleMs)
+      try {
+        const { done, value } = await reader.read()
+        clearTimeout(timer)
+        if (done) { ctrl.close(); return }
+        ctrl.enqueue(value)
+      } catch (e) {
+        clearTimeout(timer)
+        ctrl.error(e)
+      }
+    },
+    cancel(reason) {
+      clearTimeout(timer)
+      try { abort?.(reason) } catch {}
+      reader.cancel(reason).catch(() => {})
+    },
+  })
+}
+
 function friendlyError(e) {
   let msg = (e && e.message) || String(e)
-  if (/ERR_CONNECTION|ERR_NAME|ERR_ADDRESS|ERR_TIMED|ERR_INTERNET|fetch failed/i.test(msg)) msg = '无法连接到服务器，请检查地址与网络'
+  if (/abort|timeout|timed out|ERR_TIMED|请求超时|响应超时/i.test(msg)) msg = '服务器响应超时，请检查网络或降级服务器负载'
+  else if (/ERR_CONNECTION|ERR_NAME|ERR_ADDRESS|ERR_TIMED|ERR_INTERNET|fetch failed/i.test(msg)) msg = '无法连接到服务器，请检查地址与网络'
   else if (/CERT/i.test(msg)) msg = 'HTTPS 证书不受信任'
   return msg
 }
@@ -61,4 +110,4 @@ function trayTooltip({ title, artist, playing } = {}) {
   return truncate(`飞牛音乐\n${playing ? '' : '已暂停：'}${title}${artist ? ' — ' + artist : ''}`, 127)
 }
 
-module.exports = { sha256, md5, newDeviceId, normalizeBase, hostOf, signPayload, authx, friendlyError, truncate, trayTooltip }
+module.exports = { sha256, md5, newDeviceId, normalizeBase, hostOf, signPayload, authx, abortAfter, streamWithIdle, friendlyError, truncate, trayTooltip }

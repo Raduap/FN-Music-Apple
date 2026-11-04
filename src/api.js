@@ -10,19 +10,32 @@ export class ApiError extends Error {
 
 let reloginPromise = null
 
+// 渲染进程侧的超时兜底：即使主进程的代理卡住，前端也不会无限等待。
+const REQUEST_TIMEOUT = 20000
+
 async function raw(path, { query, method = 'GET', body } = {}) {
   const url = new URL(BASE + path)
   if (query) for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== null) url.searchParams.set(k, v)
-  const res = await fetch(url, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
   let json
   try {
-    json = await res.json()
-  } catch {
-    throw new ApiError(`服务器响应异常（HTTP ${res.status}）`, res.status)
+    const res = await fetch(url, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    })
+    try {
+      json = await res.json()
+    } catch {
+      throw new ApiError(`服务器响应异常（HTTP ${res.status}）`, res.status)
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') throw new ApiError('请求超时，请检查网络', -1)
+    throw e
+  } finally {
+    clearTimeout(timer)
   }
   return json
 }
