@@ -254,3 +254,93 @@
 .fl-toggle.on .fl-switch::after { transform: translateX(16px); }
 .fl .ap-foot { justify-content: space-between; gap: 12px; align-items: center; }
 .fl .ap-foot .btn { margin-left: auto; }
+
+/* ============ 实验性设置：左侧分区导航 + 右侧滚动内容 ============ */
+.dialog.ap.experimental {
+  width: min(820px, 100%);
+  height: min(620px, calc(100vh - 40px));
+  max-height: calc(100vh - 40px);
+  padding: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(210px, 30%) minmax(0, 1fr);
+}
+.exp-nav {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 22px 14px 16px 18px;
+  background: var(--sidebar);
+  border-right: 1px solid var(--sep);
+}
+.exp-nav-head { padding: 0 8px; }
+.exp-nav-head h2 { font-size: 18px; font-weight: 750; letter-spacing: -0.02em; }
+.exp-nav-head p { margin-top: 5px; font-size: 11.5px; color: var(--text3); }
+.exp-nav nav { display: grid; gap: 3px; }
+.exp-nav nav button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--text2);
+  font-size: 13px;
+  font-weight: 550;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+.exp-nav nav button:hover { background: var(--hover); color: var(--text); }
+.exp-nav nav button.on { background: var(--accent-soft); color: var(--accent); }
+.exp-nav nav button svg { flex: none; opacity: 0.9; }
+.exp-nav-state {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--input);
+  color: var(--text2);
+  font-size: 12px;
+}
+.exp-nav-state i { width: 7px; height: 7px; border-radius: 50%; background: var(--text3); flex: none; }
+.exp-nav-state.on { color: var(--text); }
+.exp-nav-state.on i { background: #28a745; box-shadow: 0 0 0 3px rgba(40, 167, 69, 0.14); }
+.exp-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.exp-top {
+  height: 52px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px 0 24px;
+  border-bottom: 1px solid var(--sep);
+}
+.exp-top > span { font-size: 13px; font-weight: 650; color: var(--text2); }
+.exp-scroll { min-height: 0; overflow-y: auto; padding: 22px 24px 28px; }
+.exp-section + .exp-section { margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--sep); }
+.exp-section-title { margin-bottom: 12px; font-size: 12px; font-weight: 700; color: var(--text2); letter-spacing: 0.02em; }
+.exp-note { display: flex; gap: 12px; padding: 14px; border-radius: 12px; background: var(--input); color: var(--text2); }
+.exp-note svg { color: var(--accent); flex: none; margin-top: 2px; }
+.exp-note b { display: block; margin-bottom: 4px; color: var(--text); font-size: 13.5px; }
+.exp-note p { margin: 0; font-size: 12.5px; line-height: 1.55; }
+.exp-toggle { margin-top: 12px; }
+.exp-field { display: grid; gap: 6px; margin-bottom: 14px; }
+.exp-field > span { font-size: 12px; font-weight: 650; color: var(--text2); }
+.exp-field em { margin-left: 6px; font-style: normal; font-weight: 500; color: var(--text3); }
+.exp-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.exp-status { margin-top: 12px; padding: 9px 11px; border-radius: 8px; font-size: 12.5px; line-height: 1.45; }
+.exp-status.good { color: #1f8f4d; background: rgba(40, 167, 69, 0.1); }
+.exp-status.bad { color: #ff3b30; background: rgba(255, 59, 48, 0.1); }
+.exp-hint { margin: 12px 0 0; font-size: 11.5px; line-height: 1.55; color: var(--text3); }
+.exp-list { margin: 0; padding-left: 18px; color: var(--text2); font-size: 12.5px; line-height: 1.7; }
+.exp-paragraph { margin: 0; color: var(--text2); font-size: 12.5px; line-height: 1.65; }
+@media (max-width: 700px) {
+  .dialog.ap.experimental { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); height: min(680px, calc(100vh - 32px)); }
+  .exp-nav { padding: 16px; border-right: 0; border-bottom: 1px solid var(--sep); }
+  .exp-nav nav { display: flex; gap: 6px; overflow-x: auto; }
+  .exp-nav nav button { flex: none; }
+  .exp-nav-state { display: none; }
+}

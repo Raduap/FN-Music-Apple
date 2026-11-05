@@ -38,6 +38,7 @@ const state = {
 
 const storeFile = () => path.join(app.getPath('userData'), 'session.bin')
 const prefsFile = () => path.join(app.getPath('userData'), 'prefs.json')
+const experimentalKeyFile = () => path.join(app.getPath('userData'), 'experimental-key.bin')
 const OAUTH_PARTITION = 'persist:fnos-oauth'
 
 // NAS 常用自签名证书。只对用户填写的服务器（以及它的 fnOS 登录页）放行，其他网站照常校验证书
@@ -120,6 +121,130 @@ function readPrefs() {
 }
 function writePrefs(p) {
   try { fs.writeFileSync(prefsFile(), JSON.stringify(p)) } catch {}
+}
+
+function readExperimentalKey() {
+  try {
+    const buf = fs.readFileSync(experimentalKeyFile())
+    const tag = buf.subarray(0, 2).toString()
+    if (tag !== 'E1') return ''
+    return safeStorage.decryptString(buf.subarray(2))
+  } catch { return '' }
+}
+
+function writeExperimentalKey(key) {
+  try {
+    if (!key) { fs.rmSync(experimentalKeyFile(), { force: true }); return }
+    if (!safeStorage.isEncryptionAvailable()) return
+    fs.writeFileSync(experimentalKeyFile(), Buffer.concat([Buffer.from('E1'), safeStorage.encryptString(String(key))]))
+  } catch {}
+}
+
+const experimentalDefaults = () => ({
+  enabled: false,
+  baseUrl: 'https://api.deepseek.com/v1',
+  model: 'deepseek-chat',
+  hasKey: false,
+})
+
+function experimentalRead() {
+  const p = readPrefs()
+  const e = { ...experimentalDefaults(), ...(p.experimental || {}) }
+  return { enabled: !!e.enabled, baseUrl: e.baseUrl || 'https://api.deepseek.com/v1', model: e.model || 'deepseek-chat', hasKey: !!readExperimentalKey() }
+}
+
+function experimentalWrite(patch) {
+  const cur = experimentalRead()
+  const next = {
+    enabled: patch.enabled === undefined ? cur.enabled : !!patch.enabled,
+    baseUrl: String(patch.baseUrl ?? cur.baseUrl ?? '').trim(),
+    model: String(patch.model ?? cur.model ?? '').trim(),
+  }
+  if (patch.apiKey !== undefined) writeExperimentalKey(String(patch.apiKey || '').trim())
+  writePrefs({ ...readPrefs(), experimental: next })
+  return experimentalRead()
+}
+
+const REMOTE_ERR = {
+  400: '请求被拒绝（模型名或参数不对）',
+  401: 'API key 无效或已过期',
+  402: '账户余额不足',
+  403: '无权访问该模型',
+  404: 'Base URL 或模型名不存在',
+  429: '触发限流，请稍后重试',
+}
+
+function remoteUrl(baseUrl) {
+  const base = String(baseUrl || '').trim().replace(/\/+$/, '')
+  if (!base) throw new Error('请填写 Base URL')
+  return base.endsWith('/chat/completions') ? base : base + '/chat/completions'
+}
+
+function parseNumbered(text) {
+  const out = {}
+  for (const raw of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
+    const m = /^\s*[*\-\s]*(\d{1,4})\s*[|｜:：.)、]\s*(.*?)\s*$/.exec(raw)
+    if (!m) continue
+    const text = m[2].trim().replace(/^[|｜]+|[|｜]+$/g, '')
+    if (text) out[+m[1]] = text
+  }
+  return out
+}
+
+function buildTranslatePrompt({ title, artist, body, context }) {
+  return `你是专业的歌词翻译，把下面每一行歌词翻译成简体中文。\n${title ? `歌曲：${title}\n` : ''}${artist ? `艺人：${artist}\n` : ''}规则：\n1. 先把整段当成连贯的歌词语境来理解，再逐行输出。输入有多少行，输出就必须有多少行，编号一一对应，不要合并或拆分。\n2. 连续几行可能是同一句话：请按整句理解，再把译文拆回对应的每一行，保证每行都有内容、句意连贯。\n3. 只输出 "编号|译文"，不要输出原文、解释或任何多余的内容。\n4. 不要增译：译文里不能出现原文没有的词句。宁可简短，也不许自己加戏。\n5. 拟声词、语气词、无实义的重复保留原文或音译，不要硬翻成中文。\n6. 译文要符合歌词语气：口语、自然、简短，尽量能唱。人名/专有名词用常见译法。\n${context ? `整首歌的完整歌词如下，仅供你理解语境；要翻译的只是最后的输入：\n${context}\n\n` : ''}输入：\n${body}`
+}
+
+async function remoteTranslate(lines, settings, deadlineMs = 180000) {
+  const { baseUrl, model } = settings
+  const key = settings.useApiKeyOverride && settings.apiKey !== undefined ? String(settings.apiKey || '') : readExperimentalKey()
+  if (!baseUrl || !model) return { ok: false, error: '还没填 Base URL 或模型名' }
+  const url = remoteUrl(baseUrl)
+  const headers = { 'Content-Type': 'application/json' }
+  if (key) headers.Authorization = 'Bearer ' + key
+  const out = {}
+  let firstErr = ''
+  const chunk = 30
+  const deadline = Date.now() + deadlineMs
+  const deepSeek = /(^|\.)deepseek\./i.test(new URL(baseUrl).hostname)
+  for (let start = 0; start < lines.length; start += chunk) {
+    if (Date.now() >= deadline) { firstErr ||= '翻译超出单曲时限（未翻完）'; break }
+    const part = lines.slice(start, start + chunk)
+    const body = part.map((v, i) => `${i + 1}|${v}`).join('\n')
+    const payload = {
+      model,
+      messages: [{ role: 'user', content: buildTranslatePrompt({ title: settings.title, artist: settings.artist, body, context: settings.context }) }],
+      temperature: 0.1,
+      stream: false,
+      max_tokens: 4096,
+      ...(deepSeek ? { thinking: { type: 'disabled' } } : {}),
+    }
+    let blockErr = null
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (Date.now() >= deadline) break
+      try {
+        const res = await net.fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) })
+        const text = await res.text()
+        let json = null
+        try { json = JSON.parse(text) } catch {}
+        if (res.status >= 200 && res.status < 300) {
+          const content = json?.choices?.[0]?.message?.content || ''
+          Object.assign(out, Object.fromEntries(Object.entries(parseNumbered(content)).filter(([i]) => +i >= 1 && +i <= part.length).map(([i, v]) => [start + +i, v])))
+          blockErr = null
+          break
+        }
+        const detail = json?.error?.message || json?.message || text.slice(0, 160)
+        blockErr = `${REMOTE_ERR[res.status] || `服务端返回 HTTP ${res.status}`}${detail ? '｜' + detail : ''}`
+        if ([400, 401, 402, 403, 404].includes(res.status)) break
+      } catch (e) {
+        blockErr = `连不上翻译端点：${e.message}`
+      }
+      await new Promise((r) => setTimeout(r, 800 * (attempt + 1)))
+    }
+    if (blockErr) { firstErr ||= blockErr; if (/API key|无权|余额|Base URL|模型名/.test(blockErr)) break }
+  }
+  const translations = lines.map((_, i) => out[i + 1] || '')
+  return Object.keys(out).length ? { ok: true, translations } : { ok: false, error: firstErr || '模型没有返回可解析的译文' }
 }
 
 // ---------- 主窗口、托盘与悬浮球 ----------
@@ -620,6 +745,24 @@ function registerIpc() {
   ipcMain.handle('lyrics:clear-background', () => { fs.rmSync(lyricsBackgroundDir(), { recursive: true, force: true }); lyricsWin?.notifyBackgroundChanged?.(); return true })
   ipcMain.handle('app:info', () => ({ version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }))
   ipcMain.handle('prefs:get', () => readPrefs())
+  ipcMain.handle('experimental:get', () => experimentalRead())
+  ipcMain.handle('experimental:set', (_e, patch) => ({ ok: true, settings: experimentalWrite(patch || {}) }))
+  ipcMain.handle('experimental:test', async (_e, patch) => {
+    try {
+      const settings = { ...experimentalRead(), ...(patch || {}), useApiKeyOverride: true }
+      const r = await remoteTranslate(['テスト'], { ...settings, title: '', artist: '', context: '' }, 20000)
+      return r.ok ? { ok: true, message: `${settings.model} 返回了译文` } : r
+    } catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('experimental:translate', async (_e, payload) => {
+    try {
+      const settings = experimentalRead()
+      if (!settings.enabled) return { ok: false, error: '实验性 AI 翻译未开启' }
+      const lines = Array.isArray(payload?.lines) ? payload.lines.map((v) => String(v || '')).filter(Boolean) : []
+      if (!lines.length) return { ok: true, translations: [] }
+      return await remoteTranslate(lines, { ...settings, title: payload?.song?.title || '', artist: payload?.song?.artist || '', context: payload?.context || '' })
+    } catch (e) { return { ok: false, error: e.message } }
+  })
   ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); syncBall(); syncLyrics(); if (p && p.lyricsStyle) lyricsWin?.setStyle(readPrefs().lyricsStyle); tray?.refresh(); return true })
   ipcMain.handle('tray:info', () => ({ available: !!tray, closeToTray: closeToTray(), ballMode: ballMode(), lyricsOn: lyricsOn() }))
   ipcMain.handle('lyrics:get', () => ({ on: lyricsOn(), style: { ...(readPrefs().lyricsStyle || {}) } }))

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hasTranslation, lineAt, lyricFrame, lyricPlaceholder, toLines } from '../src/lyrics.js'
+import { detectLyricLang, hasTranslation, lineAt, lyricFrame, lyricPlaceholder, toLines, translationTargets } from '../src/lyrics.js'
 
 describe('歌词', () => {
   const lines = toLines('[00:01.00]一\n[00:05.00]二\n[00:09.00]三')
@@ -45,6 +45,23 @@ describe('歌词', () => {
     expect(mono).toEqual([{ time: 1, text: '一' }, { time: 5, text: '二' }])
     expect(mono.some((l) => l.translation)).toBe(false)
     expect(hasTranslation(mono)).toBe(false)
+  })
+
+  it('识别歌词语言，避免翻译中文歌词', () => {
+    expect(detectLyricLang('Hello world')).toBe('latin')
+    expect(detectLyricLang('こんにちは世界')).toBe('ja')
+    expect(detectLyricLang('你好世界')).toBe('zh')
+    expect(detectLyricLang('안녕하세요')).toBe('ko')
+  })
+
+  it('只为缺译文的外语行生成翻译目标', () => {
+    const lines = [
+      { time: 1, text: 'Hello' },
+      { time: 2, text: '你好', translation: '已有译文' },
+      { time: 3, text: '' },
+      { time: 4, text: 'World' },
+    ]
+    expect(translationTargets(lines)).toEqual([{ index: 0, text: 'Hello' }, { index: 3, text: 'World' }])
   })
 
   it('只有一个时间点的多行同时间歌词不合并', () => {

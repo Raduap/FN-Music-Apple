@@ -264,16 +264,19 @@ export function PlayerBar() {
 // ---------- 歌词 ----------
 function useLyrics(song) {
   const id = song?.id
+  const aiTranslation = useUI((s) => s.experimental?.enabled)
   const [state, setState] = useState({ lines: [], loading: false })
+  const meta = [song?.title, song?.artist, song?.album].join('\u0000')
   useEffect(() => {
     if (!id) return setState({ lines: [], loading: false })
     const cached = peekLyrics(id)
-    if (cached) return setState({ lines: cached, loading: false })
+    if (cached && !aiTranslation) return setState({ lines: cached, loading: false })
     let dead = false
-    setState({ lines: [], loading: true })
-    loadLyrics(id).then((lines) => { if (!dead) setState({ lines, loading: false }) })
+    setState({ lines: cached || [], loading: !cached })
+    loadLyrics(id, song, { translate: aiTranslation }).then((lines) => { if (!dead) setState({ lines, loading: false }) })
     return () => { dead = true }
-  }, [id])
+  }, [id, aiTranslation, meta]) // eslint-disable-line react-hooks/exhaustive-deps
+
   return state
 }
 

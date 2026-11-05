@@ -5,6 +5,13 @@ import { parseLrc } from './lib'
 const MAX = 200
 const done = new Map() // id -> lines（已加载）
 const pending = new Map() // id -> Promise<lines>
+const translated = new Set() // id -> 已成功补译，避免重复请求
+
+const KANA = /[\u3040-\u30ff]/
+const HANGUL = /[\uac00-\ud7af\u1100-\u11ff]/
+const KANJI = /[\u3400-\u9fff]/g
+const CYRILLIC = /[\u0400-\u04ff]/g
+const LATIN = /[A-Za-z]/g
 
 // LRC 解析；没有时间戳的纯文本歌词也保留（time = -1，不滚动）
 export function toLines(text) {
@@ -61,11 +68,77 @@ export function hasNextLyric(lines) {
 
 export const peekLyrics = (id) => done.get(id)
 
-export function loadLyrics(id) {
-  if (done.has(id)) return Promise.resolve(done.get(id))
+export function detectLyricLang(text) {
+  const s = String(text || '')
+  if (KANA.test(s)) return 'ja'
+  if (HANGUL.test(s)) return 'ko'
+  const letters = [...s].filter((c) => /\p{L}/u.test(c))
+  if (!letters.length) return 'unknown'
+  const n = letters.length
+  if ((s.match(KANJI) || []).length / n > 0.5) return 'zh'
+  if ((s.match(CYRILLIC) || []).length / n > 0.3) return 'ru'
+  if ((s.match(LATIN) || []).length / n > 0.5) return 'latin'
+  return 'other'
+}
+
+export function translationTargets(lines) {
+  const out = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const text = String(line?.text || '').trim()
+    if (!text || line.translation) continue
+    out.push({ index: i, text })
+  }
+  return out
+}
+
+function isForeignLyrics(targets) {
+  const all = targets.map((x) => x.text).join(' ')
+  const lang = detectLyricLang(all)
+  return !!(all && lang !== 'zh' && lang !== 'unknown')
+}
+
+async function translateLines(id, lines, song) {
+  if (!lines.length || translated.has(id)) return lines
+  const targets = translationTargets(lines)
+  if (!targets.length || !isForeignLyrics(targets)) return lines
+  const bridge = globalThis.window?.fn
+  if (!bridge?.experimentalTranslateLyrics) return lines
+  translated.add(id)
+  try {
+    const context = lines.map((l) => String(l?.text || '').trim()).filter(Boolean).join('\n')
+    const r = await bridge.experimentalTranslateLyrics({
+      song: { title: song?.title || '', artist: song?.artist || '', album: song?.album || '' },
+      lines: targets.map((x) => x.text),
+      context,
+    })
+    if (!r?.ok || !r.translations?.length) {
+      translated.delete(id)
+      return lines
+    }
+    const out = lines.map((l) => ({ ...l }))
+    targets.forEach((t, i) => {
+      const text = String(r.translations[i] || '').trim()
+      if (text) out[t.index].translation = text
+    })
+    done.set(id, out)
+    return out
+  } catch {
+    translated.delete(id)
+    return lines
+  }
+}
+
+export function loadLyrics(id, song = null, { translate = false } = {}) {
+  if (done.has(id)) {
+    const cached = done.get(id)
+    if (translate) return translateLines(id, cached, song)
+    return Promise.resolve(cached)
+  }
   if (!pending.has(id)) {
-    pending.set(id, api.lyric(id).then((text) => {
-      const lines = toLines(text)
+    pending.set(id, api.lyric(id).then(async (text) => {
+      let lines = toLines(text)
+      if (translate) lines = await translateLines(id, lines, song)
       done.set(id, lines)
       if (done.size > MAX) done.delete(done.keys().next().value)
       return lines

@@ -55,6 +55,8 @@ export const useUI = create((set, get) => ({
   wallpaperUrl: '', // 自选图片的 blob URL（图片本身存在主进程的 userData 里）
   appearanceOpen: false,
   lyricsSettingsOpen: false,
+  experimentalOpen: false,
+  experimental: { enabled: false, configured: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
   floatingLyrics: false, // 悬浮歌词窗口是否开启（真实状态以主进程 prefs 为准）
   lyricsStyle: {}, // 悬浮歌词样式（主进程 prefs.lyricsStyle）
   lyricsStyleSeq: 0, // 丢弃过期样式写入响应，避免快速拖动滑块时旧值覆盖新值
@@ -132,6 +134,18 @@ export const useUI = create((set, get) => ({
   closeAppearance: () => set({ appearanceOpen: false }),
   openLyricsSettings: () => set({ lyricsSettingsOpen: true }),
   closeLyricsSettings: () => set({ lyricsSettingsOpen: false }),
+  openExperimental: () => set({ experimentalOpen: true }),
+  closeExperimental: () => set({ experimentalOpen: false }),
+  async loadExperimental() {
+    const r = await window.fn.experimentalGet?.().catch(() => null)
+    if (r) set({ experimental: { ...get().experimental, ...r } })
+    return r
+  },
+  async saveExperimental(patch) {
+    const r = await window.fn.experimentalSet?.(patch || {})
+    if (r?.ok) set({ experimental: { ...get().experimental, ...r.settings } })
+    return r
+  },
   async loadLyricsPrefs() {
     const r = await window.fn.lyricsGet?.().catch(() => null)
     if (!r) return
@@ -541,7 +555,7 @@ function broadcast() {
     lyricsReady = !song
     if (song) {
       const id = song.id
-      loadLyrics(id).then((lines) => {
+      loadLyrics(id, song, { translate: useUI.getState().experimental?.enabled }).then((lines) => {
         if (lyricFor === id) {
           lyricLines = lines
           lyricsReady = true
@@ -585,7 +599,10 @@ function broadcast() {
   window.fn?.setPlayerState?.({ ...state, currentTime: s.currentTime, at: now })
 }
 usePlayer.subscribe(broadcast)
-useUI.subscribe((s, prev) => { if (s.motion !== prev.motion || s.palette !== prev.palette) broadcast() })
+useUI.subscribe((s, prev) => {
+  if (s.experimental?.enabled !== prev.experimental?.enabled) lyricFor = ''
+  if (s.motion !== prev.motion || s.palette !== prev.palette || s.experimental?.enabled !== prev.experimental?.enabled) broadcast()
+})
 
 window.fn?.onPlayerCommand?.((cmd, arg) => {
   const p = usePlayer.getState()
