@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectLyricLang, hasTranslation, lineAt, lyricFrame, lyricPlaceholder, toLines, translationTargets } from '../src/lyrics.js'
+import { clearLyricsTranslation, detectLyricLang, hasTranslation, lineAt, lyricFrame, lyricPlaceholder, loadLyrics, toLines, translationTargets } from '../src/lyrics.js'
 
 describe('歌词', () => {
   const lines = toLines('[00:01.00]一\n[00:05.00]二\n[00:09.00]三')
@@ -52,6 +52,46 @@ describe('歌词', () => {
     expect(detectLyricLang('こんにちは世界')).toBe('ja')
     expect(detectLyricLang('你好世界')).toBe('zh')
     expect(detectLyricLang('안녕하세요')).toBe('ko')
+  })
+
+  it('侧栏与全屏并发加载时复用翻译结果，不用原文覆盖缓存', async () => {
+    const lyrics = '[00:01.00]Hello\n[00:05.00]World'
+    const id = 'race-song-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    let lyricCalls = 0
+    let translateCalls = 0
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => {
+      lyricCalls++
+      return { json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) }
+    }
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async ({ lines }) => {
+        translateCalls++
+        await new Promise((r) => setTimeout(r, 5))
+        return { ok: true, translations: lines.map((t) => `译:${t}`), source: 'netease', sourceCount: lines.length, aiCount: 0 }
+      },
+    }
+    try {
+      const song = { id, title: 'Race', artist: 'Tester', album: '', duration: 180 }
+      const [a, b] = await Promise.all([
+        loadLyrics(id, song, { translate: true }),
+        loadLyrics(id, song, { translate: true }),
+      ])
+      expect(lyricCalls).toBe(1)
+      expect(translateCalls).toBe(1)
+      expect(a[0].translation).toBe('译:Hello')
+      expect(b[0].translation).toBe('译:Hello')
+      expect(a).toEqual(b)
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+      else delete globalThis.window.fn
+    }
   })
 
   it('只为缺译文的外语行生成翻译目标', () => {

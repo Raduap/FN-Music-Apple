@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
-import { clearLyricsTranslation, hasTranslation, lineAt, loadLyrics } from '../lyrics'
+import { hasTranslation, lineAt, loadLyrics } from '../lyrics'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
 import { closeFullPlayer, openFullPlayer } from '../motion'
 import * as Icon from '../icons'
@@ -272,8 +272,7 @@ function useLyrics(song) {
   useEffect(() => {
     if (!id) return setState({ lines: [], loading: false })
     let dead = false
-    setState({ lines: [], loading: true })
-    clearLyricsTranslation(id)
+    setState((s) => ({ lines: translationEnabled ? s.lines : [], loading: !translationEnabled || !s.lines.length }))
     loadLyrics(id, song, { translate: translationEnabled }).then((lines) => { if (!dead) setState({ lines, loading: false }) })
     return () => { dead = true }
   }, [id, translationEnabled, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps

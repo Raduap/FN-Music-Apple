@@ -3,9 +3,10 @@ import { api } from './api'
 import { parseLrc } from './lib'
 
 const MAX = 200
-const done = new Map() // id -> lines（已加载）
+const raw = new Map() // id -> 原始歌词（始终保留，关闭翻译时返回这一份）
+const done = new Map() // id -> lines（当前显示用，可能带译文）
 const pending = new Map() // id -> Promise<lines>
-const translated = new Set() // id -> 已成功翻译，避免重复请求
+const translating = new Map() // id -> 正在进行的翻译 Promise，避免侧栏/全屏重复请求
 const translationMeta = new Map() // id -> { source, matched, sourceCount, aiCount, warning }
 
 const KANA = /[\u3040-\u30ff]/
@@ -71,9 +72,10 @@ export const peekLyrics = (id) => done.get(id)
 export const peekTranslationMeta = (id) => translationMeta.get(id)
 export function clearLyricsTranslation(id) {
   if (!id) return
+  raw.delete(id)
   done.delete(id)
   pending.delete(id)
-  translated.delete(id)
+  translating.delete(id)
   translationMeta.delete(id)
 }
 
@@ -108,62 +110,75 @@ function isForeignLyrics(targets) {
 }
 
 async function translateLines(id, lines, song) {
-  if (!lines.length || translated.has(id)) return lines
+  if (!lines.length) return lines
+  const cached = done.get(id)
+  if (cached && hasTranslation(cached)) return cached
   const targets = translationTargets(lines)
   if (!targets.length || !isForeignLyrics(targets)) return lines
+  if (translating.has(id)) return translating.get(id)
   const bridge = globalThis.window?.fn
   if (!bridge?.lyricsTranslate) return lines
-  translated.add(id)
+  const run = (async () => {
+    try {
+      const context = lines.map((l) => String(l?.text || '').trim()).filter(Boolean).join('\n')
+      const r = await bridge.lyricsTranslate({
+        song: { title: song?.title || '', artist: song?.artist || '', album: song?.album || '', duration: song?.duration || 0 },
+        lines: targets.map((x) => x.text),
+        localLines: targets.map((x) => ({ ms: (Number(lines[x.index]?.time) || 0) * 1000, text: x.text })),
+        context,
+      })
+      if (!r?.ok || !r.translations?.length) return lines
+      const out = lines.map((l) => ({ ...l }))
+      let filled = 0
+      targets.forEach((t, i) => {
+        const text = String(r.translations[i] || '').trim()
+        if (text) { out[t.index].translation = text; filled++ }
+      })
+      if (!filled) return lines
+      translationMeta.set(id, {
+        source: r.source || 'none',
+        matched: r.matched || '',
+        sourceCount: Number(r.sourceCount) || 0,
+        aiCount: Number(r.aiCount) || 0,
+        warning: r.warning || '',
+      })
+      done.set(id, out)
+      return out
+    } catch {
+      return lines
+    }
+  })()
+  translating.set(id, run)
   try {
-    const context = lines.map((l) => String(l?.text || '').trim()).filter(Boolean).join('\n')
-    const r = await bridge.lyricsTranslate({
-      song: { title: song?.title || '', artist: song?.artist || '', album: song?.album || '', duration: song?.duration || 0 },
-      lines: targets.map((x) => x.text),
-      localLines: targets.map((x) => ({ ms: (Number(lines[x.index]?.time) || 0) * 1000, text: x.text })),
-      context,
-    })
-    if (!r?.ok || !r.translations?.length) {
-      translated.delete(id)
-      return lines
-    }
-    const out = lines.map((l) => ({ ...l }))
-    let filled = 0
-    targets.forEach((t, i) => {
-      const text = String(r.translations[i] || '').trim()
-      if (text) { out[t.index].translation = text; filled++ }
-    })
-    if (!filled) {
-      translated.delete(id)
-      return lines
-    }
-    translationMeta.set(id, {
-      source: r.source || 'none',
-      matched: r.matched || '',
-      sourceCount: Number(r.sourceCount) || 0,
-      aiCount: Number(r.aiCount) || 0,
-      warning: r.warning || '',
-    })
-    done.set(id, out)
-    return out
-  } catch {
-    translated.delete(id)
-    return lines
+    return await run
+  } finally {
+    translating.delete(id)
   }
 }
 
 export function loadLyrics(id, song = null, { translate = false } = {}) {
-  if (done.has(id)) {
-    const cached = done.get(id)
-    if (translate) return translateLines(id, cached, song)
-    return Promise.resolve(cached)
+  const cached = done.get(id)
+  if (done.has(id) || raw.has(id)) {
+    const original = raw.get(id) || cached
+    if (translate) {
+      if (cached && hasTranslation(cached)) return Promise.resolve(cached)
+      return translateLines(id, original, song)
+    }
+    return Promise.resolve(original)
   }
   if (!pending.has(id)) {
     pending.set(id, api.lyric(id).then(async (text) => {
-      let lines = toLines(text)
-      if (translate) lines = await translateLines(id, lines, song)
-      done.set(id, lines)
-      if (done.size > MAX) done.delete(done.keys().next().value)
-      return lines
+      const lines = toLines(text)
+      raw.set(id, lines)
+      let out = lines
+      if (translate) out = await translateLines(id, lines, song)
+      done.set(id, out)
+      if (done.size > MAX) {
+        const oldest = done.keys().next().value
+        done.delete(oldest)
+        raw.delete(oldest)
+      }
+      return out
     }).catch(() => []).finally(() => pending.delete(id)))
   }
   return pending.get(id)
