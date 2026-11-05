@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useUI } from '../store'
 import * as Icon from '../icons'
 
-const DEFAULTS = { enabled: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false }
+const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false }
 const SECTIONS = [
   { id: 'overview', label: '翻译总览', icon: Icon.Translate },
   { id: 'endpoint', label: '翻译端点', icon: Icon.Wave },
@@ -41,7 +41,7 @@ export function ExperimentalSettings() {
 
   if (!open) return null
 
-  const patch = { enabled: form.enabled, baseUrl: form.baseUrl.trim(), model: form.model.trim() }
+  const patch = { enabled: form.enabled, sourceEnabled: form.sourceEnabled, aiFallback: form.aiFallback, baseUrl: form.baseUrl.trim(), model: form.model.trim() }
   const save = async (extra = {}) => {
     setBusy('save')
     setStatus(null)
@@ -60,7 +60,7 @@ export function ExperimentalSettings() {
   }
   const toggle = async () => {
     const next = !form.enabled
-    if (next && (!patch.baseUrl || !patch.model)) return setStatus({ bad: true, text: '请先填写 Base URL 和模型名' })
+    if (next && form.aiFallback && (!patch.baseUrl || !patch.model)) return setStatus({ bad: true, text: '请先填写 Base URL 和模型名，或关闭 AI 补译' })
     setForm((f) => ({ ...f, enabled: next }))
     await save({ enabled: next })
   }
@@ -110,20 +110,26 @@ export function ExperimentalSettings() {
                   <div className="exp-note">
                     <Icon.Translate size={18} />
                     <div>
-                      <b>AI 补译外语歌词</b>
-                      <p>开启后，只对非中文、且还没有译文的外语歌词调用你配置的 OpenAI 兼容端点；已有译文不会被覆盖。歌词文本会发送给该端点。</p>
+                      <b>翻译外语歌词</b>
+                      <p>优先使用网易云源站自带的中文译文；源站没有译文的外语行，再调用你配置的 OpenAI 兼容端点补译。已有译文不会被覆盖。</p>
                     </div>
                   </div>
                   <button className={`fl-toggle exp-toggle ${form.enabled ? 'on' : ''}`} role="switch" aria-checked={form.enabled} onClick={toggle}>
-                    <span>启用 AI 补译</span><span className="fl-switch" aria-hidden="true" />
+                    <span>启用歌词翻译</span><span className="fl-switch" aria-hidden="true" />
                   </button>
                 </section>
                 <section className="exp-section">
                   <div className="exp-section-title">工作方式</div>
+                  <button className={`fl-toggle exp-toggle ${form.sourceEnabled ? 'on' : ''}`} role="switch" aria-checked={form.sourceEnabled} onClick={async () => { const sourceEnabled = !form.sourceEnabled; setForm((f) => ({ ...f, sourceEnabled })); await save({ sourceEnabled }) }}>
+                    <span>源站译词优先</span><span className="fl-switch" aria-hidden="true" />
+                  </button>
+                  <button className={`fl-toggle exp-toggle ${form.aiFallback ? 'on' : ''}`} role="switch" aria-checked={form.aiFallback} onClick={async () => { const aiFallback = !form.aiFallback; setForm((f) => ({ ...f, aiFallback })); await save({ aiFallback }) }}>
+                    <span>源站缺译文时用 AI 补译</span><span className="fl-switch" aria-hidden="true" />
+                  </button>
                   <ul className="exp-list">
-                    <li>先展示原始歌词，命中缺译文的外语行后再异步补译。</li>
+                    <li>先展示原始歌词，命中缺译文的外语行后再异步翻译。</li>
                     <li>中文歌词、纯音乐和已有译文都不会被改写。</li>
-                    <li>当前曲目的侧栏歌词、全屏播放页和悬浮歌词都会同步显示补译结果。</li>
+                    <li>当前曲目的侧栏歌词、全屏播放页和悬浮歌词都会同步显示译文。</li>
                   </ul>
                 </section>
               </>
@@ -161,7 +167,7 @@ export function ExperimentalSettings() {
                   <div className="exp-section-title">隐私与边界</div>
                   <ul className="exp-list">
                     <li>API Key 通过系统安全存储加密保存在本机，不写入项目文件，也不会回显明文。</li>
-                    <li>只有开启“AI 补译”后，歌词文本才会发送到你填写的翻译端点。</li>
+                    <li>“源站译词优先”只向网易云查询匹配歌词；只有源站缺译文且打开 AI 补译时，缺失行的歌词文本才会发送到你填写的翻译端点。</li>
                     <li>此设置不会修改飞牛服务器上的原始歌词，也不会写回 NAS。</li>
                   </ul>
                 </section>

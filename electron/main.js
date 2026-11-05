@@ -142,6 +142,8 @@ function writeExperimentalKey(key) {
 
 const experimentalDefaults = () => ({
   enabled: false,
+  sourceEnabled: true,
+  aiFallback: true,
   baseUrl: 'https://api.deepseek.com/v1',
   model: 'deepseek-chat',
   hasKey: false,
@@ -150,19 +152,280 @@ const experimentalDefaults = () => ({
 function experimentalRead() {
   const p = readPrefs()
   const e = { ...experimentalDefaults(), ...(p.experimental || {}) }
-  return { enabled: !!e.enabled, baseUrl: e.baseUrl || 'https://api.deepseek.com/v1', model: e.model || 'deepseek-chat', hasKey: !!readExperimentalKey() }
+  return {
+    enabled: !!e.enabled,
+    sourceEnabled: e.sourceEnabled !== false,
+    aiFallback: e.aiFallback !== false,
+    baseUrl: e.baseUrl || 'https://api.deepseek.com/v1',
+    model: e.model || 'deepseek-chat',
+    hasKey: !!readExperimentalKey(),
+  }
 }
 
 function experimentalWrite(patch) {
   const cur = experimentalRead()
   const next = {
     enabled: patch.enabled === undefined ? cur.enabled : !!patch.enabled,
+    sourceEnabled: patch.sourceEnabled === undefined ? cur.sourceEnabled : !!patch.sourceEnabled,
+    aiFallback: patch.aiFallback === undefined ? cur.aiFallback : !!patch.aiFallback,
     baseUrl: String(patch.baseUrl ?? cur.baseUrl ?? '').trim(),
     model: String(patch.model ?? cur.model ?? '').trim(),
   }
   if (patch.apiKey !== undefined) writeExperimentalKey(String(patch.apiKey || '').trim())
   writePrefs({ ...readPrefs(), experimental: next })
   return experimentalRead()
+}
+
+// ---------- 源站译词（网易云） ----------
+// 与 fnlrc 一致：源站已有 tlyric 时优先使用；只把缺失译文交给 AI 补。
+const NE_LYRICS_UA = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36',
+  Referer: 'https://music.163.com/',
+}
+const NE_LYRICS_SEARCH_URLS = [
+  'https://music.163.com/api/search/get',
+  'https://music.163.com/api/search/get/web',
+]
+const NE_LYRICS_TIMEOUT = 12000
+const NE_LYRICS_DURATION_TOLERANCE = 10
+const NE_LYRICS_SEARCH_LIMIT = 8
+let neLastRequestAt = 0
+
+const normalizeText = (v) => String(v || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+const baseTitle = (title) => {
+  let s = String(title || '').trim()
+  const noise = [
+    /(?:\s*[([（【][^)\]）】]{0,24}?(?:\bsize\b|\bver\b\.?|\bversion\b|\bedit\b\.?|\bmix\b|\bcut\b|\bremaster(?:ed)?\b(?:\s*\d{4})?)\s*[)\]）】])/gi,
+    /(?:\s*[-–—]\s*(?:remaster(?:ed)?(?:\s*\d{4})?|(?:short|tv|original)\s*(?:ver\.?|version|size|mix))\s*$)/gi,
+  ]
+  for (let i = 0; i < 3; i++) {
+    const before = s
+    for (const re of noise) s = s.replace(re, '').trim()
+    s = s.replace(/^[\s\-–—_:·]+|[\s\-–—_:·]+$/g, '')
+    if (s === before) break
+  }
+  return s || String(title || '').trim()
+}
+const textSimilarity = (a, b) => {
+  a = normalizeText(a)
+  b = normalizeText(b)
+  if (!a || !b) return 0
+  if (a === b) return 1
+  if (a.includes(b) || b.includes(a)) {
+    const short = a.length <= b.length ? a : b
+    const long = a.length <= b.length ? b : a
+    return 0.75 + 0.25 * (short.length / long.length)
+  }
+  const max = Math.max(a.length, b.length)
+  const seen = new Array(b.length + 1)
+  for (let i = 0; i <= a.length; i++) {
+    let prev = i
+    for (let j = 0; j <= b.length; j++) {
+      const old = seen[j] ?? j
+      if (i && j) seen[j] = a[i - 1] === b[j - 1] ? seen[j - 1] : Math.min(seen[j - 1], prev, old) + 1
+      else seen[j] = i || j
+      prev = old
+    }
+  }
+  return Math.max(0, 1 - (seen[b.length] || 0) / Math.max(max, 1))
+}
+const titleSimilarity = (query, candidate) => {
+  const q = normalizeText(baseTitle(query))
+  const c = normalizeText(baseTitle(candidate))
+  if (!q || !c) return 0
+  if (q === c) return 1
+  if (q.includes(c) || c.includes(q)) {
+    const short = q.length <= c.length ? q : c
+    const long = q.length <= c.length ? c : q
+    return short.length < 4 ? 0 : 0.75 + 0.25 * (short.length / long.length)
+  }
+  if (q.length < 4 || c.length < 4) return 0
+  return textSimilarity(q, c)
+}
+const artistSimilarity = (a, b) => textSimilarity(a, b)
+const versionPenalty = (query, candidate) => {
+  const qm = new Set((String(query || '').match(/live|cover(?:ed)?|remix|acoustic|unplugged|instrumental|off ?vocal|piano ?version|karaoke|カラオケ|伴奏|纯音乐|纯音|演奏|翻唱|翻自/gi) || []).map((x) => x.toLowerCase()))
+  const cm = new Set((String(candidate || '').match(/live|cover(?:ed)?|remix|acoustic|unplugged|instrumental|off ?vocal|piano ?version|karaoke|カラオケ|伴奏|纯音乐|纯音|演奏|翻唱|翻自/gi) || []).map((x) => x.toLowerCase()))
+  return [...cm].some((x) => !qm.has(x)) ? -2.5 : 0
+}
+const durationOk = (candidateMs, duration) => !candidateMs || !duration || Math.abs(candidateMs / 1000 - duration) <= NE_LYRICS_DURATION_TOLERANCE
+const songScore = (candidate, title, artist, duration) => {
+  const candTitle = candidate?.name || ''
+  const artists = Array.isArray(candidate?.artists) ? candidate.artists.map((a) => a?.name || '').join('/') : ''
+  const durMs = Number(candidate?.duration || candidate?.dt || 0)
+  let score = 3 * titleSimilarity(title, candTitle) + 2 * artistSimilarity(artists, artist)
+  if (durMs && duration) {
+    const diff = Math.abs(durMs / 1000 - duration)
+    score += diff <= 3 ? 3 : diff <= 8 ? 1.5 : -1.5
+  }
+  return { score: score + versionPenalty(title, candTitle), artists, durMs }
+}
+const CREDIT_RE = /^(作词|作曲|编曲|制作人|混音|母带|录音|和声|监制|出品|企划|翻译|校对|字幕|歌词|伴奏|吉他|贝斯|鼓|键盘|弦乐|制作|词曲|produced by|written by|composed by|lyrics by|music by|arranged by|mixed by|mastered by|recorded by|vocal|guitar|bass|drum|piano|strings|engineer|studio|op :|sp :|ed :)/i
+const parseTimestamp = (m) => Number(m[1]) * 60 + Number(m[2]) + (m[3] ? Number((m[3] + '000').slice(0, 3)) / 1000 : 0)
+function parseLrcEntries(text) {
+  const out = []
+  for (const raw of String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')) {
+    const stamps = [...raw.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)]
+    if (!stamps.length) continue
+    const content = raw.replace(/\[[^\]]*\]/g, '').replace(/<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>/g, '').trim().replace(/^[|｜]+|[|｜]+$/g, '').trim()
+    if (!content || CREDIT_RE.test(content)) continue
+    for (const m of stamps) out.push({ ms: Math.round(parseTimestamp(m) * 1000), text: content })
+  }
+  const seen = new Set()
+  return out.filter((x) => {
+    const key = `${x.ms}\u0000${x.text}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }).sort((a, b) => a.ms - b.ms)
+}
+const detectTextLang = (text) => {
+  const s = String(text || '')
+  if (/[\u3040-\u30ff]/.test(s)) return 'ja'
+  if (/[\uac00-\ud7af\u1100-\u11ff]/.test(s)) return 'ko'
+  const letters = [...s].filter((c) => /\p{L}/u.test(c))
+  if (!letters.length) return 'unknown'
+  const n = letters.length
+  if ((s.match(/[\u3400-\u9fff]/g) || []).length / n > 0.5) return 'zh'
+  if ((s.match(/[\u0400-\u04ff]/g) || []).length / n > 0.3) return 'ru'
+  if ((s.match(/[A-Za-z]/g) || []).length / n > 0.5) return 'latin'
+  return 'other'
+}
+async function neThrottle() {
+  const wait = 350 - (Date.now() - neLastRequestAt)
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+  neLastRequestAt = Date.now()
+}
+async function neJson(url, { method = 'GET', data } = {}) {
+  await neThrottle()
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), NE_LYRICS_TIMEOUT)
+  try {
+    const res = await net.fetch(url, {
+      method,
+      headers: data ? { ...NE_LYRICS_UA, 'Content-Type': 'application/x-www-form-urlencoded' } : NE_LYRICS_UA,
+      body: data ? new URLSearchParams(data).toString() : undefined,
+      signal: ctl.signal,
+    })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+async function neSearch(query) {
+  for (const url of NE_LYRICS_SEARCH_URLS) {
+    const d = await neJson(url, { method: 'POST', data: { s: query, type: 1, offset: 0, limit: NE_LYRICS_SEARCH_LIMIT } })
+    const songs = d?.result?.songs
+    if (Array.isArray(songs) && songs.length) return songs
+  }
+  return []
+}
+async function neLyric(songId) {
+  const d = await neJson(`https://music.163.com/api/song/lyric?id=${encodeURIComponent(songId)}&lv=1&kv=1&tv=1&rv=1`)
+  return {
+    lrc: d?.lrc?.lyric || '',
+    tlyric: d?.tlyric?.lyric || '',
+    romalrc: d?.romalrc?.lyric || '',
+    nolyric: !!d?.nolyric,
+  }
+}
+function pickTranslation(candidates, original) {
+  const pool = (candidates || []).filter((x) => String(x || '').trim() && normalizeText(x) !== normalizeText(original))
+  if (!pool.length) return ''
+  const origLang = detectTextLang(original)
+  const score = (text) => {
+    const lang = detectTextLang(text)
+    const roman = origLang !== 'latin' && lang === 'latin'
+    const sameLang = lang === origLang
+    return (roman ? 10 : 0) + (sameLang ? 2 : 0) - Math.min(String(text).length, 80) / 1000
+  }
+  return pool.sort((a, b) => score(a) - score(b))[0]
+}
+async function fetchNeteaseTranslation({ title, artist, album, duration }) {
+  title = String(title || '').trim()
+  artist = String(artist || '').trim()
+  if (!title) return { ok: false, error: '缺少歌曲名' }
+  const base = baseTitle(title)
+  const queries = [`${title} ${artist}`.trim(), title, `${artist} ${title}`.trim()]
+  if (base && normalizeText(base) !== normalizeText(title)) queries.push(artist ? `${base} ${artist}` : base)
+  const seen = new Set()
+  const candidates = []
+  for (const q of queries) {
+    if (!q) continue
+    const songs = await neSearch(q)
+    for (const song of songs) {
+      const id = song?.id
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      const meta = songScore(song, title, artist, duration)
+      if (durationOk(meta.durMs, duration)) candidates.push({ song, ...meta })
+    }
+    if (candidates.some((x) => x.score >= 6.5)) break
+  }
+  candidates.sort((a, b) => b.score - a.score)
+  if (!candidates.length) return { ok: false, error: '网易云没有找到匹配歌曲' }
+  let best = null
+  for (const cand of candidates.slice(0, 5)) {
+    if (cand.score < 4) break
+    const lyric = await neLyric(cand.song.id)
+    if (!lyric.lrc || lyric.nolyric) continue
+    const originals = parseLrcEntries(lyric.lrc)
+    if (!originals.length) continue
+    const translations = parseLrcEntries(lyric.tlyric)
+    const romans = parseLrcEntries(lyric.romalrc)
+    const assigned = new Set()
+    const trustedTranslations = translations.map((row) => ({ ...row, owner: -1, delta: Infinity }))
+    originals.forEach((orig, i) => {
+      let best = null
+      trustedTranslations.forEach((trans, j) => {
+        if (assigned.has(j)) return
+        const d = Math.abs(trans.ms - orig.ms)
+        if (d <= 500 && (!best || d < best.d)) best = { d, j }
+      })
+      if (best) {
+        assigned.add(best.j)
+        trustedTranslations[best.j].owner = i
+        trustedTranslations[best.j].delta = best.d
+      }
+    })
+    const byMs = new Map()
+    trustedTranslations.forEach((row) => {
+      const key = row.owner >= 0 ? originals[row.owner].ms : row.ms
+      if (!byMs.has(key)) byMs.set(key, [])
+      byMs.get(key).push(row.text)
+    })
+    const romanByMs = new Map()
+    for (const row of romans) if (!romanByMs.has(row.ms)) romanByMs.set(row.ms, row.text)
+    const lines = originals.map((row) => {
+      const exact = byMs.get(row.ms)
+      let candidates = exact || []
+      if (!exact?.length) {
+        let near = null
+        for (const [ms, vals] of byMs) {
+          const d = Math.abs(ms - row.ms)
+          if (d <= 300 && (!near || d < near.d)) near = { d, vals }
+        }
+        candidates = near?.vals || []
+      }
+      return { ms: row.ms, text: row.text, translation: pickTranslation(candidates, row.text), roman: romanByMs.get(row.ms) || '' }
+    })
+    const hasTranslation = lines.some((x) => x.translation)
+    const info = {
+      source: 'netease',
+      matched: `${cand.song.name || ''} / ${cand.artists}`.trim(),
+      score: Number(cand.score.toFixed(2)),
+      songId: cand.song.id,
+      lyricLang: detectTextLang(lines.map((x) => x.text).join(' ')),
+      hasTranslation,
+      lines,
+    }
+    if (!best || (hasTranslation && !best.hasTranslation) || ((hasTranslation === best.hasTranslation) && info.score > best.score)) best = info
+    if (hasTranslation && cand.score >= 6.5) break
+  }
+  return best ? { ok: true, ...best } : { ok: false, error: '网易云找到了歌曲，但没有可用歌词或译文' }
 }
 
 const REMOTE_ERR = {
@@ -754,13 +1017,75 @@ function registerIpc() {
       return r.ok ? { ok: true, message: `${settings.model} 返回了译文` } : r
     } catch (e) { return { ok: false, error: e.message } }
   })
-  ipcMain.handle('experimental:translate', async (_e, payload) => {
+  ipcMain.handle('lyrics:translate', async (_e, payload) => {
     try {
       const settings = experimentalRead()
-      if (!settings.enabled) return { ok: false, error: '实验性 AI 翻译未开启' }
-      const lines = Array.isArray(payload?.lines) ? payload.lines.map((v) => String(v || '')).filter(Boolean) : []
-      if (!lines.length) return { ok: true, translations: [] }
-      return await remoteTranslate(lines, { ...settings, title: payload?.song?.title || '', artist: payload?.song?.artist || '', context: payload?.context || '' })
+      if (!settings.enabled) return { ok: false, error: '实验性歌词翻译未开启' }
+      const song = payload?.song || {}
+      const source = settings.sourceEnabled ? await fetchNeteaseTranslation(song) : { ok: false, error: '源站译词未开启' }
+      const sourceLines = source.ok && Array.isArray(source.lines) ? source.lines : []
+      const local = Array.isArray(payload?.localLines) ? payload.localLines : []
+      const lines = local.map((x) => String(x?.text || '')).filter(Boolean)
+      const findSourceLine = (localMs, text) => {
+        if (localMs) {
+          let exactTranslated = null
+          let exactAny = null
+          let nearestTranslated = null
+          let nearestAny = null
+          for (const row of sourceLines) {
+            const d = Math.abs(Number(row.ms || 0) - localMs)
+            const hasTr = !!String(row.translation || '').trim()
+            if (d === 0) {
+              if (hasTr && !exactTranslated) exactTranslated = row
+              if (!exactAny) exactAny = row
+            }
+            if (d <= 900) {
+              if (hasTr && (!nearestTranslated || d < nearestTranslated.d)) nearestTranslated = { d, row }
+              if (!nearestAny || d < nearestAny.d) nearestAny = { d, row }
+            }
+          }
+          if (exactTranslated) return exactTranslated
+          if (nearestTranslated) return nearestTranslated.row
+          if (exactAny) return exactAny
+          if (nearestAny) return nearestAny.row
+        }
+        if (!text) return null
+        let bestTranslated = null
+        let bestAny = null
+        for (const row of sourceLines) {
+          const sim = textSimilarity(text, row.text || '')
+          if (sim < 0.62) continue
+          const hasTr = !!String(row.translation || '').trim()
+          if (hasTr && (!bestTranslated || sim > bestTranslated.sim)) bestTranslated = { sim, row }
+          if (!bestAny || sim > bestAny.sim) bestAny = { sim, row }
+        }
+        return (bestTranslated || bestAny)?.row || null
+      }
+      const translations = []
+      const missing = []
+      for (let i = 0; i < lines.length; i++) {
+        const text = lines[i]
+        const localLine = local[i] || {}
+        const hit = findSourceLine(Number(localLine.ms || 0), text)
+        const tr = String(hit?.translation || '').trim()
+        translations[i] = tr
+        if (!tr) missing.push({ i, text })
+      }
+      let ai = { ok: false, translations: [], error: '' }
+      if (missing.length && settings.aiFallback) {
+        ai = await remoteTranslate(missing.map((x) => x.text), { ...settings, title: song.title || '', artist: song.artist || '', context: payload?.context || '' })
+        if (ai.ok) missing.forEach((x, j) => { translations[x.i] = ai.translations[j] || '' })
+      }
+      const sourceCount = translations.filter(Boolean).length - (ai.ok ? ai.translations.filter(Boolean).length : 0)
+      return {
+        ok: true,
+        translations,
+        source: source.ok ? source.source : 'none',
+        matched: source.ok ? source.matched : '',
+        sourceCount: Math.max(0, sourceCount),
+        aiCount: ai.ok ? ai.translations.filter(Boolean).length : 0,
+        warning: !source.ok ? source.error : (missing.length && !settings.aiFallback ? '源站没有译文的行未补译（AI 补译已关闭）' : (missing.length && !ai.ok ? ai.error : '')),
+      }
     } catch (e) { return { ok: false, error: e.message } }
   })
   ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); syncBall(); syncLyrics(); if (p && p.lyricsStyle) lyricsWin?.setStyle(readPrefs().lyricsStyle); tray?.refresh(); return true })

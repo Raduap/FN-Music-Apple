@@ -56,7 +56,7 @@ export const useUI = create((set, get) => ({
   appearanceOpen: false,
   lyricsSettingsOpen: false,
   experimentalOpen: false,
-  experimental: { enabled: false, configured: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
   floatingLyrics: false, // 悬浮歌词窗口是否开启（真实状态以主进程 prefs 为准）
   lyricsStyle: {}, // 悬浮歌词样式（主进程 prefs.lyricsStyle）
   lyricsStyleSeq: 0, // 丢弃过期样式写入响应，避免快速拖动滑块时旧值覆盖新值
@@ -600,8 +600,9 @@ function broadcast() {
 }
 usePlayer.subscribe(broadcast)
 useUI.subscribe((s, prev) => {
-  if (s.experimental?.enabled !== prev.experimental?.enabled) lyricFor = ''
-  if (s.motion !== prev.motion || s.palette !== prev.palette || s.experimental?.enabled !== prev.experimental?.enabled) broadcast()
+  const expChanged = s.experimental?.enabled !== prev.experimental?.enabled || s.experimental?.sourceEnabled !== prev.experimental?.sourceEnabled || s.experimental?.aiFallback !== prev.experimental?.aiFallback
+  if (expChanged) lyricFor = ''
+  if (s.motion !== prev.motion || s.palette !== prev.palette || expChanged) broadcast()
 })
 
 window.fn?.onPlayerCommand?.((cmd, arg) => {

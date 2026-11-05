@@ -5,7 +5,8 @@ import { parseLrc } from './lib'
 const MAX = 200
 const done = new Map() // id -> lines（已加载）
 const pending = new Map() // id -> Promise<lines>
-const translated = new Set() // id -> 已成功补译，避免重复请求
+const translated = new Set() // id -> 已成功翻译，避免重复请求
+const translationMeta = new Map() // id -> { source, matched, sourceCount, aiCount, warning }
 
 const KANA = /[\u3040-\u30ff]/
 const HANGUL = /[\uac00-\ud7af\u1100-\u11ff]/
@@ -67,6 +68,14 @@ export function hasNextLyric(lines) {
 }
 
 export const peekLyrics = (id) => done.get(id)
+export const peekTranslationMeta = (id) => translationMeta.get(id)
+export function clearLyricsTranslation(id) {
+  if (!id) return
+  done.delete(id)
+  pending.delete(id)
+  translated.delete(id)
+  translationMeta.delete(id)
+}
 
 export function detectLyricLang(text) {
   const s = String(text || '')
@@ -103,13 +112,14 @@ async function translateLines(id, lines, song) {
   const targets = translationTargets(lines)
   if (!targets.length || !isForeignLyrics(targets)) return lines
   const bridge = globalThis.window?.fn
-  if (!bridge?.experimentalTranslateLyrics) return lines
+  if (!bridge?.lyricsTranslate) return lines
   translated.add(id)
   try {
     const context = lines.map((l) => String(l?.text || '').trim()).filter(Boolean).join('\n')
-    const r = await bridge.experimentalTranslateLyrics({
-      song: { title: song?.title || '', artist: song?.artist || '', album: song?.album || '' },
+    const r = await bridge.lyricsTranslate({
+      song: { title: song?.title || '', artist: song?.artist || '', album: song?.album || '', duration: song?.duration || 0 },
       lines: targets.map((x) => x.text),
+      localLines: targets.map((x) => ({ ms: (Number(lines[x.index]?.time) || 0) * 1000, text: x.text })),
       context,
     })
     if (!r?.ok || !r.translations?.length) {
@@ -117,9 +127,21 @@ async function translateLines(id, lines, song) {
       return lines
     }
     const out = lines.map((l) => ({ ...l }))
+    let filled = 0
     targets.forEach((t, i) => {
       const text = String(r.translations[i] || '').trim()
-      if (text) out[t.index].translation = text
+      if (text) { out[t.index].translation = text; filled++ }
+    })
+    if (!filled) {
+      translated.delete(id)
+      return lines
+    }
+    translationMeta.set(id, {
+      source: r.source || 'none',
+      matched: r.matched || '',
+      sourceCount: Number(r.sourceCount) || 0,
+      aiCount: Number(r.aiCount) || 0,
+      warning: r.warning || '',
     })
     done.set(id, out)
     return out

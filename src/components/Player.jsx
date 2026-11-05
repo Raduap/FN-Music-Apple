@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
-import { hasTranslation, lineAt, loadLyrics, peekLyrics } from '../lyrics'
+import { clearLyricsTranslation, hasTranslation, lineAt, loadLyrics } from '../lyrics'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
 import { closeFullPlayer, openFullPlayer } from '../motion'
 import * as Icon from '../icons'
@@ -264,18 +264,19 @@ export function PlayerBar() {
 // ---------- 歌词 ----------
 function useLyrics(song) {
   const id = song?.id
-  const aiTranslation = useUI((s) => s.experimental?.enabled)
+  const translationEnabled = useUI((s) => s.experimental?.enabled)
+  const sourceEnabled = useUI((s) => s.experimental?.sourceEnabled)
+  const aiFallback = useUI((s) => s.experimental?.aiFallback)
   const [state, setState] = useState({ lines: [], loading: false })
   const meta = [song?.title, song?.artist, song?.album].join('\u0000')
   useEffect(() => {
     if (!id) return setState({ lines: [], loading: false })
-    const cached = peekLyrics(id)
-    if (cached && !aiTranslation) return setState({ lines: cached, loading: false })
     let dead = false
-    setState({ lines: cached || [], loading: !cached })
-    loadLyrics(id, song, { translate: aiTranslation }).then((lines) => { if (!dead) setState({ lines, loading: false }) })
+    setState({ lines: [], loading: true })
+    clearLyricsTranslation(id)
+    loadLyrics(id, song, { translate: translationEnabled }).then((lines) => { if (!dead) setState({ lines, loading: false }) })
     return () => { dead = true }
-  }, [id, aiTranslation, meta]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [id, translationEnabled, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return state
 }

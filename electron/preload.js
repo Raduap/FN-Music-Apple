@@ -21,7 +21,7 @@ contextBridge.exposeInMainWorld('fn', {
   experimentalGet: () => ipcRenderer.invoke('experimental:get'),
   experimentalSet: (patch) => ipcRenderer.invoke('experimental:set', patch || {}),
   experimentalTest: (patch) => ipcRenderer.invoke('experimental:test', patch || {}),
-  experimentalTranslateLyrics: (payload) => ipcRenderer.invoke('experimental:translate', payload || {}),
+  lyricsTranslate: (payload) => ipcRenderer.invoke('lyrics:translate', payload || {}),
   setTheme: (mode) => ipcRenderer.send('theme:set', mode),
   setOverlay: (o) => ipcRenderer.send('overlay:set', o),
   trayInfo: () => ipcRenderer.invoke('tray:info'),
