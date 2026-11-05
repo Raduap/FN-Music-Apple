@@ -103,6 +103,45 @@ export function Songs() {
   )
 }
 
+export function RecentlyPlayed() {
+  usePageTitle('最近播放')
+  const [items, setItems] = useState(null)
+  const [error, setError] = useState(null)
+  const load = () => api.recentPlayed().then((s) => { setItems(s); setError(null) }).catch((error) => { setItems(null); setError(error) })
+  useEffect(() => { load() }, [])
+  useFavoriteSync(setItems)
+
+  const remove = async (picked) => {
+    const ids = new Set(picked.map((x) => x.id))
+    const before = items
+    setItems((s) => s.filter((x) => !ids.has(x.id)))
+    try {
+      await api.removeFromRecentPlayed([...ids])
+    } catch (e) {
+      setItems(before)
+      useUI.getState().showToast('移除失败：' + e.message)
+    }
+  }
+
+  return (
+    <div className="page">
+      <PageHeader title="最近播放">
+        {items && <PlayButtons songs={items} />}
+      </PageHeader>
+      {!items && !error && <Loading />}
+      {error && <ErrorBox error={error} onRetry={load} />}
+      {items && !items.length && <Empty title="还没有最近播放" sub="播放过的歌曲会显示在这里。" icon={Icon.Clock} />}
+      {items && items.length > 0 && (
+        <SongList
+          songs={items}
+          sortable
+          extraMenu={(picked) => [{ label: '从最近播放中移除', icon: Icon.Trash, danger: true, onClick: () => remove(picked) }]}
+        />
+      )}
+    </div>
+  )
+}
+
 export function Favorites() {
   usePageTitle('喜欢的歌曲')
   const [state, setState] = useState({ items: null, error: null })

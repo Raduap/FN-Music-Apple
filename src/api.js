@@ -164,6 +164,7 @@ export const api = {
 
   // 歌曲
   songs: (onPage) => fetchAll('/api/v1/track/list', { sort: 'createdAt,desc' }, mapSong, onPage),
+  recentPlayed: async (size = 100) => songsOf(await call('/api/v1/play-history/list', { query: { page: 1, size } })),
   artistSongs: async (id, size = 200) => songsOf(await call('/api/v1/track/artist-detail/list', { query: { artistGUID: id, page: 1, size } })),
   favorites: async () => fillCovers(await fetchAll('/api/v1/favorite-track/list', { sort: 'favoriteAt,desc' }, mapSong)),
   genreSongs: async (guid, name) => {
@@ -189,6 +190,9 @@ export const api = {
 
   // 收藏
   setFavorite: (id, on) => call(on ? '/api/v1/favorite-track/create' : '/api/v1/favorite-track/delete', { method: 'POST', body: { trackGUID: id } }),
+
+  // 最近播放
+  removeFromRecentPlayed: (songIds) => call('/api/v1/play-history/delete', { method: 'POST', body: { trackGUIDs: songIds } }),
 
   // 搜索
   search: async (q) => {
