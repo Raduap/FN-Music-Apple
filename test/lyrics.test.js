@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hasTranslation, lineAt, lyricFrame, toLines } from '../src/lyrics.js'
+import { hasTranslation, lineAt, lyricFrame, lyricPlaceholder, toLines } from '../src/lyrics.js'
 
 describe('歌词', () => {
   const lines = toLines('[00:01.00]一\n[00:05.00]二\n[00:09.00]三')
@@ -55,6 +55,28 @@ describe('歌词', () => {
       { time: 10, text: '译文二' },
     ])
     expect(hasTranslation(tri)).toBe(false)
+  })
+
+  describe('lyricPlaceholder（悬浮歌词兜底文案）', () => {
+    it('歌词还没加载完时不显示纯音乐，而是显示当前歌曲名', () => {
+      expect(lyricPlaceholder({ title: '晴天', lyricsReady: false, hasLyrics: false, lyric: '', nextLyric: '' })).toBe('晴天')
+    })
+
+    it('歌词已经加载完且确认没有歌词时，才显示纯音乐', () => {
+      expect(lyricPlaceholder({ title: '晴天', lyricsReady: true, hasLyrics: false, lyric: '', nextLyric: '' })).toBe('纯音乐，请欣赏')
+    })
+
+    it('歌词已加载但没有可显示行时不显示纯音乐', () => {
+      expect(lyricPlaceholder({ title: '晴天', lyricsReady: true, hasLyrics: true, lyric: '', nextLyric: '' })).toBe('晴天')
+    })
+
+    it('旧消息缺少 lyricsReady 时不把未知状态误判为纯音乐', () => {
+      expect(lyricPlaceholder({ title: '晴天', hasLyrics: false, lyric: '', nextLyric: '' })).toBe('晴天')
+    })
+
+    it('没有在播放时显示未在播放', () => {
+      expect(lyricPlaceholder({ title: '', lyricsReady: true, hasLyrics: false, lyric: '', nextLyric: '' })).toBe('未在播放')
+    })
   })
 
   describe('lyricFrame（悬浮歌词）', () => {

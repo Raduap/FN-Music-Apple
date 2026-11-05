@@ -94,6 +94,16 @@ function nextLyricLine(lines, from) {
 }
 
 /**
+ * 悬浮歌词没有当前句 / 下一句时的兜底文案。
+ * 关键点：歌词未加载完不能当作“纯音乐”；只有确实加载完且没有歌词时才显示纯音乐。
+ */
+export function lyricPlaceholder({ lyric, nextLyric, lyricsReady, hasLyrics, title } = {}) {
+  if (lyric || nextLyric) return ''
+  if (lyricsReady === true && !hasLyrics && title) return '纯音乐，请欣赏'
+  return title || '未在播放'
+}
+
+/**
  * 悬浮歌词用的“一帧”：当前句原文 + 译文 + 下一句原文。
  * “下一句”会跳过伴奏 / 间隔空行；前奏时把首句作为“待播放”预告返回。
  * 同时带下一句的再下一句，方便伴奏期间仍显示真正的后续歌词而不是空行。

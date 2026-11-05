@@ -8,10 +8,11 @@
 // - 当前句原文锚定在胶囊顶部：译文、下一句只是它下面的独立行，开关不会带动原文
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import SPEC from '../../electron/lyricsVisualSpec.json'
+import { lyricPlaceholder } from '../lyrics'
 
 const bridge = window.lyricsWin
 const { defaultStyle: DEFAULT_STYLE, fontStacks: FONT_STACKS } = SPEC
-const EMPTY_STATE = { title: '', lyric: '', lyricTrans: '', nextLyric: '', nextLyricTrans: '', nextNextLyric: '', nextNextLyricTrans: '', hasLyrics: false, hasTranslation: false, hasNext: false, playing: false, currentTime: 0, at: 0, duration: 0, palette: 'red' }
+const EMPTY_STATE = { title: '', lyric: '', lyricTrans: '', nextLyric: '', nextLyricTrans: '', nextNextLyric: '', nextNextLyricTrans: '', lyricsReady: false, hasLyrics: false, hasTranslation: false, hasNext: false, playing: false, currentTime: 0, at: 0, duration: 0, palette: 'red' }
 // 控制条显隐完全由主进程按光标位置驱动（离开胶囊 / 按钮 3s 后隐藏），页面只镜像 active 状态。
 
 // ---------- 演示模式：在普通浏览器里打开 lyrics.html?demo 预览界面（无 Electron） ----------
@@ -22,6 +23,7 @@ const DEMO_STATE = demo && {
   lyric: demo.get('lyric') ?? "I'm keeping my balance, but I'm standing",
   lyricTrans: demo.get('trans') ?? '我尽力保持自己的平衡',
   nextLyric: demo.get('next') ?? "On razor's edge now",
+  lyricsReady: true,
   hasLyrics: demo.get('inst') !== '1',
   playing: demo.get('playing') !== '0',
   duration: 240,
@@ -148,9 +150,7 @@ export default function FloatingLyrics() {
   // 没有当前句时（前奏 / 伴奏 / 间隔 / 无歌词）：
   // 有下一句就按“待播放”形式灰显；没有可显示歌词时只做兜底，不再显示“前奏”。
   const upcoming = !state.lyric && !!state.nextLyric
-  const placeholder = !state.lyric && !state.nextLyric
-    ? (!state.hasLyrics && state.title ? '纯音乐，请欣赏' : state.title ? state.title : '未在播放')
-    : ''
+  const placeholder = lyricPlaceholder(state)
   const main = state.lyric || state.nextLyric || placeholder
   // 伴奏 / 前奏（当前句还没内容）：把下一句作为主行灰显预告。
   // 行预留规则：主进程只下发“当前是否显示译文 / 下一句”，渲染端不重复歌曲级判断。
