@@ -33,6 +33,7 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
   let edge = 'bottom' // 胶囊最贴近工作区的边，决定进度条贴哪条边
   let style = G.normalizeStyle(readPrefs().lyricsStyle)
   let state = {}
+  let layoutState = {}
   let drag = null // { cursor, cap, follow, timer }
   let resize = null // { cursor, bounds, dir, extra }
   let pollTimer = null
@@ -46,7 +47,8 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
   const alive = () => win && !win.isDestroyed()
   // 窗口尺寸按当前实际需要预留的行计算，与渲染端共用 lyricsGeometry.layoutFlags。
   // 译文行按“整首歌是否有译文”预留，伴奏 / 间奏句不会让胶囊突然收缩。
-  const extra = () => G.layoutFlags(style, state)
+  // 渲染状态始终是最新值；歌词未就绪时仅布局沿用上一首，避免胶囊先缩再扩。
+  const extra = () => G.layoutFlags(style, layoutState)
   const capSize = () => G.capsuleSize(style, extra())
   // 竖排时限制的是胶囊外框：宽由字号与列数决定，高 = 设置里的长度 + 两端内边距 / 边框
   // 胶囊尺寸上下限：竖排高度（文字方向长度）同时受样式上限与屏幕工作区限制，
@@ -64,10 +66,13 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
     if (!alive()) return
     const lim = limits(area)
     const vertical = style.vertical
-    const minW = lim.minW + (vertical ? G.SIDE_W : 0)
-    const maxW = lim.maxW + (vertical ? G.SIDE_W : 0)
-    const minH = lim.minH + (vertical ? 0 : G.CONTROL_H)
-    const maxH = lim.maxH + (vertical ? 0 : G.CONTROL_H)
+    // 胶囊两侧各预留一条控制条带，所以窗口尺寸 = 胶囊 + 2 条控制条
+    const stripX = vertical ? G.SIDE_W * 2 : 0
+    const stripY = vertical ? 0 : G.CONTROL_H * 2
+    const minW = lim.minW + stripX
+    const maxW = lim.maxW + stripX
+    const minH = lim.minH + stripY
+    const maxH = lim.maxH + stripY
     try {
       win.setMinimumSize(minW, minH)
       win.setMaximumSize(maxW, maxH)
@@ -76,7 +81,7 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
 
   const capRect = (p = capPos) => ({ x: p.x, y: p.y, ...capSize() })
   const workAreaFor = (p = capPos) => screen.getDisplayMatching(capRect(p)).workArea
-  const layoutPayload = (L) => ({
+  const layoutPayload = (L, anim = null) => ({
     flip: L.flip,
     side: L.side,
     edge: L.edge,
@@ -86,6 +91,8 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
       subH: Math.round(G.subHeight(style.fontSize)),
       colExtra: G.columnExtra(style.fontSize),
     },
+    // 行 / 列数量变化时，渲染端用旧尺寸 + 位移做一段无闪现过渡。
+    anim,
   })
   const send = (ch, data) => alive() && win.webContents.send(ch, data)
 
@@ -96,13 +103,12 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
   let receiveMouse = null
   function applyMouseEvents() {
     if (!alive() || !CAN_PASS_THROUGH) return
-    // 普通模式：胶囊与“已展开的按钮”接收鼠标，控制条空白 / 间隙穿透。
-    // 穿透模式：胶囊始终穿透，只有光标在解锁按钮上时临时接收点击。
-    // 拖动 / 缩放进行中时整窗保持接收，避免光标短暂离开胶囊导致操作中断。
+    // 触控设备上 screen.getCursorScreenPoint() 拿到的仍是鼠标位置，手指点击 / 拖动时不会跟随，
+    // 因此普通模式不再依赖光标轮询决定是否接收事件：整个窗口始终接收，保证触摸一定能命中胶囊。
+    // 真正的鼠标穿透交给锁定模式；锁定模式下只有光标悬停在解锁按钮上时临时接收点击。
+    // 拖动 / 缩放进行中整窗保持接收，避免指针短暂离开胶囊导致操作中断。
     const busy = !!drag || !!resize
-    const receive = busy || (style.clickThrough
-      ? (hovered && controlHot)
-      : (capsuleHot || (hovered && controlHot)))
+    const receive = busy || !style.clickThrough || (hovered && controlHot)
     // 值未变化时不重复调用，避免 Windows 上光标样式来回横跳。
     if (receive === receiveMouse) return
     receiveMouse = receive
@@ -160,7 +166,7 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
 
   // 应用一次“胶囊坐标 -> 窗口外框”的完整布局，并把控制条方向同步给页面。
   // clamp=false 用于行数变化：保持当前原文顶部坐标不动，不把当前歌词顶上去。
-  function applyBounds(notify = false, clamp = true) {
+  function applyBounds(notify = false, clamp = true, anim = null) {
     if (!alive() || !capPos) return null
     const area = workAreaFor(capPos)
     if (clamp) capPos = G.clampCapsule(capPos, area, style, extra())
@@ -169,7 +175,7 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
     flip = next.flip
     side = next.side || side
     win.setBounds(next.win)
-    if (notify) send('lyrics:layout', layoutPayload(next))
+    if (notify) send('lyrics:layout', layoutPayload(next, anim))
     return next
   }
 
@@ -230,24 +236,40 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
     const prevCap = capSize()
     const wasVertical = style.vertical
     const area = capPos ? workAreaFor(capPos) : screen.getPrimaryDisplay().workArea
-    style = G.normalizeStyle({ ...style, ...patch })
+    const p = patch && typeof patch === 'object' ? patch : {}
+    style = G.normalizeStyle({ ...style, ...p })
     // 切换横 / 竖排时按新方向把长度 / 宽度限制在当前屏幕内，避免“横排很长 -> 切竖排就一定超出”
     style = G.clampStyleToArea(style, area, extra())
+    const nextCap = capSize()
     const prefs = readPrefs()
     if (!alive()) {
       writePrefs({ ...prefs, lyricsStyle: style })
       onStyleChanged?.()
       return
     }
-    // 竖排时原文是胶囊最右列：只向左伸缩，保持原文与右边缘位置不变
-    if (wasVertical && style.vertical) capPos = G.anchorRightEdge(capPos, prevCap, capSize())
+    // 开关译文 / 下一句时，固定靠近屏幕边框的边，拉动远离边框的边。
+    // 其它竖排尺寸变化仍固定右侧，避免原文列在缩放 / 改字号时跑到屏幕外。
+    const lineToggle = ('showTranslation' in p) || ('showNext' in p)
+    const sameOrientation = wasVertical === style.vertical
+    const sizeChanged = nextCap.width !== prevCap.width || nextCap.height !== prevCap.height
+    let anim = null
+    if (sameOrientation && lineToggle && sizeChanged) {
+      const opts = { vertical: style.vertical, side, flip }
+      anim = { from: prevCap, shift: G.capsuleGrowthShift(prevCap, nextCap, opts) }
+      capPos = G.anchorCapsule(capPos, prevCap, nextCap, opts)
+    } else if (wasVertical && !style.vertical) {
+      // 竖排切横排：以旧竖排胶囊的底边为锚点，避免横排按左上角定位导致整体跳位。
+      capPos = G.anchorVerticalToHorizontal(capPos, prevCap, nextCap)
+    } else if (style.vertical) {
+      capPos = G.anchorCapsule(capPos, prevCap, nextCap, { vertical: true, side })
+    }
     applyWindowLimits(area)
     capPos = G.clampCapsule(capPos, area, style, extra())
     const next = G.layout(capPos, style, area, extra())
     flip = next.flip
     side = next.side || side
     win.setBounds(next.win)
-    send('lyrics:layout', layoutPayload(next))
+    send('lyrics:layout', layoutPayload(next, anim))
     send('lyrics:style', style)
     applyMouseEvents()
     writePrefs({ ...prefs, lyricsStyle: style, lyrics: { x: capPos.x, y: capPos.y } })
@@ -255,11 +277,12 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
   }
 
   // ---------- 拖动 ----------
-  function followCursor() {
-    if (!drag || !alive()) return stopFollow()
-    if (Date.now() > drag.follow) return stopFollow()
-    const c = screen.getCursorScreenPoint()
-    const next = I.nextDragPosition(drag, c)
+  // 触控友好：由渲染端上报指针的屏幕坐标，主进程按位移移动窗口。
+  // 不再轮询系统鼠标光标，因此手指拖动（不更新鼠标坐标）也能正常移动。
+  // 实时跟手：每一个指针事件都立即移动窗口，不做帧合并 / 节流。
+  function doDrag(cursor) {
+    if (!drag || !alive()) return
+    const next = I.nextDragPosition(drag, cursor)
     if (next.x !== capPos.x || next.y !== capPos.y) {
       capPos = next
       const L = G.layout(capPos, style, workAreaFor(capPos), extra())
@@ -272,13 +295,8 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
       win.setBounds(L.win)
     }
   }
-  function stopFollow() {
-    if (drag?.timer) { clearInterval(drag.timer); drag.timer = null }
-  }
   function endDrag() {
     if (!drag) return
-    followCursor()
-    stopFollow()
     drag = null
     capPos = G.clampCapsule(capPos, workAreaFor(capPos), style, extra())
     layout()
@@ -289,9 +307,8 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
   // ---------- 缩放（八向：上下左右 + 四角；字号随胶囊高度等比变化） ----------
   function doResize() {
     if (!resize || !alive()) return
-    const c = screen.getCursorScreenPoint()
     const lim = limits(resize.area)
-    const resized = I.nextResizeStyle(style, resize.bounds, c, resize.cursor, resize.dir, lim, resize.area, resize.extra)
+    const resized = I.nextResizeStyle(style, resize.bounds, resize.cursor, resize.startCursor, resize.dir, lim, resize.area, resize.extra)
     style = resized.style
     const cap = capSize()
     // 用「拖动过程中不动的边」反推坐标，避免整体被顶走；随后再按工作区夹取兜底
@@ -332,24 +349,23 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
   ipcMain.on('lyrics:toggle', (e) => { if (fromLyrics(e)) command?.('toggle') })
   ipcMain.on('lyrics:next', (e) => { if (fromLyrics(e)) command?.('next') })
   ipcMain.on('lyrics:close', (e) => { if (fromLyrics(e)) onClose?.() })
-  ipcMain.on('lyrics:drag-start', (e) => {
+  ipcMain.on('lyrics:drag-start', (e, x, y) => {
     if (!fromLyrics(e)) return
-    stopFollow()
-    drag = { cursor: screen.getCursorScreenPoint(), cap: { ...capPos }, follow: 0, timer: null }
+    const start = Number.isFinite(x) && Number.isFinite(y) ? { x, y } : screen.getCursorScreenPoint()
+    drag = { cursor: start, cap: { ...capPos } }
   })
-  ipcMain.on('lyrics:drag-move', (e) => {
+  ipcMain.on('lyrics:drag-move', (e, x, y) => {
     if (!fromLyrics(e) || !drag) return
-    drag.follow = Date.now() + 400
-    if (!drag.timer) drag.timer = setInterval(followCursor, 16)
-    followCursor()
+    if (Number.isFinite(x) && Number.isFinite(y)) doDrag({ x, y })
   })
   ipcMain.on('lyrics:drag-end', (e) => { if (fromLyrics(e)) endDrag() })
-  ipcMain.on('lyrics:resize-start', (e, dir) => {
+  ipcMain.on('lyrics:resize-start', (e, dir, x, y) => {
     if (!fromLyrics(e) || style.clickThrough) return
     const area = workAreaFor(capPos)
-    resize = { cursor: screen.getCursorScreenPoint(), bounds: { x: capPos.x, y: capPos.y, ...capSize() }, dir: typeof dir === 'string' ? dir : 'se', extra: extra(), area }
+    const startCursor = Number.isFinite(x) && Number.isFinite(y) ? { x, y } : screen.getCursorScreenPoint()
+    resize = { cursor: startCursor, startCursor, bounds: { x: capPos.x, y: capPos.y, ...capSize() }, dir: typeof dir === 'string' ? dir : 'se', extra: extra(), area }
   })
-  ipcMain.on('lyrics:resize-move', (e) => { if (fromLyrics(e) && resize) doResize() })
+  ipcMain.on('lyrics:resize-move', (e, x, y) => { if (fromLyrics(e) && resize && Number.isFinite(x) && Number.isFinite(y)) { resize.cursor = { x, y }; doResize() } })
   ipcMain.on('lyrics:resize-end', (e) => { if (fromLyrics(e)) endResize() })
 
   // 显示器拔出或分辨率变化后，把胶囊挪回可见区域
@@ -373,18 +389,22 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
     setState(s) {
       const prevCap = capSize()
       state = s || {}
+      layoutState = G.resolveLayoutState(state, layoutState)
       // 行数可能变化（例如某句没有译文 / 当前可显示下一句）。
-      // 竖排时新增 / 减少的列向左侧展开，保持当前原文列位置不变。
+      // 按字幕所在部固定靠近边框的边，拉动远离边框的边；窗口先扩到最终外框，渲染端再平滑滑到位。
+      let anim = null
       if (alive()) {
-        // 竖排：新增 / 减少的列向左侧展开，保持最右列（原文）位置不变。
-        if (style.vertical) {
-          capPos = G.anchorRightEdge(capPos, prevCap, capSize())
-          style = G.clampVerticalLength(style, workAreaFor(capPos), extra())
+        if (style.vertical) style = G.clampVerticalLength(style, workAreaFor(capPos), extra())
+        const nextCap = capSize()
+        const opts = { vertical: style.vertical, side, flip }
+        if (nextCap.width !== prevCap.width || nextCap.height !== prevCap.height) {
+          anim = { from: prevCap, shift: G.capsuleGrowthShift(prevCap, nextCap, opts) }
+          capPos = G.anchorCapsule(capPos, prevCap, nextCap, opts)
         }
         // 行预留已按“整首歌”计算，胶囊尺寸在一首歌内恒定，切句不会改变高度；
         // 这里可以安全夹取，避免贴边时因为窗口伸出屏幕而被裁掉。
         capPos = G.clampCapsule(capPos, workAreaFor(capPos), style, extra())
-        applyBounds(true, false)
+        applyBounds(true, false, anim)
         writePrefs({ ...readPrefs(), lyrics: { x: capPos.x, y: capPos.y } })
       }
       if (alive() && win.isVisible()) send('lyrics:state', state)
@@ -402,6 +422,11 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
       capPos = G.defaultCapsule(screen.getPrimaryDisplay().workArea, style, extra())
       layout()
       writePrefs({ ...readPrefs(), lyrics: { x: capPos.x, y: capPos.y } })
+    },
+    // 自定义背景图片被更换 / 移除后通知页面重新拉取图片。
+    // 不能只依赖样式里的 customImage：换图时该值不变，页面 effect 不会重跑，会显示旧图。
+    notifyBackgroundChanged() {
+      if (alive()) send('lyrics:background')
     },
     isVisible: () => alive() && win.isVisible(),
     window: () => (alive() ? win : null),

@@ -2,6 +2,8 @@
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; margin: 0; background: transparent; overflow: hidden; }
 body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; user-select: none; }
+/* 触控：防止指针事件被浏览器当成滚动手势吞掉，否则拖动会中途 cancel */
+html, body, #root { touch-action: none; }
 
 /* 与 lyricsGeometry 的常量对应：外框无透明留白，控制条 38 */
 :root {
@@ -14,13 +16,17 @@ body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; 
   position: relative;
   width: 100%; height: 100%;
   padding: var(--pad);
-  display: flex; flex-direction: column; justify-content: var(--justify, flex-end);
   color: var(--fg); font-family: var(--fst); font-weight: var(--fw);
   text-align: var(--align);
 }
-.lw.flip-above { --justify: flex-start; }
-.lw.flip-below { --justify: flex-end; }
-.lcore { width: 100%; height: 100%; display: flex; flex-direction: column; }
+/* 横排三行网格：上下各预留一条控制条带，胶囊固定占中间一行。
+   这样切换控制条在上 / 下方时胶囊在窗口内的位置完全不变，越过交换边界也不会抖。 */
+.lcore {
+  width: 100%; height: 100%;
+  display: grid;
+  grid-template-rows: var(--ctl) var(--cap-h, auto) var(--ctl);
+  grid-template-columns: 1fr;
+}
 
 /* 控制条：默认隐藏，光标进入胶囊时显示（离开 3s 后由页面计时隐藏）。
    容器与按钮间隙本身不接收鼠标；只有按钮是命中目标。 */
@@ -33,9 +39,11 @@ body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; 
 }
 .lw.show .lctl { opacity: 1; transform: none; pointer-events: none; }
 .lw.show .lbtn { pointer-events: auto; }
-.lw.flip-above .lctl { --ctl-dir: 6px; order: 0; }
-.lw.flip-below .lctl { --ctl-dir: -6px; order: 2; }
-.lw.flip-below .lc { order: 1; }
+/* 胶囊恒在中间一行；控制条在上 / 下预留带之间切换，但胶囊位置不变。 */
+.lw:not(.vertical) .lc { grid-row: 2; grid-column: 1; }
+.lw:not(.vertical) .lctl { grid-column: 1; }
+.lw.flip-above .lctl { --ctl-dir: 6px; grid-row: 1; }
+.lw.flip-below .lctl { --ctl-dir: -6px; grid-row: 3; }
 .lbtn {
   width: var(--btn-w); min-width: var(--btn-w); height: 28px; padding: 0;
   display: grid; place-items: center;
@@ -62,7 +70,10 @@ body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; 
   border-radius: var(--radius);
   background: var(--glass);
   border: 1px solid var(--glass-bd);
-  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.55);
+  /* 窗口宽度与胶囊虽然一样宽，但向外的投影没有空间渲染，
+     会被窗口边缘裁成左右两侧的硬边阴影。改用内阴影 + 顶部高光，
+     不向外溢出，也不会被裁切。 */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 -12px 24px -16px rgba(0, 0, 0, 0.5);
   cursor: grab;
   overflow: hidden;
   isolation: isolate;
@@ -163,19 +174,24 @@ body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; 
 .edge-left .lbar > i, .edge-right .lbar > i { transform-origin: center top; transform: scaleY(0); }
 
 /* ---------- 竖排：原文 / 译文 / 下一句三列，从右到左排列 ---------- */
-.lw.vertical .lcore { flex-direction: row; align-items: stretch; }
-/* 竖排控制条：贴胶囊左 / 右边缘的一条竖列，按钮从上到下排列 */
+/* 竖排三列网格：左右各预留一条控制条带，胶囊固定占中间列，
+   side 只改变控制条在左 / 右哪一侧，胶囊不动。 */
+.lw.vertical .lcore {
+  grid-template-columns: var(--ctl) var(--cap-w, auto) var(--ctl);
+  grid-template-rows: 1fr;
+}
+/* 竖排控制条：左 / 右预留带里的一条竖列，按钮从上到下排列 */
 .lw.vertical .lctl {
   width: var(--ctl); height: var(--cap-h); flex: none;
   flex-direction: column; align-items: center; justify-content: center;
   gap: var(--btn-gap); padding: 0;
   transform: translateX(var(--ctl-dir, 6px));
 }
-.lw.vertical.side-right .lctl { order: 2; --ctl-dir: 6px; }
-.lw.vertical.side-left .lctl { order: 0; --ctl-dir: -6px; }
+.lw.vertical .lc { grid-row: 1; grid-column: 2; width: var(--cap-w); height: var(--cap-h); min-height: 0; padding-right: 28px; overflow: hidden; }
+.lw.vertical.side-right .lctl { --ctl-dir: 6px; grid-row: 1; grid-column: 3; }
+.lw.vertical.side-left .lctl { --ctl-dir: -6px; grid-row: 1; grid-column: 1; }
 /* 竖排控制条的显隐位移也要在显示时归零，否则会偏移 6px 被裁 */
 .lw.vertical.show .lctl { transform: none; }
-.lw.vertical .lc { order: 1; flex: none; width: var(--cap-w); height: var(--cap-h); min-height: 0; padding-right: 28px; overflow: hidden; }
 .lw.vertical .lrows {
   height: 100%;
   flex-direction: row-reverse;
@@ -227,51 +243,29 @@ body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; 
 .lw.vertical .lnext:not(.empty)::before { content: '↳'; position: absolute; transform: translateX(100%); }
 
 /* ---------- 八向缩放热区：贴合胶囊四边与四角，直接拉边缩放 ---------- */
+/* 胶囊在窗口内的位置恒定（横排上下各留一条控制条带，竖排左右各留一条），
+   所以热区不再随 flip / side 变化，一套坐标即可。 */
 .lresize { position: absolute; z-index: 5; }
 
-.lw.flip-above .lresize-n { left: var(--pad); right: var(--pad); top: calc(var(--pad) + var(--ctl)); height: var(--edge); cursor: ns-resize; }
-.lw.flip-above .lresize-s { left: var(--pad); right: var(--pad); bottom: var(--pad); height: var(--edge); cursor: ns-resize; }
-.lw.flip-above .lresize-w { top: calc(var(--pad) + var(--ctl)); bottom: var(--pad); left: var(--pad); width: var(--edge); cursor: ew-resize; }
-.lw.flip-above .lresize-e { top: calc(var(--pad) + var(--ctl)); bottom: var(--pad); right: var(--pad); width: var(--edge); cursor: ew-resize; }
-.lw.flip-above .lresize-nw { left: var(--pad); top: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
-.lw.flip-above .lresize-ne { right: var(--pad); top: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
-.lw.flip-above .lresize-sw { left: var(--pad); bottom: var(--pad); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
-.lw.flip-above .lresize-se { right: var(--pad); bottom: var(--pad); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
+/* 横排：胶囊上下各留 ctl，左右贴边 */
+.lw:not(.vertical) .lresize-n { left: var(--pad); right: var(--pad); top: calc(var(--pad) + var(--ctl)); height: var(--edge); cursor: ns-resize; }
+.lw:not(.vertical) .lresize-s { left: var(--pad); right: var(--pad); bottom: calc(var(--pad) + var(--ctl)); height: var(--edge); cursor: ns-resize; }
+.lw:not(.vertical) .lresize-w { top: calc(var(--pad) + var(--ctl)); bottom: calc(var(--pad) + var(--ctl)); left: var(--pad); width: var(--edge); cursor: ew-resize; }
+.lw:not(.vertical) .lresize-e { top: calc(var(--pad) + var(--ctl)); bottom: calc(var(--pad) + var(--ctl)); right: var(--pad); width: var(--edge); cursor: ew-resize; }
+.lw:not(.vertical) .lresize-nw { left: var(--pad); top: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
+.lw:not(.vertical) .lresize-ne { right: var(--pad); top: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
+.lw:not(.vertical) .lresize-sw { left: var(--pad); bottom: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
+.lw:not(.vertical) .lresize-se { right: var(--pad); bottom: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
 
-.lw.flip-below .lresize-n { left: var(--pad); right: var(--pad); top: var(--pad); height: var(--edge); cursor: ns-resize; }
-.lw.flip-below .lresize-s { left: var(--pad); right: var(--pad); bottom: calc(var(--pad) + var(--ctl)); height: var(--edge); cursor: ns-resize; }
-.lw.flip-below .lresize-w { top: var(--pad); bottom: calc(var(--pad) + var(--ctl)); left: var(--pad); width: var(--edge); cursor: ew-resize; }
-.lw.flip-below .lresize-e { top: var(--pad); bottom: calc(var(--pad) + var(--ctl)); right: var(--pad); width: var(--edge); cursor: ew-resize; }
-.lw.flip-below .lresize-nw { left: var(--pad); top: var(--pad); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
-.lw.flip-below .lresize-ne { right: var(--pad); top: var(--pad); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
-.lw.flip-below .lresize-sw { left: var(--pad); bottom: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
-.lw.flip-below .lresize-se { right: var(--pad); bottom: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
-
-/* 竖排：胶囊只占窗口的一部分，热区要避开侧边控制条 */
-.lw.vertical .lresize-n { top: var(--pad); height: var(--edge); cursor: ns-resize; }
-.lw.vertical .lresize-s { bottom: var(--pad); height: var(--edge); cursor: ns-resize; }
-.lw.vertical .lresize-w { top: var(--pad); bottom: var(--pad); width: var(--edge); cursor: ew-resize; }
-.lw.vertical .lresize-e { top: var(--pad); bottom: var(--pad); width: var(--edge); cursor: ew-resize; }
-.lw.vertical .lresize-nw, .lw.vertical .lresize-sw { width: var(--handle); height: var(--handle); cursor: nesw-resize; }
-.lw.vertical .lresize-ne, .lw.vertical .lresize-se { width: var(--handle); height: var(--handle); cursor: nwse-resize; }
-.lw.vertical .lresize-nw, .lw.vertical .lresize-ne { top: var(--pad); }
-.lw.vertical .lresize-sw, .lw.vertical .lresize-se { bottom: var(--pad); }
-.lw.vertical.side-right .lresize-n,
-.lw.vertical.side-right .lresize-s { left: var(--pad); right: calc(var(--pad) + var(--ctl)); }
-.lw.vertical.side-right .lresize-w { left: var(--pad); }
-.lw.vertical.side-right .lresize-e { right: calc(var(--pad) + var(--ctl)); }
-.lw.vertical.side-right .lresize-nw,
-.lw.vertical.side-right .lresize-sw { left: var(--pad); }
-.lw.vertical.side-right .lresize-ne,
-.lw.vertical.side-right .lresize-se { right: calc(var(--pad) + var(--ctl)); }
-.lw.vertical.side-left .lresize-n,
-.lw.vertical.side-left .lresize-s { left: calc(var(--pad) + var(--ctl)); right: var(--pad); }
-.lw.vertical.side-left .lresize-w { left: calc(var(--pad) + var(--ctl)); }
-.lw.vertical.side-left .lresize-e { right: var(--pad); }
-.lw.vertical.side-left .lresize-nw,
-.lw.vertical.side-left .lresize-sw { left: calc(var(--pad) + var(--ctl)); }
-.lw.vertical.side-left .lresize-ne,
-.lw.vertical.side-left .lresize-se { right: var(--pad); }
+/* 竖排：胶囊左右各留 ctl，上下贴边 */
+.lw.vertical .lresize-n { left: calc(var(--pad) + var(--ctl)); right: calc(var(--pad) + var(--ctl)); top: var(--pad); height: var(--edge); cursor: ns-resize; }
+.lw.vertical .lresize-s { left: calc(var(--pad) + var(--ctl)); right: calc(var(--pad) + var(--ctl)); bottom: var(--pad); height: var(--edge); cursor: ns-resize; }
+.lw.vertical .lresize-w { top: var(--pad); bottom: var(--pad); left: calc(var(--pad) + var(--ctl)); width: var(--edge); cursor: ew-resize; }
+.lw.vertical .lresize-e { top: var(--pad); bottom: var(--pad); right: calc(var(--pad) + var(--ctl)); width: var(--edge); cursor: ew-resize; }
+.lw.vertical .lresize-nw { left: calc(var(--pad) + var(--ctl)); top: var(--pad); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
+.lw.vertical .lresize-ne { right: calc(var(--pad) + var(--ctl)); top: var(--pad); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
+.lw.vertical .lresize-sw { left: calc(var(--pad) + var(--ctl)); bottom: var(--pad); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
+.lw.vertical .lresize-se { right: calc(var(--pad) + var(--ctl)); bottom: var(--pad); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
 
 /* 减少动效 */
 html[data-motion='reduce'] *, html[data-motion='reduce'] *::before, html[data-motion='reduce'] *::after {

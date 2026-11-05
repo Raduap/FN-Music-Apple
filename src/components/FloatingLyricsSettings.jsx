@@ -109,8 +109,8 @@ export function FloatingLyricsSettings() {
           )}
           <div className="ap-sliders">
             <div className="ap-slider">
-              <span>背景不透明度</span>
-              <Slider label="背景不透明度" value={style.opacity} max={1} step={0.05} onChange={(v) => set({ opacity: Math.round(v * 100) / 100 })} valueText={(v) => `${Math.round(v * 100)}%`} />
+              <span className="fl-slider-label">不透明度</span>
+              <Slider label="不透明度" value={style.opacity} max={1} step={0.05} onChange={(v) => set({ opacity: Math.round(v * 100) / 100 })} valueText={(v) => `${Math.round(v * 100)}%`} />
               <em>{Math.round(style.opacity * 100)}%</em>
             </div>
             <div className="ap-slider">
@@ -129,6 +129,9 @@ export function FloatingLyricsSettings() {
           </div>
           <div className="ap-label">外观</div>
           <div className="fl-toggles">
+            <button className={`fl-toggle ${style.showProgress ? 'on' : ''}`} role="switch" aria-checked={style.showProgress} onClick={() => set({ showProgress: !style.showProgress })}>
+              <span>显示进度条</span><span className="fl-switch" aria-hidden="true" />
+            </button>
             <button className={`fl-toggle ${style.showBorder ? 'on' : ''}`} role="switch" aria-checked={style.showBorder} onClick={() => set({ showBorder: !style.showBorder })}>
               <span>显示边框</span><span className="fl-switch" aria-hidden="true" />
             </button>
@@ -148,7 +151,6 @@ export function FloatingLyricsSettings() {
               <span>鼠标穿透（锁定后把鼠标移到浮窗上自动解锁）</span><span className="fl-switch" aria-hidden="true" />
             </button>
           </div>
-          <p className="ap-hint">译文与下一句是两层独立行，单独开关都不会带动当前句原文的位置。拖动浮窗右下角可缩放，字号随高度等比变化。</p>
         </section>
 
         <footer className="ap-foot">

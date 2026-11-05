@@ -47,6 +47,7 @@
     "opacity": 0.55,
     "frost": 18,
     "showBorder": true,
+    "showProgress": true,
     "showTranslation": true,
     "showNext": false,
     "clickThrough": false,

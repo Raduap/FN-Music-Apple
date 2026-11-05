@@ -11,7 +11,7 @@ const threeRows = { showTranslation: true, showNext: true }
 describe('悬浮歌词几何与样式', () => {
   it('默认样式：深色玻璃 + 白字 + 显示边框和译文、不显示下一句、不穿透、不竖排', () => {
     const s = G.normalizeStyle({})
-    expect(s).toMatchObject({ fontSize: 30, backgroundMode: 'dark', textColor: '#ffffff', textColorCustom: false, customImage: false, showBorder: true, frost: 18, showTranslation: true, showNext: false, clickThrough: false, vertical: false, width: 760 })
+    expect(s).toMatchObject({ fontSize: 30, backgroundMode: 'dark', textColor: '#ffffff', textColorCustom: false, customImage: false, showBorder: true, showProgress: true, frost: 18, showTranslation: true, showNext: false, clickThrough: false, vertical: false, width: 760 })
   })
 
   it('非法输入被夹到合法范围并补全，背景不透明度允许 100%', () => {
@@ -69,8 +69,8 @@ describe('悬浮歌词几何与样式', () => {
     const three = G.capsuleSize({ fontSize: 30, width: 760 }, threeRows)
     expect(one.height).toBeLessThan(two.height)
     expect(two.height).toBeLessThan(three.height)
-    expect(G.windowSize({ fontSize: 30 }, oneRow).height).toBe(one.height + G.CONTROL_H)
-    expect(G.windowSize({ fontSize: 30 }, threeRows).height).toBe(three.height + G.CONTROL_H)
+    expect(G.windowSize({ fontSize: 30 }, oneRow).height).toBe(one.height + G.CONTROL_H * 2)
+    expect(G.windowSize({ fontSize: 30 }, threeRows).height).toBe(three.height + G.CONTROL_H * 2)
   })
 
   it('横排切换译文 / 下一句只扩展胶囊高度，原文顶部位置不变', () => {
@@ -93,14 +93,88 @@ describe('悬浮歌词几何与样式', () => {
     expect(three.height).toBe(760 + G.V_CHROME)
   })
 
-  it('竖排切换译文 / 下一句只扩展胶囊宽度，原文右边缘位置不变', () => {
+  it('竖排切换译文 / 下一句：字幕在左部向右长，字幕在右部向左长', () => {
     const pos = { x: 120, y: 80 }
-    const before = G.layout(pos, { vertical: true, showTranslation: false, showNext: false, width: 760 }, wa, oneRow)
-    const after = G.layout(pos, { vertical: true, showTranslation: true, showNext: true, width: 760 }, wa, threeRows)
-    expect(before.cap.x + before.cap.width).toBe(pos.x + before.cap.width)
-    expect(after.cap.x + after.cap.width).toBe(pos.x + after.cap.width)
-    expect(after.cap.width).toBeGreaterThan(before.cap.width)
-    expect(before.cap.y).toBe(after.cap.y)
+    const style = { vertical: true, showTranslation: false, showNext: false, width: 760 }
+    const before = G.capsuleSize(style, oneRow)
+    const next = G.capsuleSize({ ...style, showTranslation: true, showNext: true }, threeRows)
+    expect(next.width).toBeGreaterThan(before.width)
+
+    const leftPart = G.anchorCapsule(pos, before, next, { vertical: true, side: 'right' })
+    expect(leftPart.x).toBe(pos.x)
+    expect(leftPart.y).toBe(pos.y)
+
+    const rightPart = G.anchorCapsule(pos, before, next, { vertical: true, side: 'left' })
+    expect(rightPart.x + next.width).toBe(pos.x + before.width)
+    expect(rightPart.y).toBe(pos.y)
+
+    const shrinkRightPart = G.anchorCapsule(rightPart, next, before, { vertical: true, side: 'left' })
+    expect(shrinkRightPart.x + before.width).toBe(rightPart.x + next.width)
+  })
+
+  it('竖排锚定后再布局，窗口移动使保持不动的边在屏幕上位置不变', () => {
+    const pos = { x: 120, y: 80 }
+    const v = { vertical: true, showTranslation: false, showNext: false, width: 760 }
+    const before = G.capsuleSize(v, oneRow)
+    const nextStyle = { ...v, showTranslation: true, showNext: true }
+    const next = G.capsuleSize(nextStyle, threeRows)
+
+    const anchored = G.anchorCapsule(pos, before, next, { vertical: true, side: 'left' })
+    const L1 = G.layout(pos, v, wa, oneRow)
+    const L2 = G.layout(anchored, nextStyle, wa, threeRows)
+    expect(L2.cap.x + L2.cap.width).toBe(L1.cap.x + L1.cap.width)
+
+    const leftAnchored = G.anchorCapsule(pos, before, next, { vertical: true, side: 'right' })
+    const L3 = G.layout(leftAnchored, nextStyle, wa, threeRows)
+    expect(L3.cap.x).toBe(G.layout(pos, v, wa, oneRow).cap.x)
+  })
+
+  it('横排切换译文 / 下一句：字幕在底部向上长，字幕在顶部向下长', () => {
+    const pos = { x: 120, y: 80 }
+    const style = { width: 760, fontSize: 30, showTranslation: false, showNext: false }
+    const before = G.capsuleSize(style, oneRow)
+    const next = G.capsuleSize({ ...style, showTranslation: true, showNext: true }, threeRows)
+    expect(next.height).toBeGreaterThan(before.height)
+
+    const bottomPart = G.anchorCapsule(pos, before, next, { vertical: false, flip: 'above' })
+    expect(bottomPart.y + next.height).toBe(pos.y + before.height)
+    expect(bottomPart.x).toBe(pos.x)
+
+    const topPart = G.anchorCapsule(pos, before, next, { vertical: false, flip: 'below' })
+    expect(topPart.y).toBe(pos.y)
+    expect(topPart.x).toBe(pos.x)
+
+    const shrinkBottomPart = G.anchorCapsule(bottomPart, next, before, { vertical: false, flip: 'above' })
+    expect(shrinkBottomPart.y + before.height).toBe(bottomPart.y + next.height)
+  })
+
+  it('切歌歌词未就绪时：渲染可置空，但布局继续沿用上一首尺寸', () => {
+    const style = { fontSize: 30, width: 760, showTranslation: true, showNext: true }
+    const prev = { hasTranslation: true, hasNext: true, lyricsReady: true }
+    const pending = { lyric: '', hasTranslation: false, hasNext: false, lyricsReady: false }
+
+    const layout = G.resolveLayoutState(pending, prev)
+    expect(layout).toBe(prev)
+    expect(G.layoutFlags(style, layout)).toMatchObject({ showTranslation: true, showNext: true })
+    expect(G.capsuleSize(style, G.layoutFlags(style, layout))).toEqual(G.capsuleSize(style, G.layoutFlags(style, prev)))
+
+    const ready = { lyric: '下一首', hasTranslation: false, hasNext: false, lyricsReady: true }
+    expect(G.layoutFlags(style, G.resolveLayoutState(ready, prev))).toMatchObject({ showTranslation: false, showNext: false })
+  })
+
+  it('竖排切横排：横排胶囊底边保持旧竖排胶囊底边 y', () => {
+    const pos = { x: 120, y: 80 }
+    const oldStyle = { vertical: true, width: 760, fontSize: 30 }
+    const newStyle = { ...oldStyle, vertical: false, width: 520 }
+    const oldCap = G.capsuleSize(oldStyle, oneRow)
+    const newCap = G.capsuleSize(newStyle, oneRow)
+
+    const anchored = G.anchorVerticalToHorizontal(pos, oldCap, newCap)
+    expect(anchored.x).toBe(pos.x)
+    expect(anchored.y + newCap.height).toBe(pos.y + oldCap.height)
+
+    const L = G.layout(anchored, newStyle, wa, oneRow)
+    expect(L.cap.y + L.cap.height).toBe(pos.y + oldCap.height)
   })
 
   it('竖排：胶囊在桌面左半边时控制条在右，右半边时在左', () => {
@@ -113,14 +187,15 @@ describe('悬浮歌词几何与样式', () => {
     const right = G.layout({ x: 0, y: 100 }, v, wa, twoRows)
     expect(right.side).toBe('right')
     expect(right.flip).toBe(null)
-    expect(right.win.x).toBe(0)
-    expect(right.win.width).toBe(cap.width + G.SIDE_W)
+    // 窗口左右各预留一条控制条带，胶囊在窗口内的 x 恒为 PAD + SIDE_W
+    expect(right.win.x + G.PAD + G.SIDE_W).toBe(0)
+    expect(right.win.width).toBe(cap.width + G.SIDE_W * 2)
     expect(right.win.height).toBe(cap.height)
 
     const left = G.layout({ x: wa.width - cap.width, y: 100 }, v, wa, twoRows)
     expect(left.side).toBe('left')
-    expect(left.win.x).toBe(wa.width - cap.width - G.SIDE_W)
-    expect(left.win.width).toBe(cap.width + G.SIDE_W)
+    expect(left.win.x + G.PAD + G.SIDE_W).toBe(wa.width - cap.width)
+    expect(left.win.width).toBe(cap.width + G.SIDE_W * 2)
   })
 
   it('竖排命中区域：控制条贴胶囊侧边，胶囊屏幕位置不随侧边改变', () => {
@@ -128,9 +203,10 @@ describe('悬浮歌词几何与样式', () => {
     const pos = { x: 400, y: 100 }
     const cap = G.capsuleSize(v, twoRows)
 
+    // 胶囊在窗口内恒占中间列（x = PAD + SIDE_W），控制条在左 / 右预留带
     const right = G.regions(v, null, twoRows, 'right')
-    expect(right.capsule).toEqual({ x: G.PAD, y: G.PAD, width: cap.width, height: cap.height })
-    expect(right.control).toEqual({ x: G.PAD + cap.width, y: G.PAD, width: G.SIDE_W, height: cap.height })
+    expect(right.capsule).toEqual({ x: G.PAD + G.SIDE_W, y: G.PAD, width: cap.width, height: cap.height })
+    expect(right.control).toEqual({ x: G.PAD + G.SIDE_W + cap.width, y: G.PAD, width: G.SIDE_W, height: cap.height })
 
     const left = G.regions(v, null, twoRows, 'left')
     expect(left.capsule).toEqual({ x: G.PAD + G.SIDE_W, y: G.PAD, width: cap.width, height: cap.height })
@@ -146,7 +222,7 @@ describe('悬浮歌词几何与样式', () => {
   it('竖排窗口尺寸包含侧边控制条宽度', () => {
     const cap = G.capsuleSize({ vertical: true, fontSize: 30, width: 760 }, twoRows)
     const size = G.windowSize({ vertical: true, fontSize: 30, width: 760 }, twoRows)
-    expect(size.width).toBe(cap.width + G.SIDE_W)
+    expect(size.width).toBe(cap.width + G.SIDE_W * 2)
     expect(size.height).toBe(cap.height)
   })
 
@@ -246,11 +322,11 @@ describe('悬浮歌词几何与样式', () => {
 
     const aboveWindow = G.layout(low, style, wa, twoRows)
     expect(aboveWindow.flip).toBe('above')
-    expect(aboveWindow.win.y + aboveWindow.win.height).toBe(low.y + cap.height + G.PAD)
+    expect(aboveWindow.win.y + aboveWindow.win.height).toBe(low.y + cap.height + G.PAD + G.CONTROL_H)
 
     const belowWindow = G.layout(high, style, wa, twoRows)
     expect(belowWindow.flip).toBe('below')
-    expect(belowWindow.win.y).toBe(high.y - G.PAD)
+    expect(belowWindow.win.y).toBe(high.y - G.PAD - G.CONTROL_H)
   })
 
   it('控制按钮命中区域：普通模式 7 个、锁定模式仅 1 个解锁按钮，且与容器居中', () => {
@@ -288,16 +364,17 @@ describe('悬浮歌词几何与样式', () => {
     expect(gap).toBe(G.CONTROL_BTN_GAP)
   })
 
-  it('窗口外框与内部区域随控制条方向正确翻转', () => {
+  it('窗口外框与内部区域：胶囊不随 flip 变化，仅控制条在上 / 下预留带间切换', () => {
     const style = { width: 600, fontSize: 24 }
     const cap = G.capsuleSize(style, twoRows)
+    // 胶囊位置与 flip 无关，恒在中间行（y = PAD + CONTROL_H）；控制条在上 / 下预留带
     const above = G.regions(style, 'above', twoRows)
     expect(above.capsule).toEqual({ x: G.PAD, y: G.PAD + G.CONTROL_H, width: cap.width, height: cap.height })
     expect(above.control).toEqual({ x: G.PAD, y: G.PAD, width: cap.width, height: G.CONTROL_H })
 
     const below = G.regions(style, 'below', twoRows)
-    expect(below.capsule).toEqual({ x: G.PAD, y: G.PAD, width: cap.width, height: cap.height })
-    expect(below.control).toEqual({ x: G.PAD, y: G.PAD + cap.height, width: cap.width, height: G.CONTROL_H })
+    expect(below.capsule).toEqual({ x: G.PAD, y: G.PAD + G.CONTROL_H, width: cap.width, height: cap.height })
+    expect(below.control).toEqual({ x: G.PAD, y: G.PAD + G.CONTROL_H + cap.height, width: cap.width, height: G.CONTROL_H })
   })
 
   it('resizeCapsule 支持八向缩放，并夹在最小 / 最大范围内', () => {

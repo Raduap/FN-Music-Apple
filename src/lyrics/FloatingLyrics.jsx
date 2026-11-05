@@ -6,7 +6,7 @@
 // - 锁定（鼠标穿透）后整窗让鼠标穿透，光标移到胶囊上只显示解锁按钮，点击解锁即可恢复操作
 // - 拖动胶囊空白处移动窗口；直接拉胶囊的四边 / 四角可缩放，字号随窗口高度等比变化
 // - 当前句原文锚定在胶囊顶部：译文、下一句只是它下面的独立行，开关不会带动原文
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import SPEC from '../../electron/lyricsVisualSpec.json'
 
 const bridge = window.lyricsWin
@@ -95,6 +95,7 @@ function useLayer() {
   const [edge, setEdge] = useState(demo?.get('edge') || 'bottom')
   const [layout, setLayout] = useState({ cap: null, css: null })
   const [backgroundUrl, setBackgroundUrl] = useState('')
+  const [backgroundVersion, setBackgroundVersion] = useState(0)
   const s = style || DEFAULT_STYLE
 
   useEffect(() => {
@@ -105,11 +106,13 @@ function useLayer() {
       if (l?.flip) setFlip(l.flip)
       if (l?.side) setSide(l.side)
       if (l?.edge) setEdge(l.edge)
-      if (l?.cap) setLayout({ cap: l.cap, css: l.css || null })
+      if (l?.cap) setLayout({ cap: l.cap, css: l.css || null, anim: l.anim || null })
     })
     const offActive = bridge.onActive((v) => setActive(!!v))
+    // 背景图被更换 / 移除时，即使样式里的 customImage 没变也要重拉图片
+    const offBg = bridge.onBackground?.(() => setBackgroundVersion((v) => v + 1))
     bridge.ready()
-    return () => { offState(); offStyle(); offLayout(); offActive() }
+    return () => { offState(); offStyle(); offLayout(); offActive(); offBg?.() }
   }, [])
 
   useEffect(() => {
@@ -128,7 +131,7 @@ function useLayer() {
       dead = true
       if (url) URL.revokeObjectURL(url)
     }
-  }, [s.backgroundMode, s.customImage])
+  }, [s.backgroundMode, s.customImage, backgroundVersion])
 
   return { state, style, active, flip, side, edge, layout, backgroundUrl }
 }
@@ -138,6 +141,7 @@ export default function FloatingLyrics() {
   const shown = !!active // 控制条是否显示（显隐延迟由主进程统一管理）
   const dragRef = useRef(false)
   const lineRef = useRef(null)
+  const capRef = useRef(null)
 
   const s = style || DEFAULT_STYLE
   const vertical = !!s.vertical
@@ -155,6 +159,23 @@ export default function FloatingLyrics() {
   const transText = upcoming ? state.nextLyricTrans : state.lyricTrans
   const nextText = upcoming ? state.nextNextLyric : state.nextLyric
 
+  // 行 / 列开关时，主进程已经按“靠近边框的边不动”把窗口移到位；
+  // 这里让胶囊从旧尺寸和反向位移滑到最终尺寸，避免边框和已有歌词闪现。
+  useLayoutEffect(() => {
+    const el = capRef.current
+    if (!el) return
+    for (const a of el.getAnimations?.() || []) a.cancel()
+    if (!layout.anim || !layout.cap) return
+    const { from, shift } = layout.anim
+    if (!from || !shift) return
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const anim = el.animate([
+      { width: `${from.width}px`, height: `${from.height}px`, transform: `translate(${shift.x}px, ${shift.y}px)` },
+      { width: `${layout.cap.width}px`, height: `${layout.cap.height}px`, transform: 'translate(0, 0)' },
+    ], { duration: reduce ? 1 : 280, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' })
+    return () => anim.cancel()
+  }, [layout.anim, layout.cap])
+
   // 进度线：播放中按时间推算，不依赖每秒广播
   useEffect(() => {
     const el = lineRef.current
@@ -169,24 +190,26 @@ export default function FloatingLyrics() {
     if (!state.playing) return
     const id = setInterval(draw, 250)
     return () => clearInterval(id)
-  }, [state.currentTime, state.at, state.playing, state.duration, edge])
+  }, [state.currentTime, state.at, state.playing, state.duration, edge, s.showProgress])
 
   const startDrag = (e) => {
     if (e.button !== 0 || e.target.closest('button')) return
     dragRef.current = true
-    bridge?.dragStart()
+    // 传绝对屏幕坐标：触控时主进程的 getCursorScreenPoint() 不跟手指，
+    // 只有渲染端的 e.screenX/Y 会随手指移动。
+    bridge?.dragStart(e.screenX, e.screenY)
     e.currentTarget.setPointerCapture(e.pointerId)
   }
-  const moveDrag = () => { if (dragRef.current) bridge?.dragMove() }
+  const moveDrag = (e) => { if (dragRef.current) bridge?.dragMove(e.screenX, e.screenY) }
   const endDrag = () => { if (dragRef.current) { dragRef.current = false; bridge?.dragEnd() } }
 
   const startResize = (dir) => (e) => {
     if (e.button !== 0) return
     e.stopPropagation()
     e.currentTarget.setPointerCapture(e.pointerId)
-    bridge?.resizeStart(dir)
+    bridge?.resizeStart(dir, e.screenX, e.screenY)
   }
-  const moveResize = () => bridge?.resizeMove()
+  const moveResize = (e) => bridge?.resizeMove(e.screenX, e.screenY)
   const endResize = () => bridge?.resizeEnd()
 
   // 胶囊精确尺寸由主进程唯一计算；demo 模式没有 IPC 时交给 CSS 自适应。
@@ -259,6 +282,7 @@ export default function FloatingLyrics() {
           )}
         </div>
         <div
+          ref={capRef}
           className="lc"
           style={{ backdropFilter: `blur(${s.frost}px) saturate(150%)`, WebkitBackdropFilter: `blur(${s.frost}px) saturate(150%)` }}
           onPointerDown={startDrag}
@@ -276,7 +300,7 @@ export default function FloatingLyrics() {
               <div className={`lnext${verticalClass(nextText)}${nextText ? '' : ' empty'}`}>{nextText}</div>
             </div>
           </div>
-          <div className="lbar"><i ref={lineRef} /></div>
+          {s.showProgress && <div className="lbar"><i ref={lineRef} /></div>}
         </div>
       </div>
 

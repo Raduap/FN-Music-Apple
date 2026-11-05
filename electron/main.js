@@ -565,9 +565,14 @@ function registerIpc() {
   ipcMain.handle('wallpaper:choose', (e) => chooseWallpaper(BrowserWindow.fromWebContents(e.sender)).catch((err) => ({ ok: false, error: err.message })))
   ipcMain.handle('wallpaper:get', () => readImage('wallpaper', 'wallpaper'))
   ipcMain.handle('wallpaper:clear', () => { fs.rmSync(wallpaperDir(), { recursive: true, force: true }); return true })
-  ipcMain.handle('lyrics:choose-background', (e) => chooseLyricsBackground(BrowserWindow.fromWebContents(e.sender)).catch((err) => ({ ok: false, error: err.message })))
+  ipcMain.handle('lyrics:choose-background', async (e) => {
+    const r = await chooseLyricsBackground(BrowserWindow.fromWebContents(e.sender)).catch((err) => ({ ok: false, error: err.message }))
+    // 换图后风格里的 customImage 不一定变化，主动通知浮窗重拉背景
+    if (r?.ok) lyricsWin?.notifyBackgroundChanged?.()
+    return r
+  })
   ipcMain.handle('lyrics:get-background', () => readImage('lyrics-background', 'background'))
-  ipcMain.handle('lyrics:clear-background', () => { fs.rmSync(lyricsBackgroundDir(), { recursive: true, force: true }); return true })
+  ipcMain.handle('lyrics:clear-background', () => { fs.rmSync(lyricsBackgroundDir(), { recursive: true, force: true }); lyricsWin?.notifyBackgroundChanged?.(); return true })
   ipcMain.handle('app:info', () => ({ version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }))
   ipcMain.handle('prefs:get', () => readPrefs())
   ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); syncBall(); syncLyrics(); if (p && p.lyricsStyle) lyricsWin?.setStyle(readPrefs().lyricsStyle); tray?.refresh(); return true })

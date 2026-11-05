@@ -220,7 +220,7 @@
 
 .ap-sliders { margin-top: 16px; display: grid; gap: 10px; transition: opacity 0.2s; }
 .ap-sliders.disabled { opacity: 0.45; }
-.ap-slider { display: grid; grid-template-columns: 64px 1fr 40px; align-items: center; gap: 12px; font-size: 12.5px; color: var(--text2); }
+.ap-slider { display: grid; grid-template-columns: 64px minmax(0, 1fr) 40px; align-items: center; gap: 12px; font-size: 12.5px; color: var(--text2); }
 .ap-slider em { font-style: normal; text-align: right; font-variant-numeric: tabular-nums; }
 .ap-slider .slider-fill { background: var(--accent); }
 .ap-slider .slider:hover .slider-fill, .ap-slider .slider.dragging .slider-fill { background: var(--accent); }
@@ -236,6 +236,7 @@
 .fl .ap-row:last-child { margin-bottom: 0; }
 .fl .ap-row .slider { flex: 1; }
 .fl .ap-row em { font-style: normal; min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--text2); }
+.fl .ap-slider .fl-slider-label { text-align: left; white-space: nowrap; }
 .fl .ap-palettes { grid-template-columns: repeat(2, 1fr); }
 .fl-swatch { flex: none; width: 30px; height: 30px; border-radius: 50%; box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18); }
 .fl-swatch.dark { background: linear-gradient(145deg, #3a3a42, #17171c); }

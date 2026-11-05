@@ -58,6 +58,7 @@ function normalizeStyle(input) {
     opacity: Math.round(clamp(num(Number(s.opacity), DEFAULT_STYLE.opacity), 0, 1) * 100) / 100,
     frost: Math.round(clamp(num(Number(s.frost), num(Number(s.blur), DEFAULT_STYLE.frost)), 0, 48)),
     showBorder: s.showBorder !== false,
+    showProgress: s.showProgress !== false,
     showTranslation: s.showTranslation !== false,
     showNext: !!s.showNext,
     clickThrough: !!s.clickThrough,
@@ -123,14 +124,57 @@ function capsuleSize(style, extra = {}) {
 }
 
 /**
- * 竖排时开关译文 / 下一句只改变胶囊宽度：为了让原文（最右列）位置不动，
- * 需要固定胶囊右边缘，把新增 / 减少的宽度全部向左伸缩。
+ * 判断字幕当前在屏幕的哪个部。判断口径与按钮位置一致：
+ * - 横排按钮在上，说明字幕在底部；按钮在下，说明字幕在顶部。
+ * - 竖排按钮在右，说明字幕在左部；按钮在左，说明字幕在右部。
  */
-function anchorRightEdge(capPos, prevCap, nextCap) {
+function capsulePart(opts = {}) {
+  if (opts.vertical) return opts.side === 'right' ? 'left' : 'right'
+  return opts.flip === 'above' ? 'bottom' : 'top'
+}
+
+/**
+ * 开关译文 / 下一句时，固定靠近边框的边，拉动远离边框的边：
+ * - 字幕在底部：固定下边，向上长高。
+ * - 字幕在顶部：固定上边，向下长高。
+ * - 字幕在左部：固定左边，向右长宽。
+ * - 字幕在右部：固定右边，向左长宽。
+ *
+ * 返回的位移表示：窗口已经移到最终外框后，渲染端要让胶囊先从旧位置滑到新位置。
+ * 行减少时 next - prev 为负，反向滑回即可。
+ */
+function capsuleGrowthShift(prevCap, nextCap, opts = {}) {
+  const part = opts.part || capsulePart(opts)
+  if (part === 'bottom') return { x: 0, y: Math.round(nextCap.height - prevCap.height) }
+  if (part === 'right') return { x: Math.round(nextCap.width - prevCap.width), y: 0 }
+  return { x: 0, y: 0 }
+}
+
+function anchorCapsule(capPos, prevCap, nextCap, opts = {}) {
+  const grow = capsuleGrowthShift(prevCap, nextCap, opts)
   return {
-    x: Math.round(capPos.x + prevCap.width - nextCap.width),
-    y: Math.round(capPos.y),
+    x: Math.round(capPos.x - grow.x),
+    y: Math.round(capPos.y - grow.y),
   }
+}
+
+/**
+ * 竖排切横排：横排胶囊保持旧竖排胶囊的底边 y 坐标不变。
+ * 横排高度通常小于竖排胶囊高度，因此需要向上移动，避免整体跳到左上角。
+ */
+function anchorVerticalToHorizontal(capPos, prevCap, nextCap) {
+  return {
+    x: Math.round(capPos.x),
+    y: Math.round(capPos.y + prevCap.height - nextCap.height),
+  }
+}
+
+/**
+ * 切歌时下一首歌词尚未加载完成，先用上一首的歌曲级布局状态维持胶囊尺寸。
+ * 页面仍会收到空歌词状态，避免显示上一首内容；等 lyricsReady=true 后再切换尺寸。
+ */
+function resolveLayoutState(next, prev) {
+  return next?.lyricsReady === false ? (prev || {}) : (next || {})
 }
 
 /**
@@ -161,20 +205,30 @@ function controlSide(capPos, capSize, workArea) {
   return capPos.x + capSize.width / 2 <= workArea.x + workArea.width / 2 ? 'right' : 'left'
 }
 
-/** 由胶囊尺寸与位置算出窗口外框（含控制条与四周留白） */
-function windowRect(capPos, capSize, flip) {
+/**
+ * 横排窗口外框。
+ *
+ * 为了让「切换控制条在上 / 下方」时胶囊屏幕位置完全不动，窗口固定在上方预留一条
+ * 控制条高度的透明区、下方也预留一条，胶囊在窗口内的 y 恒为 PAD + CONTROL_H。
+ * 这样 flip 只改变控制条渲染在窗口内的哪一侧，窗口外框本身不变 -> 胶囊不可能抖。
+ */
+function windowRect(capPos, capSize) {
   const width = capSize.width + PAD * 2
-  const height = capSize.height + PAD * 2 + CONTROL_H
+  const height = capSize.height + PAD * 2 + CONTROL_H * 2
   const x = capPos.x - PAD
-  const y = flip === 'above' ? capPos.y - PAD - CONTROL_H : capPos.y - PAD
+  const y = capPos.y - PAD - CONTROL_H
   return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) }
 }
 
-/** 竖排时窗口外框：胶囊 + 左侧 / 右侧的控制条 */
+/**
+ * 竖排窗口外框。
+ * 与横排同理：左右各预留一条控制条宽度，胶囊在窗口内的 x 恒为 PAD + SIDE_W，
+ * side 只改变控制条画在哪一侧，窗口外框不变 -> 胶囊不会抖。
+ */
 function sideWindowRect(capPos, capSize, side) {
-  const width = capSize.width + PAD * 2 + SIDE_W
+  const width = capSize.width + PAD * 2 + SIDE_W * 2
   const height = capSize.height + PAD * 2
-  const x = side === 'left' ? capPos.x - PAD - SIDE_W : capPos.x - PAD
+  const x = capPos.x - PAD - SIDE_W
   const y = capPos.y - PAD
   return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) }
 }
@@ -184,18 +238,18 @@ function regions(style, flip, extra = {}, side = 'right') {
   const s = normalizeStyle(style)
   const cap = capsuleSize(s, extra)
   if (s.vertical) {
-    // 竖排：控制条是胶囊左侧 / 右侧的一条竖向长条，整条都算控制区（与横排整条一致）
+    // 胶囊在窗口内的 x 恒为 PAD + SIDE_W（与 side 无关），控制条占左 / 右其中一条预留带。
     return {
-      capsule: { x: side === 'left' ? PAD + SIDE_W : PAD, y: PAD, width: cap.width, height: cap.height },
-      control: { x: side === 'left' ? PAD : PAD + cap.width, y: PAD, width: SIDE_W, height: cap.height },
-      window: { width: cap.width + PAD * 2 + SIDE_W, height: cap.height + PAD * 2 },
+      capsule: { x: PAD + SIDE_W, y: PAD, width: cap.width, height: cap.height },
+      control: { x: side === 'left' ? PAD : PAD + SIDE_W + cap.width, y: PAD, width: SIDE_W, height: cap.height },
+      window: { width: cap.width + PAD * 2 + SIDE_W * 2, height: cap.height + PAD * 2 },
     }
   }
-  const capY = flip === 'above' ? PAD + CONTROL_H : PAD
+  // 胶囊在窗口内的 y 固定为 PAD + CONTROL_H（与 flip 无关），控制条占上 / 下其中一条预留带。
   return {
-    capsule: { x: PAD, y: capY, width: cap.width, height: cap.height },
-    control: { x: PAD, y: flip === 'above' ? PAD : PAD + cap.height, width: cap.width, height: CONTROL_H },
-    window: { width: cap.width + PAD * 2, height: cap.height + PAD * 2 + CONTROL_H },
+    capsule: { x: PAD, y: PAD + CONTROL_H, width: cap.width, height: cap.height },
+    control: { x: PAD, y: flip === 'above' ? PAD : PAD + CONTROL_H + cap.height, width: cap.width, height: CONTROL_H },
+    window: { width: cap.width + PAD * 2, height: cap.height + PAD * 2 + CONTROL_H * 2 },
   }
 }
 
@@ -243,15 +297,15 @@ function layout(capPos, style, workArea, extra = {}) {
     side: null,
     edge,
     cap: { x: Math.round(capPos.x), y: Math.round(capPos.y), ...capSize },
-    win: windowRect(capPos, capSize, flip),
+    win: windowRect(capPos, capSize),
   }
 }
 
 function windowSize(style, extra = {}) {
   const s = normalizeStyle(style)
   const cap = capsuleSize(s, extra)
-  if (s.vertical) return { width: cap.width + PAD * 2 + SIDE_W, height: cap.height + PAD * 2 }
-  return { width: cap.width + PAD * 2, height: cap.height + PAD * 2 + CONTROL_H }
+  if (s.vertical) return { width: cap.width + PAD * 2 + SIDE_W * 2, height: cap.height + PAD * 2 }
+  return { width: cap.width + PAD * 2, height: cap.height + PAD * 2 + CONTROL_H * 2 }
 }
 
 const MIN_CAP_H = capsuleSize({ fontSize: MIN_FONT }).height
@@ -366,6 +420,6 @@ module.exports = {
   SPEC, SPEC_GEOMETRY: GEO, DEFAULT_STYLE,
   PAD, BORDER, V_PAD, H_PAD, V_CHROME, ROW_GAP, COLUMN_EXTRA_RATIO, CONTROL_H, SIDE_W, CONTROL_BTN_W, CONTROL_BTN_H, CONTROL_BTN_GAP, CONTROL_BTN_COUNT, CONTROL_BTN_COUNT_LOCKED, FLIP_RATIO,
   MIN_W, MAX_W, MIN_FONT, MAX_FONT, DEFAULT_W, DEFAULT_FONT, MIN_CAP_H, MAX_CAP_H,
-  normalizeStyle, layoutFlags, lineHeight, subHeight, mainColumnWidth, subColumnWidth, columnExtra, visibleRows, capsuleSize, minCapHeight, maxCapHeight, minCapWidth, maxCapWidth, maxVerticalLength, anchorRightEdge, nearestEdge, controlFlip, controlSide, sideWindowRect, clampStyleToArea, clampVerticalLength, windowRect, regions, controlButtons, layout,
+  normalizeStyle, layoutFlags, resolveLayoutState, lineHeight, subHeight, mainColumnWidth, subColumnWidth, columnExtra, visibleRows, capsuleSize, minCapHeight, maxCapHeight, minCapWidth, maxCapWidth, maxVerticalLength, capsulePart, anchorCapsule, anchorVerticalToHorizontal, capsuleGrowthShift, nearestEdge, controlFlip, controlSide, sideWindowRect, clampStyleToArea, clampVerticalLength, windowRect, regions, controlButtons, layout,
   windowSize, fontFromCapsuleHeight, fontFromCapsuleWidth, defaultCapsule, clampCapsule, isOnScreen, resizeCapsule,
 }

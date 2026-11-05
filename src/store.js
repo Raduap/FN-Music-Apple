@@ -517,6 +517,7 @@ if ('mediaSession' in navigator) {
 // 歌曲、播放状态、歌词行等变化时立即发送；进度只在跳转或每秒同步一次，悬浮球自己按时间推算进度
 let lyricFor = ''
 let lyricLines = []
+let lyricsReady = true
 let lastKey = ''
 let lastSync = { at: 0, time: 0, playing: false }
 function broadcast() {
@@ -525,9 +526,16 @@ function broadcast() {
   if ((song?.id || '') !== lyricFor) {
     lyricFor = song?.id || ''
     lyricLines = []
+    lyricsReady = !song
     if (song) {
       const id = song.id
-      loadLyrics(id).then((lines) => { if (lyricFor === id) { lyricLines = lines; broadcast() } })
+      loadLyrics(id).then((lines) => {
+        if (lyricFor === id) {
+          lyricLines = lines
+          lyricsReady = true
+          broadcast()
+        }
+      })
     }
   }
   const frame = lyricFrame(lyricLines, s.currentTime + 0.25)
@@ -542,6 +550,7 @@ function broadcast() {
     duration: s.duration || song?.duration || 0,
     volume: s.muted ? 0 : s.volume,
     lyric: frame.lyric,
+    lyricsReady,
     hasLyrics: lyricLines.length > 0,
     hasTranslation: hasTranslation(lyricLines),
     hasNext: hasNextLyric(lyricLines),
