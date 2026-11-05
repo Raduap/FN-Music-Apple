@@ -218,6 +218,22 @@ const server = http.createServer(async (req, res) => {
     case '/api/v1/album/detail': return json(ok(albums.find((a) => a.guid === q.get('albumGUID')) || {}))
     case '/api/v1/album/artist-detail/list': return json(page(albums.filter((a) => a.artists[0].guid === q.get('artistGUID')), q))
     case '/api/v1/play-history/list': syncRecent(); return json(page(recentPlayed, q))
+    case '/api/v1/event/report': {
+      // 官方前端 / fnmusic-ext 插件都靠 track_play 事件写播放历史。这里把上报的在线曲目
+      // 落到最近播放，行为与真实 NAS（尤其在装了扩展插件时）保持一致。
+      const b = await body(req)
+      for (const ev of b.events || []) {
+        const type = ev.eventType || ev.type
+        const p = ev.payload || {}
+        if (type !== 'track_play' && type !== 'TrackPlay') continue
+        const guid = p.trackGUID || p.guid
+        if (!guid) continue
+        const base = { guid, title: p.title || p.name || '', artist: p.artist || p.artistName || '', album: p.album || p.albumName || '', duration: p.duration || p.durationMs || 0, isFavorite: false }
+        const known = T.find((x) => x.guid === guid)
+        recentPlayed = [{ ...(known || base), playedAt: Date.now() }, ...recentPlayed.filter((x) => x.guid !== guid)]
+      }
+      return json(ok(null))
+    }
     case '/api/v1/play-history/delete': { const b = await body(req); const ids = new Set(b.trackGUIDs || []); recentPlayed = recentPlayed.filter((x) => !ids.has(x.guid)); return json(ok({})) }
     case '/api/v1/track/list': return json(page(sortBy(T, q), q))
     case '/api/v1/track/album-detail/list': return json(page(T.filter((t) => t.album.guid === q.get('albumGUID')), q))

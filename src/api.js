@@ -204,6 +204,19 @@ export const api = {
     return { songs: listOf(songs, mapSong), albums: listOf(albums, mapAlbum), artists: listOf(artists, mapArtist) }
   },
 
+  // 播放事件上报。飞牛音乐 1.1.19 官方前端用 occurredAt + trackGUID 写播放历史；
+  // fnmusic-ext 等接管插件也依赖该事件把在线曲目落进「最近播放」并驱动推荐。
+  reportPlay: (song, occurredAt = Date.now()) => call('/api/v1/event/report', {
+    method: 'POST',
+    body: {
+      events: [{
+        eventType: 'track_play',
+        occurredAt,
+        payload: { trackGUID: s(song?.id) },
+      }],
+    },
+  }),
+
   // 歌词（返回 LRC 原文）
   lyric: async (songId) => {
     try {

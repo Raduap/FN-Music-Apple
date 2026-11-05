@@ -130,7 +130,7 @@ export function RecentlyPlayed() {
       </PageHeader>
       {!items && !error && <Loading />}
       {error && <ErrorBox error={error} onRetry={load} />}
-      {items && !items.length && <Empty title="还没有最近播放" sub="播放过的歌曲会显示在这里。" icon={Icon.Clock} />}
+      {items && !items.length && <Empty title="还没有最近播放" sub="播放过的歌曲会显示在这里。" icon={Icon.Disc} />}
       {items && items.length > 0 && (
         <SongList
           songs={items}

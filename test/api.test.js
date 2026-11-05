@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { coverUrl, mapAlbum, mapArtist, mapPlaylist, mapSong, streamUrl } from '../src/api.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { api, coverUrl, mapAlbum, mapArtist, mapPlaylist, mapSong, streamUrl } from '../src/api.js'
 
 describe('mapSong', () => {
   const raw = {
@@ -49,4 +49,28 @@ describe('资源地址', () => {
     expect(coverUrl('')).toBe('')
   })
   it('streamUrl 对 ID 编码', () => expect(streamUrl('a b')).toBe('fnm://srv/api/v1/track/stream?guid=a%20b'))
+})
+
+// fnmusic-ext 等接管插件依赖官方 event/report 的 track_play 事件写在线播放历史，
+// 这里固定住客户端上报的报文形状，避免回归导致最近播放 / 推荐拿不到在线曲目。
+describe('播放上报（适配 fnmusic-ext）', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('reportPlay 发送官方 track_play 事件（occurredAt + trackGUID）', async () => {
+    let captured
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      captured = { url: String(url), opts }
+      return { status: 200, json: async () => ({ code: 0, msg: 'ok', data: null }) }
+    }))
+    await api.reportPlay({ id: 'online:abc', title: '稻香', artist: '周杰伦', album: '魔杰座', duration: 223 }, 1794044288780)
+    expect(captured.url).toBe('fnm://srv/api/v1/event/report')
+    expect(captured.opts.method).toBe('POST')
+    expect(JSON.parse(captured.opts.body)).toEqual({
+      events: [{
+        eventType: 'track_play',
+        occurredAt: 1794044288780,
+        payload: { trackGUID: 'online:abc' },
+      }],
+    })
+  })
 })
