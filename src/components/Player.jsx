@@ -288,13 +288,54 @@ export function LyricsView({ song, big = false }) {
   const toggleTranslation = useUI((s) => s.toggleTranslation)
   const ref = useRef(null)
   const userScroll = useRef(0)
-  const anchor = useRef(null) // 切换翻译时，当前句原文的视口位置
+  const anchor = useRef(null) // 切换翻译或补入译文时，当前句原文的视口位置
+  const focus = useRef(null) // 当前关注句原文的实测视口位置（滚动时持续更新）
+  const prevLines = useRef(lines)
+  const prevShow = useRef(false)
+  const prevSong = useRef(song?.id)
   const raf = useRef(0)
+  const scrollRaf = useRef(0)
   const synced = lines.length && lines[0].time >= 0
 
   const active = useMemo(() => lineAt(lines, time + 0.25), [time, lines])
   const hasTrans = useMemo(() => hasTranslation(lines), [lines])
   const showTrans = translation && hasTrans
+  const activeRef = useRef(active)
+  activeRef.current = active
+
+  // 当前关注句：优先用正在播放的那句；没有同步歌词或尚未到时，退回第一个可见句。
+  const measureFocus = () => {
+    const el = ref.current
+    if (!el) return null
+    let i = activeRef.current
+    if (i < 0) {
+      for (const k of el.querySelectorAll('.lyric-line')) {
+        if (k.offsetTop + k.offsetHeight > el.scrollTop) { i = +k.dataset.i; break }
+      }
+    }
+    const line = i >= 0 ? el.querySelector(`[data-i="${i}"] .lt-main`) : null
+    return line ? { i, top: line.getBoundingClientRect().top } : null
+  }
+
+  // 滚动过程中持续记录关注句位置，译文补入时才能拿到“变化前”的实测基准。
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const onScroll = () => {
+      if (scrollRaf.current) return
+      scrollRaf.current = requestAnimationFrame(() => {
+        scrollRaf.current = 0
+        const box = measureFocus()
+        if (box) focus.current = box
+      })
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      cancelAnimationFrame(scrollRaf.current)
+      scrollRaf.current = 0
+    }
+  }, [])
 
   useEffect(() => {
     const el = ref.current
@@ -303,16 +344,32 @@ export function LyricsView({ song, big = false }) {
     if (line) el.scrollTo({ top: line.offsetTop - el.clientHeight * (big ? 0.38 : 0.32), behavior: 'smooth' })
   }, [active, big])
 
-  // 翻译显隐时译文行高度会连续变化，其余歌词随之平移。
-  // 这里在动画全程逐帧补偿滚动，把当前句原文锚定在原位置。
+  // 译文补入（lines 引用变化）或翻译显隐时，译文行高度会连续变化，其余歌词随之平移。
+  // 这里用变化前记录的位置做基准，在动画全程逐帧补偿滚动，把关注句锚定在原位置。
   // 注意：不能按“位移稳定”提前退出——动画启动的头一两帧高度尚未变化，
   // 会被误判为已稳定，导致后半段动画失去补偿而出现滑动。
   // 补偿时必须临时关闭 scroll-behavior: smooth，否则会被平滑滚动接管。
   useLayoutEffect(() => {
     const el = ref.current
-    const a = anchor.current
-    if (!el || !a) return
+    if (!el) return
+    if (prevSong.current !== song?.id) { // 切歌：丢弃上一首的锚点，不做跨歌补偿
+      prevSong.current = song?.id
+      prevLines.current = lines
+      prevShow.current = showTrans
+      anchor.current = null
+      focus.current = null
+      return
+    }
+    const changed = prevLines.current !== lines || prevShow.current !== showTrans
+    prevLines.current = lines
+    prevShow.current = showTrans
+    const a = changed ? (anchor.current || focus.current) : null
     anchor.current = null
+    if (!a) {
+      const box = measureFocus()
+      if (box) focus.current = box
+      return
+    }
     const DURATION = 340 // 略长于译文展开动画（0.26s），确保覆盖完整过渡
     const start = performance.now()
     const pin = () => {
@@ -327,25 +384,20 @@ export function LyricsView({ song, big = false }) {
         }
       }
       if (performance.now() - start < DURATION) raf.current = requestAnimationFrame(pin)
-      else raf.current = 0
+      else {
+        raf.current = 0
+        const box = measureFocus()
+        if (box) focus.current = box
+      }
     }
     pin()
     return () => cancelAnimationFrame(raf.current)
-  }, [showTrans])
+  }, [showTrans, lines, song?.id])
 
-  // 记录当前句原文的视口位置，作为切换翻译后的补偿基准
+  // 点击翻译按钮时同样记录基准位置，交给上面的布局效果补偿
   const onToggleTranslation = () => {
-    const el = ref.current
-    if (el) {
-      let i = active
-      if (i < 0) {
-        for (const k of el.querySelectorAll('.lyric-line')) {
-          if (k.offsetTop + k.offsetHeight > el.scrollTop) { i = +k.dataset.i; break }
-        }
-      }
-      const line = i >= 0 ? el.querySelector(`[data-i="${i}"] .lt-main`) : null
-      if (line) anchor.current = { i, top: line.getBoundingClientRect().top }
-    }
+    const box = measureFocus()
+    if (box) anchor.current = box
     toggleTranslation()
   }
 
