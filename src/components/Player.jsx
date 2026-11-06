@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { api } from '../api'
 import { getAudio, usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
-import { hasTranslation, karaokeFills, lineAt, loadLyrics, mergeSyllableLines, toLines } from '../lyrics'
+import { hasTranslation, karaokeFills, lineAt, loadLyrics, mergeSyllableLines, pickSyllableCandidate, toLines } from '../lyrics'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
 import { closeFullPlayer, openFullPlayer } from '../motion'
 import * as Icon from '../icons'
@@ -288,19 +288,14 @@ function useLyrics(song) {
       try {
         const r = await window.fn?.lyricsSyllables?.({ title: song?.title, artist: song?.artist })
         // console.debug 在 DevTools 默认 Info 级别下不可见，必须用 console.log；且只在调试开关开启时输出
-        if (r?.ok && syllablesDebug) console.log('[syllables 数据]', { source: r.source, lines: r.lines, debug: r.debug })
-        if (r?.ok && r.lines) {
-          let stats = null
-          merged = mergeSyllableLines(lines, r.lines, (s) => { stats = s })
-          const n = merged.filter((l) => l.words?.length).length
+        if (r?.ok && syllablesDebug) console.log('[syllables 数据]', { source: r.source, lines: r.lines, candidates: r.candidates, debug: r.debug })
+        if (r?.ok && r.candidates?.length) {
+          const pick = pickSyllableCandidate(lines, r.candidates)
+          if (pick) merged = pick.merged
           if (syllablesDebug) {
-            const cands = r.debug?.amll?.picked ? `命中 AMLL《${r.debug.amll.picked.name}》(${r.debug.amll.picked.artists})` : ''
-            if (n) {
-              const sample = (arr) => (arr?.length ? `，如「${arr[0]?.local?.slice(0, 12) || arr[0]?.local?.text?.slice(0, 12)}」vs「${arr[0]?.remote?.slice(0, 12) || arr[0]?.remote?.text?.slice(0, 12)}」` : '')
-              reason = `${cands} 逐字命中 ${n}/${lines.length} 行` + (stats && stats.matched < lines.length ? `（文本不符 ${stats.skippedText}${sample(stats.textMismatches)} / 时间不符 ${stats.skippedTime}）` : '')
-            }
-            else reason = `${cands} 拉到了 ${r.lines.length} 行逐字数据，但没有一行和本地 LRC 对上`.trim()
-            console.log('[syllables debug]', r.debug)
+            const cov = pick ? `${(pick.coverage * 100).toFixed(0)}%（${pick.source}/${pick.provider}）` : '0%'
+            reason = `选中 ${cov}${pick && pick.coverage < 0.85 ? '（无候选达 85%，取最高）' : ''}`
+            console.log('[syllables 选择]', { coverage: pick?.coverage, source: pick?.source, provider: pick?.provider })
           }
         } else if (syllablesDebug) {
           const cands = r?.debug?.amll?.candidates?.length ? `AMLL 候选 ${r.debug.amll.candidates.length} 个都不够格（分数最高 ${r.debug.amll.candidates[0]?.score ?? 0}）` : ''

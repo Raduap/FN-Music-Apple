@@ -343,9 +343,6 @@
   .exp-nav nav { display: flex; gap: 6px; overflow-x: auto; }
   .exp-nav nav button { flex: none; }
   .exp-nav-state { display: none; }
-<<<<<<< HEAD
-}
-=======
 }
 /* ============ 实验性逐字歌词（卡拉OK高亮，rAF 连续扫色） ============ */
 /* 只对当前句做双层铺色；past 行保持普通文本。
@@ -365,4 +362,3 @@
   pointer-events: none;
 }
 .lyrics.big .lt-main.karaoke .kw-fill { color: #fff; }
->>>>>>> a245be6 (feat(experimental): 卡拉OK渲染（rAF 直写 DOM）)
