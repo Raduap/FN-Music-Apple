@@ -2,6 +2,7 @@
   "geometry": {
     "pad": 0,
     "border": 2,
+    "edgeBleed": 2,
     "vPad": 18,
     "hPad": 28,
     "rowGap": 6,

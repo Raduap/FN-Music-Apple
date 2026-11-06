@@ -15,6 +15,11 @@ const { geometry: GEO, fonts: FONTS, weights: WEIGHTS, aligns: ALIGNS, backgroun
 // 统一常量来源：lyricsVisualSpec.json。这样窗口布局、CSS 变量和设置面板不会各写一份。
 const PAD = GEO.pad
 const BORDER = GEO.border
+// 长度轴（横排的左右 / 竖排的上下）两侧留出的透明安全边：
+// 横排时胶囊宽度与窗口等宽，边框正好压在窗口最外一列像素；在非整数 DPI（如 125%）下
+// 最外那半像素会被合成取整丢掉，表现为右边框被吃掉。两侧各留 EDGE_BLEED 后，边框不再
+// 落在窗口最外缘。（带控制条带的那条轴本来就有 38px 余量，不受影响。）
+const EDGE_BLEED = GEO.edgeBleed
 const V_PAD = GEO.vPad
 const H_PAD = GEO.hPad
 const V_CHROME = V_PAD * 2 + BORDER
@@ -31,6 +36,9 @@ const CONTROL_BTN_COUNT = GEO.controlBtnCount
 const CONTROL_BTN_COUNT_LOCKED = GEO.controlBtnCountLocked
 const MIN_W = GEO.minW
 const MAX_W = GEO.maxW
+// 横排长度不再受 MAX_W 限制（用户要求「不限制横排长度」）。这里给一个很大的上限，
+// 仅用于防止极端输入产生非法尺寸；竖向长度仍按 MAX_W 与实际屏幕高度限制。
+const MAX_LEN = 20000
 const MIN_FONT = GEO.minFont
 const MAX_FONT = GEO.maxFont
 const DEFAULT_W = GEO.defaultW
@@ -63,7 +71,8 @@ function normalizeStyle(input) {
     showNext: !!s.showNext,
     clickThrough: !!s.clickThrough,
     vertical: !!s.vertical,
-    width: Math.round(clamp(num(Number(s.width), DEFAULT_W), MIN_W, MAX_W)),
+    // 横排长度不限制上限（用户要求）；竖排长度仍受 MAX_W 限制（见 clampVerticalLength）。
+    width: Math.round(clamp(num(Number(s.width), DEFAULT_W), MIN_W, MAX_LEN)),
   }
 }
 
@@ -245,11 +254,13 @@ function capsuleInset(capPos, style, workArea, capSize) {
   if (s.vertical) {
     const d = Math.max(0, capPos.x - workArea.x)
     const blend = blendDistance(size, workArea, true)
-    return { x: PAD + SIDE_W * clamp(d / blend, 0, 1), y: PAD }
+    // y 是长度轴方向的安全边（竖排长度轴为纵向）：固定留出，避免下边框压在窗口最外缘。
+    return { x: PAD + SIDE_W * clamp(d / blend, 0, 1), y: PAD + EDGE_BLEED }
   }
   const d = Math.max(0, capPos.y - workArea.y)
   const blend = blendDistance(size, workArea, false)
-  return { x: PAD, y: PAD + CONTROL_H * clamp(d / blend, 0, 1) }
+  // x 是长度轴方向的安全边（横排长度轴为横向）：固定留出，避免右边框压在窗口最外缘。
+  return { x: PAD + EDGE_BLEED, y: PAD + CONTROL_H * clamp(d / blend, 0, 1) }
 }
 
 /**
@@ -261,10 +272,11 @@ function capsuleInset(capPos, style, workArea, capSize) {
  */
 function windowRect(capPos, capSize, winCap = capSize, inset = null) {
   const capTop = inset ? inset.y : PAD + CONTROL_H
-  const width = winCap.width + PAD * 2
+  // 长度轴（横向）两侧各留 EDGE_BLEED，避免胶囊边框落在窗口最外一列像素被裁。
+  const width = winCap.width + PAD * 2 + EDGE_BLEED * 2
   // 高度按「这首歌预留的最多行数」算：窗口在一首歌内保持不变。
   const height = winCap.height + PAD * 2 + CONTROL_H * 2
-  const x = capPos.x - PAD
+  const x = capPos.x - PAD - EDGE_BLEED
   // 窗口位置只由 capPos 与偏移决定，与 flip / side 无关。
   //
   // 为什么不用「按贴屏边锚定」：那种写法下越过控制条变换线要同时改窗口位置与渲染端的
@@ -283,10 +295,11 @@ function windowRect(capPos, capSize, winCap = capSize, inset = null) {
 function sideWindowRect(capPos, capSize, side, winCap = capSize, inset = null) {
   const capLeft = inset ? inset.x : PAD + SIDE_W
   const width = winCap.width + PAD * 2 + SIDE_W * 2
-  const height = winCap.height + PAD * 2
+  // 长度轴（纵向）两侧各留 EDGE_BLEED，避免胶囊边框落在窗口最外一行像素被裁。
+  const height = winCap.height + PAD * 2 + EDGE_BLEED * 2
   // 与横排同理：窗口位置只由 capPos 与偏移决定，与 side 无关。
   const x = capPos.x - capLeft
-  const y = capPos.y - PAD
+  const y = capPos.y - PAD - EDGE_BLEED
   return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) }
 }
 
@@ -305,13 +318,13 @@ function capFromWindow(win, style, workArea, capSize) {
     const slope = 1 - SIDE_W / blend
     const w = win.x - workArea.x
     const d = w >= blend * slope ? w + SIDE_W : w / slope
-    return { x: Math.round(workArea.x + d), y: Math.round(win.y + PAD) }
+    return { x: Math.round(workArea.x + d), y: Math.round(win.y + PAD + EDGE_BLEED) }
   }
   const blend = blendDistance(size, workArea, false)
   const slope = 1 - CONTROL_H / blend
   const w = win.y - workArea.y
   const d = w >= blend * slope ? w + CONTROL_H : w / slope
-  return { x: Math.round(win.x + PAD), y: Math.round(workArea.y + d) }
+  return { x: Math.round(win.x + PAD + EDGE_BLEED), y: Math.round(workArea.y + d) }
 }
 
 /**
@@ -335,28 +348,34 @@ function regions(style, flip, extra = {}, side = 'right', winExtra = extra, inse
   const winCap = capsuleSize(s, winExtra)
   if (s.vertical) {
     const winW = winCap.width + PAD * 2 + SIDE_W * 2
+    const winH = winCap.height + PAD * 2 + EDGE_BLEED * 2
     // 胶囊在窗口内的偏移与 side / 行数无关；贴近屏幕左边时会收小（见 capsuleInset），
     // 让窗口能停在屏幕边上、胶囊仍然贴住屏幕边。
     const capX = inset ? inset.x : PAD + SIDE_W
+    // 长度轴（纵向）固定留出安全边，避免下边框压在窗口最外缘。
+    const capY = inset ? inset.y : PAD + EDGE_BLEED
     return {
-      capsule: { x: capX, y: PAD, width: cap.width, height: cap.height },
+      capsule: { x: capX, y: capY, width: cap.width, height: cap.height },
       control: {
         x: side === 'left' ? capX - SIDE_W : capX + cap.width,
-        y: PAD, width: SIDE_W, height: cap.height,
+        y: capY, width: SIDE_W, height: cap.height,
       },
-      window: { width: winW, height: winCap.height + PAD * 2 },
+      window: { width: winW, height: winH },
     }
   }
   const winH = winCap.height + PAD * 2 + CONTROL_H * 2
+  const winW = winCap.width + PAD * 2 + EDGE_BLEED * 2
   // 胶囊在窗口内的偏移与 flip / 行数无关；贴近屏幕上边时会收小（见 capsuleInset）。
   const capY = inset ? inset.y : PAD + CONTROL_H
+  // 长度轴（横向）固定留出安全边，避免右边框压在窗口最外缘。
+  const capX = inset ? inset.x : PAD + EDGE_BLEED
   return {
-    capsule: { x: PAD, y: capY, width: cap.width, height: cap.height },
+    capsule: { x: capX, y: capY, width: cap.width, height: cap.height },
     control: {
-      x: PAD, y: flip === 'above' ? capY - CONTROL_H : capY + cap.height,
+      x: capX, y: flip === 'above' ? capY - CONTROL_H : capY + cap.height,
       width: cap.width, height: CONTROL_H,
     },
-    window: { width: winCap.width + PAD * 2, height: winH },
+    window: { width: winW, height: winH },
   }
 }
 
@@ -431,8 +450,8 @@ function layout(capPos, style, workArea, extra = {}, winExtra = extra) {
 function windowSize(style, extra = {}) {
   const s = normalizeStyle(style)
   const cap = capsuleSize(s, extra)
-  if (s.vertical) return { width: cap.width + PAD * 2 + SIDE_W * 2, height: cap.height + PAD * 2 }
-  return { width: cap.width + PAD * 2, height: cap.height + PAD * 2 + CONTROL_H * 2 }
+  if (s.vertical) return { width: cap.width + PAD * 2 + SIDE_W * 2, height: cap.height + PAD * 2 + EDGE_BLEED * 2 }
+  return { width: cap.width + PAD * 2 + EDGE_BLEED * 2, height: cap.height + PAD * 2 + CONTROL_H * 2 }
 }
 
 const MIN_CAP_H = capsuleSize({ fontSize: MIN_FONT }).height
@@ -473,9 +492,9 @@ const maxCapWidth = (extra = {}) => capsuleSize({ fontSize: MAX_FONT, vertical: 
 /** 把样式限制在当前工作区内：竖排限制长度，横排限制宽度 */
 function clampStyleToArea(style, area, extra = {}) {
   const s = normalizeStyle(style)
-  const maxLen = s.vertical
-    ? maxVerticalLength(area)
-    : Math.max(MIN_W, Math.min(MAX_W, Math.round(area.width - PAD * 2)))
+  // 横排长度不限制（用户要求），不做工作区裁剪；竖排仍限制在屏幕高度内。
+  if (!s.vertical) return s
+  const maxLen = maxVerticalLength(area)
   if (s.width <= maxLen) return s
   return normalizeStyle({ ...s, width: maxLen })
 }
@@ -546,7 +565,7 @@ function resizeCapsule(start, dx, dy, dir, limits, area) {
 module.exports = {
   SPEC, SPEC_GEOMETRY: GEO, DEFAULT_STYLE,
   PAD, BORDER, V_PAD, H_PAD, V_CHROME, ROW_GAP, COLUMN_EXTRA_RATIO, CONTROL_H, SIDE_W, CONTROL_BTN_W, CONTROL_BTN_H, CONTROL_BTN_GAP, CONTROL_BTN_COUNT, CONTROL_BTN_COUNT_LOCKED, FLIP_RATIO,
-  MIN_W, MAX_W, MIN_FONT, MAX_FONT, DEFAULT_W, DEFAULT_FONT, MIN_CAP_H, MAX_CAP_H,
+  MIN_W, MAX_W, MAX_LEN, EDGE_BLEED, MIN_FONT, MAX_FONT, DEFAULT_W, DEFAULT_FONT, MIN_CAP_H, MAX_CAP_H,
   normalizeStyle, layoutFlags, resolveLayoutState, lineHeight, subHeight, mainColumnWidth, subColumnWidth, columnExtra, visibleRows, capsuleSize, minCapHeight, maxCapHeight, minCapWidth, maxCapWidth, maxVerticalLength, capsulePart, anchorCapsule, anchorVerticalToHorizontal, capsuleGrowthShift, nearestEdge, controlFlip, controlSide, sideWindowRect, capFromWindow, clampStyleToArea, clampVerticalLength, windowRect, regions, controlButtons, layout,
   windowSize, fontFromCapsuleHeight, fontFromCapsuleWidth, defaultCapsule, clampCapsule, isOnScreen, resizeCapsule, capsuleInset, blendDistance,
 }

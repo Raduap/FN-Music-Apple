@@ -68,8 +68,8 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
       const maxLen = G.maxVerticalLength(area)
       return { minW: G.minCapWidth(e), maxW: G.maxCapWidth(e), minH: G.MIN_W + G.V_CHROME, maxH: maxLen + G.V_CHROME }
     }
-    const maxW = Math.max(G.MIN_W, Math.min(G.MAX_W, Math.round(area.width - G.PAD * 2)))
-    return { minW: G.MIN_W, maxW, minH: G.minCapHeight(e), maxH: G.maxCapHeight(e) }
+    // 横排长度不限制上限（只给一个很大的防呆值），缩放可以拉到任意长。
+    return { minW: G.MIN_W, maxW: G.MAX_LEN, minH: G.minCapHeight(e), maxH: G.maxCapHeight(e) }
   }
   // 窗口自身的 min/max 要按「预留行数」算，否则窗口会小于为整首歌预留的固定尺寸，
   // 被 setMaximumSize 夹住后就装不下预留内容。
@@ -79,8 +79,7 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
       const maxLen = G.maxVerticalLength(area)
       return { minW: G.minCapWidth(we), maxW: G.maxCapWidth(we), minH: G.MIN_W + G.V_CHROME, maxH: maxLen + G.V_CHROME }
     }
-    const maxW = Math.max(G.MIN_W, Math.min(G.MAX_W, Math.round(area.width - G.PAD * 2)))
-    return { minW: G.MIN_W, maxW, minH: G.minCapHeight(we), maxH: G.maxCapHeight(we) }
+    return { minW: G.MIN_W, maxW: G.MAX_LEN, minH: G.minCapHeight(we), maxH: G.maxCapHeight(we) }
   }
   // 窗口的 min/max 必须跟随当前布局刷新：切到竖排后高度要能超过横排时的小上限
   function applyWindowLimits(area = capPos ? workAreaFor(capPos) : screen.getPrimaryDisplay().workArea) {
@@ -131,12 +130,14 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
   let receiveMouse = null
   function applyMouseEvents() {
     if (!alive() || !CAN_PASS_THROUGH) return
-    // 触控设备上 screen.getCursorScreenPoint() 拿到的仍是鼠标位置，手指点击 / 拖动时不会跟随，
-    // 因此普通模式不再依赖光标轮询决定是否接收事件：整个窗口始终接收，保证触摸一定能命中胶囊。
-    // 真正的鼠标穿透交给锁定模式；锁定模式下只有光标悬停在解锁按钮上时临时接收点击。
-    // 拖动 / 缩放进行中整窗保持接收，避免指针短暂离开胶囊导致操作中断。
+    // 按光标所在区域决定是否接收鼠标事件，让空白预留区（未使用的控制条带、控制条两侧、
+    // 按钮间隙）能穿透到下层窗口：
+    // - 普通模式：只有光标在胶囊上、或在已显示的控制条按钮上时接收；
+    // - 锁定模式：只有光标在解锁按钮上时临时接收；
+    // - 拖动 / 缩放进行中整窗接收，避免指针移出胶囊导致操作中断。
+    // 不接收时用 forward:true，窗口仍能拿到鼠标移动，控制条显隐照常。
     const busy = !!resize
-    const receive = busy || !style.clickThrough || (hovered && controlHot)
+    const receive = busy || (style.clickThrough ? (hovered && controlHot) : (capsuleHot || (hovered && controlHot)))
     // 值未变化时不重复调用，避免 Windows 上光标样式来回横跳。
     if (receive === receiveMouse) return
     receiveMouse = receive

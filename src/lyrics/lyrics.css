@@ -34,13 +34,14 @@ html, body, #root { touch-action: none; }
 /* 横排：宽度撑满，胶囊固定在「上控制条带之下」 */
 .lw:not(.vertical) .lc {
   position: absolute;
-  left: var(--pad); right: var(--pad);
+  /* 长度轴两侧留出 --bleed，胶囊边框不落在窗口最外一列像素上（否则非整数 DPI 下被裁）。 */
+  left: calc(var(--pad) + var(--bleed)); right: calc(var(--pad) + var(--bleed));
   top: var(--cap-top, calc(var(--ctl) + var(--pad)));
   width: auto; height: var(--cap-h);
 }
 .lw:not(.vertical) .lctl {
   position: absolute;
-  left: var(--pad); right: var(--pad);
+  left: calc(var(--pad) + var(--bleed)); right: calc(var(--pad) + var(--bleed));
   height: var(--ctl);
 }
 /* 控制条紧贴胶囊：按钮在上时贴胶囊上方，在下时贴胶囊下方 */
@@ -205,14 +206,15 @@ html, body, #root { touch-action: none; }
 /* 竖排：高度撑满，胶囊固定在「左控制条带之右」，与按钮方向无关。 */
 .lw.vertical .lc {
   position: absolute;
-  top: var(--pad); bottom: var(--pad);
+  /* 长度轴（纵向）两侧留出 --bleed，下边框不落在窗口最外一行像素上。 */
+  top: calc(var(--pad) + var(--bleed)); bottom: calc(var(--pad) + var(--bleed));
   left: var(--cap-left, calc(var(--ctl) + var(--pad)));
   width: var(--cap-w); height: auto; min-height: 0;
   padding-right: 28px; overflow: hidden;
 }
 .lw.vertical .lctl {
   position: absolute;
-  top: var(--pad); height: var(--cap-h);
+  top: calc(var(--pad) + var(--bleed)); height: var(--cap-h);
   width: var(--ctl); flex-direction: column; align-items: center; justify-content: center;
   gap: var(--btn-gap); padding: 0;
   transform: translateX(var(--ctl-dir, 6px));

@@ -74,7 +74,9 @@ export function FloatingLyricsSettings() {
           </div>
           <div className="ap-row">
             <div className="ap-label">宽度</div>
-            <Slider label="宽度" value={style.width} max={SPEC.geometry.maxW} step={20} onChange={(v) => set({ width: Math.max(SPEC.geometry.minW, Math.round(v)) })} valueText={(v) => `${Math.round(v)} 像素`} />
+            {/* 横排长度不限制上限；竖排长度由主进程按屏幕高度裁剪。滑块上限用 maxW 的若干倍，
+                拖动 / 输入仍可继续放宽（主进程再做竖排裁剪）。 */}
+            <Slider label={style.vertical ? '长度' : '宽度'} value={style.width} max={style.vertical ? SPEC.geometry.maxW : SPEC.geometry.maxW * 4} step={20} onChange={(v) => set({ width: Math.max(SPEC.geometry.minW, Math.round(v)) })} valueText={(v) => `${Math.round(v)} 像素`} />
             <em>{style.width}</em>
           </div>
           <div className="ap-row">

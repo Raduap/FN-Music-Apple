@@ -214,14 +214,17 @@ export default function FloatingLyrics() {
   // 让窗口能停在屏幕边上、胶囊仍然贴住屏幕边（原生拖动不允许窗口越过屏幕边）。
   const ins = layout.inset
   const insetVars = {
-    '--cap-top': `${ins ? ins.y : SPEC.geometry.controlH}px`,
-    '--cap-left': `${ins ? ins.x : SPEC.geometry.controlH}px`,
+    // 横排：top = 控制条高（贴顶时收小），left = 安全边；竖排：left = 控制条宽，top = 安全边。
+    '--cap-top': `${ins ? ins.y : (vertical ? SPEC.geometry.edgeBleed : SPEC.geometry.controlH)}px`,
+    '--cap-left': `${ins ? ins.x : (vertical ? SPEC.geometry.controlH : SPEC.geometry.edgeBleed)}px`,
   }
 
   const accent = ACCENT[state.palette] || ACCENT.red
   const vars = {
     '--accent': `rgb(${accent.join(',')})`,
     '--pad': `${SPEC.geometry.pad}px`,
+    // 长度轴安全边：胶囊边框不落在窗口最外缘，避免非整数 DPI 下被裁。
+    '--bleed': `${SPEC.geometry.edgeBleed}px`,
     '--ctl': `${SPEC.geometry.controlH}px`,
     '--edge': `${SPEC.geometry.resizeEdge}px`,
     '--btn-w': `${SPEC.geometry.controlBtnW}px`,

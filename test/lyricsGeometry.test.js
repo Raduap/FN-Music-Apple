@@ -39,7 +39,7 @@ describe('悬浮歌词几何与样式', () => {
     const small = G.windowSize({ fontSize: 18, width: 500 }, oneRow)
     const big = G.windowSize({ fontSize: 60, width: 500 }, oneRow)
     expect(big.height).toBeGreaterThan(small.height)
-    expect(small.width).toBe(500 + G.PAD * 2)
+    expect(small.width).toBe(500 + G.PAD * 2 + G.EDGE_BLEED * 2)
     expect(G.windowSize({ fontSize: 30 }).height).toBeGreaterThan(0)
     expect(G.PAD).toBe(0)
   })
@@ -192,7 +192,7 @@ describe('悬浮歌词几何与样式', () => {
     expect(right.win.x).toBe(0)
     expect(right.win.x + right.inset.x).toBe(0)
     expect(right.win.width).toBe(cap.width + G.SIDE_W * 2)
-    expect(right.win.height).toBe(cap.height)
+    expect(right.win.height).toBe(cap.height + G.EDGE_BLEED * 2)
 
     const left = G.layout({ x: wa.width - cap.width, y: 100 }, v, wa, twoRows)
     expect(left.side).toBe('left')
@@ -206,14 +206,15 @@ describe('悬浮歌词几何与样式', () => {
     const pos = { x: 400, y: 100 }
     const cap = G.capsuleSize(v, twoRows)
 
-    // 胶囊在窗口内恒占中间列（x = PAD + SIDE_W），控制条在左 / 右预留带
+    // 胶囊在窗口内恒占中间列（x = PAD + SIDE_W），长度轴上下各留安全边。
+    const capY = G.PAD + G.EDGE_BLEED
     const right = G.regions(v, null, twoRows, 'right')
-    expect(right.capsule).toEqual({ x: G.PAD + G.SIDE_W, y: G.PAD, width: cap.width, height: cap.height })
-    expect(right.control).toEqual({ x: G.PAD + G.SIDE_W + cap.width, y: G.PAD, width: G.SIDE_W, height: cap.height })
+    expect(right.capsule).toEqual({ x: G.PAD + G.SIDE_W, y: capY, width: cap.width, height: cap.height })
+    expect(right.control).toEqual({ x: G.PAD + G.SIDE_W + cap.width, y: capY, width: G.SIDE_W, height: cap.height })
 
     const left = G.regions(v, null, twoRows, 'left')
-    expect(left.capsule).toEqual({ x: G.PAD + G.SIDE_W, y: G.PAD, width: cap.width, height: cap.height })
-    expect(left.control).toEqual({ x: G.PAD, y: G.PAD, width: G.SIDE_W, height: cap.height })
+    expect(left.capsule).toEqual({ x: G.PAD + G.SIDE_W, y: capY, width: cap.width, height: cap.height })
+    expect(left.control).toEqual({ x: G.PAD, y: capY, width: G.SIDE_W, height: cap.height })
 
     const L1 = G.layout(pos, v, wa, twoRows)
     const L2 = G.layout(pos, v, wa, twoRows)
@@ -226,7 +227,7 @@ describe('悬浮歌词几何与样式', () => {
     const cap = G.capsuleSize({ vertical: true, fontSize: 30, width: 760 }, twoRows)
     const size = G.windowSize({ vertical: true, fontSize: 30, width: 760 }, twoRows)
     expect(size.width).toBe(cap.width + G.SIDE_W * 2)
-    expect(size.height).toBe(cap.height)
+    expect(size.height).toBe(cap.height + G.EDGE_BLEED * 2)
   })
 
   it('竖排长度被限制在工作区高度内，不会超出屏幕', () => {
@@ -276,9 +277,9 @@ describe('悬浮歌词几何与样式', () => {
     const toVertical = G.clampStyleToArea({ vertical: true, width: 2400, fontSize: 30 }, area, oneRow)
     expect(toVertical.width).toBe(G.maxVerticalLength(area))
     expect(G.capsuleSize(toVertical, oneRow).height).toBeLessThanOrEqual(area.height)
-    // 竖排很长切回横排：横排宽度受屏幕宽度限制
+    // 竖排很长切回横排：横排长度不再受屏幕宽度 / MAX_W 限制
     const toHorizontal = G.clampStyleToArea({ vertical: false, width: 4000, fontSize: 30 }, area, oneRow)
-    expect(toHorizontal.width).toBe(Math.min(G.MAX_W, area.width))
+    expect(toHorizontal.width).toBe(4000)
   })
 
   it('进度条贴边方向随模式限制在对应轴上：横排选上/下，竖排选左/右', () => {
@@ -373,14 +374,15 @@ describe('悬浮歌词几何与样式', () => {
   it('窗口外框与内部区域：胶囊不随 flip 变化，仅控制条在上 / 下预留带间切换', () => {
     const style = { width: 600, fontSize: 24 }
     const cap = G.capsuleSize(style, twoRows)
-    // 胶囊位置与 flip 无关，恒在中间行（y = PAD + CONTROL_H）；控制条在上 / 下预留带
+    // 胶囊位置与 flip 无关；长度轴（横向）两侧各留安全边，避免边框被窗口边缘裁掉。
+    const capX = G.PAD + G.EDGE_BLEED
     const above = G.regions(style, 'above', twoRows)
-    expect(above.capsule).toEqual({ x: G.PAD, y: G.PAD + G.CONTROL_H, width: cap.width, height: cap.height })
-    expect(above.control).toEqual({ x: G.PAD, y: G.PAD, width: cap.width, height: G.CONTROL_H })
+    expect(above.capsule).toEqual({ x: capX, y: G.PAD + G.CONTROL_H, width: cap.width, height: cap.height })
+    expect(above.control).toEqual({ x: capX, y: G.PAD, width: cap.width, height: G.CONTROL_H })
 
     const below = G.regions(style, 'below', twoRows)
-    expect(below.capsule).toEqual({ x: G.PAD, y: G.PAD + G.CONTROL_H, width: cap.width, height: cap.height })
-    expect(below.control).toEqual({ x: G.PAD, y: G.PAD + G.CONTROL_H + cap.height, width: cap.width, height: G.CONTROL_H })
+    expect(below.capsule).toEqual({ x: capX, y: G.PAD + G.CONTROL_H, width: cap.width, height: cap.height })
+    expect(below.control).toEqual({ x: capX, y: G.PAD + G.CONTROL_H + cap.height, width: cap.width, height: G.CONTROL_H })
   })
 
   it('resizeCapsule 支持八向缩放，并夹在最小 / 最大范围内', () => {
