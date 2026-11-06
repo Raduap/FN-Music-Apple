@@ -6,7 +6,6 @@ const { createTray, BALL_MODES } = require('./tray')
 const { createBall } = require('./ball')
 const { createLyrics } = require('./lyricsWindow')
 const { createCoverCache, coverKey } = require('./coverCache')
-const { fetchSyllables } = require('./syllables')
 
 const isDev = process.env.NODE_ENV === 'development'
 // 自定义数据目录（自动化测试用，让每次测试都从干净的状态开始）
@@ -148,7 +147,6 @@ const experimentalDefaults = () => ({
   baseUrl: 'https://api.deepseek.com/v1',
   model: 'deepseek-chat',
   hasKey: false,
-  syllables: false,
 })
 
 function experimentalRead() {
@@ -161,7 +159,6 @@ function experimentalRead() {
     baseUrl: e.baseUrl || 'https://api.deepseek.com/v1',
     model: e.model || 'deepseek-chat',
     hasKey: !!readExperimentalKey(),
-    syllables: !!e.syllables,
   }
 }
 
@@ -173,7 +170,6 @@ function experimentalWrite(patch) {
     aiFallback: patch.aiFallback === undefined ? cur.aiFallback : !!patch.aiFallback,
     baseUrl: String(patch.baseUrl ?? cur.baseUrl ?? '').trim(),
     model: String(patch.model ?? cur.model ?? '').trim(),
-    syllables: patch.syllables === undefined ? cur.syllables : !!patch.syllables,
   }
   if (patch.apiKey !== undefined) writeExperimentalKey(String(patch.apiKey || '').trim())
   writePrefs({ ...readPrefs(), experimental: next })
@@ -440,7 +436,6 @@ const REMOTE_ERR = {
   404: 'Base URL 或模型名不存在',
   429: '触发限流，请稍后重试',
 }
-
 
 function remoteUrl(baseUrl) {
   const base = String(baseUrl || '').trim().replace(/\/+$/, '')
@@ -1093,8 +1088,6 @@ function registerIpc() {
       }
     } catch (e) { return { ok: false, error: e.message } }
   })
-    ipcMain.handle('lyrics:syllables', (_e, payload = {}) => fetchSyllables({ ...payload, debug: true }))
-  if (isDev) ipcMain.handle('dev:set-session', (_e, { base, token } = {}) => { Object.assign(state, { base, token, mode: 'dev', username: 'dev' }); return { ok: true } })
   ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); syncBall(); syncLyrics(); if (p && p.lyricsStyle) lyricsWin?.setStyle(readPrefs().lyricsStyle); tray?.refresh(); return true })
   ipcMain.handle('tray:info', () => ({ available: !!tray, closeToTray: closeToTray(), ballMode: ballMode(), lyricsOn: lyricsOn() }))
   ipcMain.handle('lyrics:get', () => ({ on: lyricsOn(), style: { ...(readPrefs().lyricsStyle || {}) } }))
@@ -1145,22 +1138,6 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',
     },
   })
-  if (isDev) { // 开发模式下允许 F12 打开 DevTools 排查问题（生产构建不受影响）
-    // 等窗口真正显示后再弹 DevTools，避免在 ready-to-show 之前打开被吞掉
-    win.once('ready-to-show', () => {
-      win.webContents.openDevTools({ mode: 'detach' })
-      console.log('[dev] DevTools 已打开（F12 可随时开关）')
-      // 渲染进程 console → 终端：自动化调试时能直接看到前端的逐字调试输出
-      win.webContents.on('console-message', (_e, level, message) => {
-        if (String(message).includes('[syllables')) console.log(`[renderer] ${message}`)
-      })
-    })
-    win.webContents.on('before-input-event', (_e, input) => {
-      if (input.type === 'keyDown' && input.key === 'F12') {
-        win.webContents.isDevToolsOpened() ? win.webContents.closeDevTools() : win.webContents.openDevTools({ mode: 'detach' })
-      }
-    })
-  }
   if (prefs.maximized) win.maximize()
   win.once('ready-to-show', () => win.show())
 

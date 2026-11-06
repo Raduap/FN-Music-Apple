@@ -119,23 +119,6 @@ function alignCharTimeline(localText, remoteWords) {
     .map(({ text, w }) => ({ text, time: w.time, end: w.end ?? w.time }))
 }
 
-/**
- * 从多个来源候选中挑选与本地 LRC 最匹配的逐字数据：
- * 逐个试合并，覆盖率（命中行 / 本地行）≥ 0.85 即采纳（先到先得，AMLL 优先级最高）；
- * 都达不到 85% 时选覆盖率最高的那个。candidates 顺序即来源优先级。
- */
-export function pickSyllableCandidate(localLines, candidates = []) {
-  let best = null
-  for (const cand of candidates) {
-    if (!cand?.lines?.length) continue
-    const merged = mergeSyllableLines(localLines, cand.lines)
-    const hit = merged.filter((l) => l.words?.length).length
-    const coverage = localLines.length ? hit / localLines.length : 0
-    if (!best || coverage > best.coverage) best = { ...cand, merged, coverage }
-    if (coverage >= 0.85) break
-  }
-  return best
-}
 export function mergeSyllableLines(lines, syllables, debug = null) {
   const stats = { matched: 0, skippedText: 0, skippedTime: 0, textMismatches: [], timeMismatches: [] }
   if (!lines.length || !syllables?.length) {

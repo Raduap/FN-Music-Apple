@@ -93,15 +93,15 @@ function parseTtml(xml) {
 async function fetchSyllables({ title, artist, debug: wantDebug = false } = {}) {
   title = String(title || '').trim()
   if (!title) return { ok: false, error: '缺少歌曲名' }
-  const candidates = []
-  const debug = wantDebug ? { providers: [] } : null
-  // 1) AMLL TTML DB：社区人工逐字，质量最高
+  let lines = null
+  let debug = wantDebug ? {} : null
+  // 1) AMLL TTML DB
   try {
     const index = await fetchText(INDEX_URL)
     const q = norm(title)
     const qa = norm(artist)
     if (index && q) {
-      const found = []
+      const candidates = []
       for (const line of index.split('\n')) {
         if (!line.trim()) continue
         let j
@@ -116,52 +116,51 @@ async function fetchSyllables({ title, artist, debug: wantDebug = false } = {}) 
         const artists = (md.artists || []).map(norm).join('/')
         const artistHit = qa && artists.includes(qa)
         const score = (name === q ? 4 : bidir ? 2 : 0) + (artistHit ? 2 : 0)
-        found.push({ file: j.rawLyricFile, name: md.musicName?.[0] || '', artists: (md.artists || []).join('/'), score })
+        candidates.push({ file: j.rawLyricFile, name: md.musicName?.[0] || '', artists: (md.artists || []).join('/'), score })
       }
-      found.sort((a, b) => b.score - a.score)
-      if (debug) debug.amll = { query: title, candidates: found.slice(0, 5) }
-      const best = found.find((c) => c.score >= 3)
+      candidates.sort((a, b) => b.score - a.score)
+      if (debug) debug.amll = { query: title, candidates: candidates.slice(0, 5) }
+      const best = candidates.find((c) => c.score >= 3)
       if (best) {
         const xml = await fetchText(RAW_URL(best.file))
-        const lines = xml ? parseTtml(xml) : null
-        if (lines) {
-          candidates.push({ source: 'amll', provider: 'amll-ttml-db', lines })
-          if (debug) debug.amll.picked = best
+        if (xml) {
+          lines = parseTtml(xml)
+          if (lines && debug) debug.amll.picked = best
         }
       }
     }
   } catch {}
-  // 2) LiriQo：把每个「带词级时间轴」的 provider 都作为独立候选（petitlyrics / apple / qq / …）
-  try {
-    const u = new URL(LIRIQO + '/lyrics')
-    u.searchParams.set('title', title)
-    if (artist) u.searchParams.set('artist', String(artist))
-    const raw = await fetchText(String(u))
-    const json = raw ? JSON.parse(raw) : null
-    const timed = (json?.tracks || []).filter((t) => Array.isArray(t?.timed) && t.timed.some((l) => l.words?.length))
-    for (const track of timed) {
-      const out = []
-      for (const l of track.timed) {
-        const words = (l.words || [])
-          .filter((w) => String(w.text || '').trim() && Number.isFinite(+w.start) && +w.start > 0)
-          .map((w) => ({ text: toSimplified(String(w.text)), time: +w.start / 1000, end: Number.isFinite(+w.end) && +w.end > 0 ? +w.end / 1000 : undefined }))
-        if (!words.length) continue
-        out.push({
-          time: words[0].time,
-          end: Number.isFinite(+l.end) && +l.end > 0 ? +l.end / 1000 : undefined,
-          text: toSimplified(String(l.text || '').trim()),
-          words,
-        })
+  // 2) LiriQo
+  if (!lines) {
+    try {
+      const u = new URL(LIRIQO + '/lyrics')
+      u.searchParams.set('title', title)
+      if (artist) u.searchParams.set('artist', String(artist))
+      const raw = await fetchText(String(u))
+      const json = raw ? JSON.parse(raw) : null
+      const timed = (json?.tracks || []).filter((t) => Array.isArray(t?.timed) && t.timed.some((l) => l.words?.length))
+      if (debug) debug.liriqo = { providers: timed.slice(0, 3).map((t) => `${t.provider}:${t.syncLevel || t.granularity || 'word'}`) }
+      const track = timed[0]
+      if (track) {
+        const out = []
+        for (const l of track.timed) {
+          const words = (l.words || [])
+            .filter((w) => String(w.text || '').trim() && Number.isFinite(+w.start) && +w.start > 0)
+            .map((w) => ({ text: toSimplified(String(w.text)), time: +w.start / 1000, end: Number.isFinite(+w.end) && +w.end > 0 ? +w.end / 1000 : undefined }))
+          if (!words.length) continue
+          out.push({
+            time: words[0].time,
+            end: Number.isFinite(+l.end) && +l.end > 0 ? +l.end / 1000 : undefined,
+            text: toSimplified(String(l.text || '').trim()),
+            words,
+          })
+        }
+        if (out.length >= 2) lines = out
       }
-      if (out.length >= 2) {
-        candidates.push({ source: 'liriqo', provider: track.provider || 'unknown', lines: out })
-      }
-    }
-    if (debug) debug.liriqo = { providers: timed.slice(0, 5).map((t) => `${t.provider}:${t.syncLevel || t.granularity || 'word'}`) }
-  } catch {}
-  if (debug) debug.candidateCount = candidates.length
-  // 兼容旧字段：lines/source 取第一个候选；完整候选列表交给渲染层按本地 LRC 命中率择优
-  const first = candidates[0] || null
-  return { ok: true, lines: first?.lines || null, source: first?.source || '', candidates, debug }
+    } catch {}
+  }
+  const source = debug?.amll?.picked && lines ? 'amll' : (lines && debug?.liriqo ? 'liriqo' : '')
+  return { ok: true, lines: lines || null, source, debug }
 }
+
 module.exports = { fetchSyllables, parseTtml, toSimplified, norm, parseTime }
