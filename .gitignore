@@ -4,3 +4,4 @@ release*/
 *.log
 test-results/
 promo-build/
+.vscode/

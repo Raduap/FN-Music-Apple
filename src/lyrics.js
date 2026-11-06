@@ -126,13 +126,21 @@ function alignCharTimeline(localText, remoteWords) {
  */
 export function pickSyllableCandidate(localLines, candidates = []) {
   let best = null
+  const singableLines = localLines.filter((l) => String(l?.text || '').trim()).length
   for (const cand of candidates) {
     if (!cand?.lines?.length) continue
     const merged = mergeSyllableLines(localLines, cand.lines)
     const hit = merged.filter((l) => l.words?.length).length
-    const coverage = localLines.length ? hit / localLines.length : 0
-    if (!best || coverage > best.coverage) best = { ...cand, merged, coverage }
-    if (coverage >= 0.85) break
+    const coverage = singableLines ? hit / singableLines : 0
+    // 行数比例：远端行数与本地可唱行数越接近，分行结构越一致，逐字对齐越可靠。
+    // 覆盖率相近（±2%）时优先选行数比例更接近 1 的候选。
+    const ratio = Math.min(cand.lines.length / Math.max(1, singableLines), singableLines / Math.max(1, cand.lines.length))
+    if (!best || coverage > best.coverage + 0.02 || (Math.abs(coverage - best.coverage) <= 0.02 && ratio > best.ratio)) {
+      best = { ...cand, merged, coverage, ratio }
+    }
+    // 早退：覆盖率达标且行数比例健康（>=0.9）才锁定；
+    // 碎行候选（比例 <0.9，分行结构差异大）即使覆盖率高也继续比较后续候选。
+    if (coverage >= 0.85 && ratio >= 0.9) break
   }
   return best
 }
@@ -145,6 +153,9 @@ export function mergeSyllableLines(lines, syllables, debug = null) {
   const out = lines.map((l) => ({ ...l }))
   const used = new Array(syllables.length).fill(false)
   const norm = normForMatch
+  // 空行（间奏 / 纯音乐段）没有可显示的文本，不参与逐字配对——
+  // 把候选浪费在空行上会错位后续配对，还会拉低覆盖率。
+  const singable = (l) => !!String(l?.text || '').trim()
   const apply = (li, si) => {
     const s = syllables[si]
     if (!s.words?.length) return false
@@ -159,7 +170,7 @@ export function mergeSyllableLines(lines, syllables, debug = null) {
   let j = 0
   for (let li = 0; li < out.length; li++) {
     const t = norm(out[li].text)
-    if (!t) continue
+    if (!t || !singable(out[li])) continue
     while (j < syllables.length && syllables[j].time < out[li].time - 3) j++
     for (let k = j; k < syllables.length && syllables[k].time <= out[li].time + 3; k++) {
       if (used[k]) continue
@@ -171,7 +182,7 @@ export function mergeSyllableLines(lines, syllables, debug = null) {
   // 顺序约束避免「全局最近」把副歌重复段配错位。
   let p = 0
   for (let li = 0; li < out.length; li++) {
-    if (out[li].words) continue
+    if (out[li].words || !singable(out[li])) continue
     while (p < syllables.length && (used[p] || syllables[p].time < out[li].time - 5)) p++
     let best = -1
     let bestD = Infinity
@@ -414,6 +425,8 @@ export function karaokeFills(line, t) {
   const fills = spans.map((s) => Math.min(1, Math.max(0, (pos - s.start) / s.len)))
   return { fills, starts: spans.map((s) => s.start), spans: spans.map((s) => s.len), total, pos }
 }
+
+
 
 
 
