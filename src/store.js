@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { api, streamUrl, invalidate } from './api'
 import { acquireCover, prefetchCover } from './covers'
-import { hasNextLyric, hasTranslation, lyricFrame, loadLyrics } from './lyrics'
+import { hasNextLyric, hasTranslation, lyricFrame, loadLyrics, pickSyllableCandidate } from './lyrics'
 import { shuffled } from './lib'
 import { applyMotion } from './motion'
 import { DEFAULT_WALLPAPER, applyPalette, isPalette } from './appearance'
@@ -565,6 +565,30 @@ let lyricLines = []
 let lyricsReady = true
 let lastKey = ''
 let lastSync = { at: 0, time: 0, playing: false }
+
+// 悬浮歌词的逐字数据：按歌曲缓存合并结果，开关反复切换 / 每秒广播都不会重复抓取。
+// 缓存的只是「词级时间轴」合并版，切到别的歌会自然淘汰。
+const syllableMerged = new Map()
+async function enrichSyllableLines(id, song, lines) {
+  if (!song) return lines
+  let pending = syllableMerged.get(id)
+  if (!pending) {
+    pending = window.fn?.lyricsSyllables?.({ title: song.title, artist: song.artist })
+      .then((r) => {
+        if (!r?.ok || !r.candidates?.length) return null
+        return pickSyllableCandidate(lines, r.candidates)?.merged || null
+      })
+      .catch(() => null)
+    syllableMerged.set(id, pending)
+    if (syllableMerged.size > 30) {
+      const oldest = syllableMerged.keys().next().value
+      syllableMerged.delete(oldest)
+    }
+  }
+  const merged = await pending
+  return merged || lines
+}
+
 function broadcast() {
   const s = usePlayer.getState()
   const song = s.queue[s.index]
@@ -574,11 +598,18 @@ function broadcast() {
     lyricsReady = !song
     if (song) {
       const id = song.id
-      loadLyrics(id, song, { translate: useUI.getState().experimental?.enabled }).then((lines) => {
-        if (lyricFor === id) {
-          lyricLines = lines
-          lyricsReady = true
-          broadcast()
+      loadLyrics(id, song, { translate: useUI.getState().experimental?.enabled }).then(async (lines) => {
+        if (lyricFor !== id) return
+        // 先用普通 LRC 立即显示，逐字抓取在后台补；合并完成后再广播一次带 words 的版本
+        lyricLines = lines
+        lyricsReady = true
+        broadcast()
+        if (useUI.getState().syllables) {
+          const merged = await enrichSyllableLines(id, song, lines)
+          if (lyricFor === id && merged !== lyricLines) {
+            lyricLines = merged
+            broadcast()
+          }
         }
       })
     }
@@ -625,8 +656,9 @@ function broadcast() {
 usePlayer.subscribe(broadcast)
 useUI.subscribe((s, prev) => {
   const expChanged = s.experimental?.enabled !== prev.experimental?.enabled || s.experimental?.sourceEnabled !== prev.experimental?.sourceEnabled || s.experimental?.aiFallback !== prev.experimental?.aiFallback
-  if (expChanged) lyricFor = ''
-  if (s.motion !== prev.motion || s.palette !== prev.palette || expChanged) broadcast()
+  const sylChanged = s.syllables !== prev.syllables
+  if (expChanged || sylChanged) lyricFor = ''
+  if (s.motion !== prev.motion || s.palette !== prev.palette || expChanged || sylChanged) broadcast()
 })
 
 window.fn?.onPlayerCommand?.((cmd, arg) => {
@@ -658,4 +690,5 @@ export function restorePlayer() {
 }
 export const getAudio = () => audio
 export const useCurrent = () => usePlayer((s) => s.queue[s.index] || null)
+
 
