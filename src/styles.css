@@ -708,3 +708,9 @@ html[data-motion='reduce'] *, html[data-motion='reduce'] *::before, html[data-mo
 
 /* 封面：清晰版加载前先显示内存中已有的小图 */
 .cover img.ph { opacity: 1; transform: none; transition: none; }
+
+/* 悬浮歌词开关：位于“无损”与音量 / 静音控件之间 */
+.fl-toggle-btn { flex: none; }
+.fl-toggle-btn.on { color: var(--accent); }
+.fl-toggle-btn.on svg { animation: toggle-bump 0.45s var(--spring, ease); }
+.fl-toggle-btn:hover { color: var(--accent); }

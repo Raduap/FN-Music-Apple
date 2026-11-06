@@ -1,0 +1,280 @@
+/* 悬浮歌词窗口：透明背景，内容是一枚玻璃胶囊 + 控制条（横排在上 / 下方，竖排在左 / 右侧） */
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; height: 100%; margin: 0; background: transparent; overflow: hidden; }
+body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; user-select: none; }
+
+/* 与 lyricsGeometry 的常量对应：外框无透明留白，控制条 38 */
+:root {
+  --pad: 0px; --ctl: 38px; --edge: 7px; --btn-w: 30px; --btn-gap: 4px;
+  --radius: 20px; --vpad: 18px; --hpad: 28px; --line-ratio: 1.35; --sub-ratio: 0.62;
+  --progress-inset: 20px; --handle: 18px;
+}
+
+.lw {
+  position: relative;
+  width: 100%; height: 100%;
+  padding: var(--pad);
+  display: flex; flex-direction: column; justify-content: var(--justify, flex-end);
+  color: var(--fg); font-family: var(--fst); font-weight: var(--fw);
+  text-align: var(--align);
+}
+.lw.flip-above { --justify: flex-start; }
+.lw.flip-below { --justify: flex-end; }
+.lcore { width: 100%; height: 100%; display: flex; flex-direction: column; }
+
+/* 控制条：默认隐藏，光标进入胶囊时显示（离开 3s 后由页面计时隐藏）。
+   容器与按钮间隙本身不接收鼠标；只有按钮是命中目标。 */
+.lctl {
+  height: var(--ctl);
+  flex: none;
+  display: flex; align-items: center; gap: var(--btn-gap); justify-content: center;
+  opacity: 0; transform: translateY(var(--ctl-dir, 6px)); pointer-events: none;
+  transition: opacity 0.22s var(--ease-out, ease), transform 0.3s var(--spring, ease);
+}
+.lw.show .lctl { opacity: 1; transform: none; pointer-events: none; }
+.lw.show .lbtn { pointer-events: auto; }
+.lw.flip-above .lctl { --ctl-dir: 6px; order: 0; }
+.lw.flip-below .lctl { --ctl-dir: -6px; order: 2; }
+.lw.flip-below .lc { order: 1; }
+.lbtn {
+  width: var(--btn-w); min-width: var(--btn-w); height: 28px; padding: 0;
+  display: grid; place-items: center;
+  border: 1px solid var(--glass-bd);
+  background: rgba(0, 0, 0, 0.34);
+  color: var(--fg);
+  border-radius: 8px; font-size: 13px; font-family: var(--fst);
+  cursor: pointer; backdrop-filter: blur(10px); pointer-events: none;
+  transition: background 0.15s, transform 0.35s var(--spring, ease), border-color 0.15s;
+}
+.lbtn:hover { background: rgba(255, 255, 255, 0.16); border-color: color-mix(in srgb, var(--accent) 50%, var(--glass-bd)); }
+.lbtn:active { transform: scale(0.9); }
+.lbtn svg { display: block; }
+.lbtn.lock.on { border-color: var(--accent); color: var(--accent); }
+.lw[data-dark='0'] .lbtn { background: rgba(255, 255, 255, 0.82); color: #1a1a1c; }
+.lw[data-dark='0'] .lbtn:hover { background: rgba(255, 255, 255, 0.96); border-color: color-mix(in srgb, var(--accent) 50%, rgba(0, 0, 0, 0.12)); }
+
+/* ---------- 玻璃胶囊（深色这块就是窗口本体：拖动这里移动） ---------- */
+.lc {
+  position: relative;
+  flex: none;
+  width: 100%;
+  padding: var(--vpad) var(--hpad);
+  border-radius: var(--radius);
+  background: var(--glass);
+  border: 1px solid var(--glass-bd);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.55);
+  cursor: grab;
+  overflow: hidden;
+  isolation: isolate;
+  transition: border-color 0.3s, background 0.3s;
+}
+.lc::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--frost) * -0.65);
+  z-index: -2;
+  background-image: var(--custom-bg);
+  background-size: cover;
+  background-position: center;
+  filter: blur(var(--frost));
+  transform: scale(1.04);
+  opacity: var(--custom-alpha, 1);
+  pointer-events: none;
+}
+.lc::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background:
+    radial-gradient(115% 140% at 18% -18%, rgba(255, 255, 255, var(--frost-strong, 0.16)), transparent 54%),
+    radial-gradient(circle at 72% 118%, rgba(255, 255, 255, var(--frost-soft, 0.08)), transparent 42%),
+    linear-gradient(115deg, rgba(255, 255, 255, var(--frost-line, 0.04)), transparent 40%);
+  mix-blend-mode: screen;
+  opacity: 0.72;
+  pointer-events: none;
+}
+.lw.no-border .lc { border-color: transparent; }
+.lw.custom-bg .lc { background: rgba(18, 18, 22, calc(var(--custom-alpha, 0.55) * 0.68)); }
+.lw.custom-bg[data-dark='0'] .lc { background: rgba(255, 255, 255, calc(var(--custom-alpha, 0.55) * 0.6)); }
+.lc:active { cursor: grabbing; }
+
+.lrows { display: flex; flex-direction: column; align-items: stretch; }
+
+.lmain.upcoming { color: var(--fg3); opacity: 0.75; }
+.lmain {
+  font-size: var(--fs);
+  line-height: var(--line-ratio);
+  font-weight: var(--fw);
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lsub-wrap, .lnext-wrap {
+  height: 0; opacity: 0; overflow: hidden;
+  transition: height 0.28s var(--ease-out, ease), opacity 0.22s, margin-top 0.28s var(--ease-out, ease);
+}
+.lsub-wrap.on, .lnext-wrap.on {
+  height: var(--sub-h, calc(var(--fs) * var(--line-ratio) * var(--sub-ratio)));
+  margin-top: var(--row-gap, 6px);
+  opacity: 1;
+}
+.lsub {
+  font-size: calc(var(--fs) * var(--sub-ratio));
+  line-height: var(--line-ratio);
+  font-weight: 500;
+  color: var(--fg2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lnext {
+  font-size: calc(var(--fs) * var(--sub-ratio));
+  line-height: var(--line-ratio);
+  font-weight: 500;
+  color: var(--fg3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lnext::before { content: '↳ '; opacity: 0.7; }
+.lnext.empty::before { content: none; }
+
+/* 播放进度强调线：贴向胶囊最靠近屏幕的那条边。
+   两端留出圆角半径(20px)，保证只覆盖胶囊的直线边，不越过弧度起点。 */
+.lbar {
+  position: absolute; overflow: hidden;
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 2px;
+}
+.lbar > i {
+  display: block; width: 100%; height: 100%;
+  background: var(--accent);
+  transition: transform 0.25s linear;
+}
+/* 上 / 下边：横向进度条 */
+.edge-top .lbar, .edge-bottom .lbar { left: var(--progress-inset); right: var(--progress-inset); height: 2px; }
+.edge-top .lbar { top: 0; }
+.edge-bottom .lbar { bottom: 0; }
+.edge-top .lbar > i, .edge-bottom .lbar > i { transform-origin: left center; transform: scaleX(0); }
+/* 左 / 右边：纵向进度条 */
+.edge-left .lbar, .edge-right .lbar { top: var(--progress-inset); bottom: var(--progress-inset); width: 2px; }
+.edge-left .lbar { left: 0; }
+.edge-right .lbar { right: 0; }
+.edge-left .lbar > i, .edge-right .lbar > i { transform-origin: center top; transform: scaleY(0); }
+
+/* ---------- 竖排：原文 / 译文 / 下一句三列，从右到左排列 ---------- */
+.lw.vertical .lcore { flex-direction: row; align-items: stretch; }
+/* 竖排控制条：贴胶囊左 / 右边缘的一条竖列，按钮从上到下排列 */
+.lw.vertical .lctl {
+  width: var(--ctl); height: var(--cap-h); flex: none;
+  flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--btn-gap); padding: 0;
+  transform: translateX(var(--ctl-dir, 6px));
+}
+.lw.vertical.side-right .lctl { order: 2; --ctl-dir: 6px; }
+.lw.vertical.side-left .lctl { order: 0; --ctl-dir: -6px; }
+/* 竖排控制条的显隐位移也要在显示时归零，否则会偏移 6px 被裁 */
+.lw.vertical.show .lctl { transform: none; }
+.lw.vertical .lc { order: 1; flex: none; width: var(--cap-w); height: var(--cap-h); min-height: 0; padding-right: 28px; overflow: hidden; }
+.lw.vertical .lrows {
+  height: 100%;
+  flex-direction: row-reverse;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 0;
+}
+.lw.vertical .lmain,
+.lw.vertical .lsub,
+.lw.vertical .lnext {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  line-height: var(--line-ratio);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  height: 100%;
+}
+/* 拉丁系文字：保持从左到右的内容顺序，整行旋转 90°，读起来仍是横向句子的旋转版本 */
+.lw.vertical .latin {
+  writing-mode: vertical-rl;
+  text-orientation: sideways;
+  letter-spacing: 0.02em;
+}
+.lw.vertical .lmain {
+  flex: 0 0 auto;
+  /* 列宽必须与 lyricsGeometry.lineHeight 一致，否则拉丁字母的升降部会被裁掉 */
+  width: calc(var(--fs) * var(--line-ratio) + var(--col-extra));
+  max-width: none;
+  font-size: var(--fs);
+}
+.lw.vertical .lsub,
+.lw.vertical .lnext { font-size: calc(var(--fs) * var(--sub-ratio)); }
+.lw.vertical .lrows > .lsub-wrap,
+.lw.vertical .lrows > .lnext-wrap {
+  width: 0; height: 100%; margin-top: 0; margin-right: 0; flex: none;
+  transition: width 0.28s var(--ease-out, ease), opacity 0.22s, margin-right 0.28s var(--ease-out, ease);
+}
+.lw.vertical .lrows > .lsub-wrap.on,
+.lw.vertical .lrows > .lnext-wrap.on {
+  width: calc(var(--fs) * 1.35 * 0.62 + var(--col-extra));
+  margin-top: 0;
+  margin-right: 6px;
+  opacity: 1;
+}
+.lw.vertical .lsub-wrap > .lsub,
+.lw.vertical .lnext-wrap > .lnext { width: calc(var(--fs) * 1.35 * 0.62 + var(--col-extra)); }
+.lw.vertical .lnext:not(.empty)::before { content: '↳'; position: absolute; transform: translateX(100%); }
+
+/* ---------- 八向缩放热区：贴合胶囊四边与四角，直接拉边缩放 ---------- */
+.lresize { position: absolute; z-index: 5; }
+
+.lw.flip-above .lresize-n { left: var(--pad); right: var(--pad); top: calc(var(--pad) + var(--ctl)); height: var(--edge); cursor: ns-resize; }
+.lw.flip-above .lresize-s { left: var(--pad); right: var(--pad); bottom: var(--pad); height: var(--edge); cursor: ns-resize; }
+.lw.flip-above .lresize-w { top: calc(var(--pad) + var(--ctl)); bottom: var(--pad); left: var(--pad); width: var(--edge); cursor: ew-resize; }
+.lw.flip-above .lresize-e { top: calc(var(--pad) + var(--ctl)); bottom: var(--pad); right: var(--pad); width: var(--edge); cursor: ew-resize; }
+.lw.flip-above .lresize-nw { left: var(--pad); top: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
+.lw.flip-above .lresize-ne { right: var(--pad); top: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
+.lw.flip-above .lresize-sw { left: var(--pad); bottom: var(--pad); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
+.lw.flip-above .lresize-se { right: var(--pad); bottom: var(--pad); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
+
+.lw.flip-below .lresize-n { left: var(--pad); right: var(--pad); top: var(--pad); height: var(--edge); cursor: ns-resize; }
+.lw.flip-below .lresize-s { left: var(--pad); right: var(--pad); bottom: calc(var(--pad) + var(--ctl)); height: var(--edge); cursor: ns-resize; }
+.lw.flip-below .lresize-w { top: var(--pad); bottom: calc(var(--pad) + var(--ctl)); left: var(--pad); width: var(--edge); cursor: ew-resize; }
+.lw.flip-below .lresize-e { top: var(--pad); bottom: calc(var(--pad) + var(--ctl)); right: var(--pad); width: var(--edge); cursor: ew-resize; }
+.lw.flip-below .lresize-nw { left: var(--pad); top: var(--pad); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
+.lw.flip-below .lresize-ne { right: var(--pad); top: var(--pad); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
+.lw.flip-below .lresize-sw { left: var(--pad); bottom: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
+.lw.flip-below .lresize-se { right: var(--pad); bottom: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
+
+/* 竖排：胶囊只占窗口的一部分，热区要避开侧边控制条 */
+.lw.vertical .lresize-n { top: var(--pad); height: var(--edge); cursor: ns-resize; }
+.lw.vertical .lresize-s { bottom: var(--pad); height: var(--edge); cursor: ns-resize; }
+.lw.vertical .lresize-w { top: var(--pad); bottom: var(--pad); width: var(--edge); cursor: ew-resize; }
+.lw.vertical .lresize-e { top: var(--pad); bottom: var(--pad); width: var(--edge); cursor: ew-resize; }
+.lw.vertical .lresize-nw, .lw.vertical .lresize-sw { width: var(--handle); height: var(--handle); cursor: nesw-resize; }
+.lw.vertical .lresize-ne, .lw.vertical .lresize-se { width: var(--handle); height: var(--handle); cursor: nwse-resize; }
+.lw.vertical .lresize-nw, .lw.vertical .lresize-ne { top: var(--pad); }
+.lw.vertical .lresize-sw, .lw.vertical .lresize-se { bottom: var(--pad); }
+.lw.vertical.side-right .lresize-n,
+.lw.vertical.side-right .lresize-s { left: var(--pad); right: calc(var(--pad) + var(--ctl)); }
+.lw.vertical.side-right .lresize-w { left: var(--pad); }
+.lw.vertical.side-right .lresize-e { right: calc(var(--pad) + var(--ctl)); }
+.lw.vertical.side-right .lresize-nw,
+.lw.vertical.side-right .lresize-sw { left: var(--pad); }
+.lw.vertical.side-right .lresize-ne,
+.lw.vertical.side-right .lresize-se { right: calc(var(--pad) + var(--ctl)); }
+.lw.vertical.side-left .lresize-n,
+.lw.vertical.side-left .lresize-s { left: calc(var(--pad) + var(--ctl)); right: var(--pad); }
+.lw.vertical.side-left .lresize-w { left: calc(var(--pad) + var(--ctl)); }
+.lw.vertical.side-left .lresize-e { right: var(--pad); }
+.lw.vertical.side-left .lresize-nw,
+.lw.vertical.side-left .lresize-sw { left: calc(var(--pad) + var(--ctl)); }
+.lw.vertical.side-left .lresize-ne,
+.lw.vertical.side-left .lresize-se { right: var(--pad); }
+
+/* 减少动效 */
+html[data-motion='reduce'] *, html[data-motion='reduce'] *::before, html[data-motion='reduce'] *::after {
+  animation-duration: 0.001s !important;
+  transition-duration: 0.12s !important;
+}
