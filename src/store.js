@@ -56,7 +56,9 @@ export const useUI = create((set, get) => ({
   appearanceOpen: false,
   lyricsSettingsOpen: false,
   experimentalOpen: false,
-  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: false },
+  syllables: false, // 实验性逐字歌词（AMLL TTML DB / LiriQo），关闭时退回逐行歌词
+  syllablesDebug: LS.get('sylDebug', false), // 逐字歌词调试 toast：切歌时报告命中情况
   floatingLyrics: false, // 悬浮歌词窗口是否开启（真实状态以主进程 prefs 为准）
   lyricsStyle: {}, // 悬浮歌词样式（主进程 prefs.lyricsStyle）
   lyricsStyleSeq: 0, // 丢弃过期样式写入响应，避免快速拖动滑块时旧值覆盖新值
@@ -138,13 +140,30 @@ export const useUI = create((set, get) => ({
   closeExperimental: () => set({ experimentalOpen: false }),
   async loadExperimental() {
     const r = await window.fn.experimentalGet?.().catch(() => null)
-    if (r) set({ experimental: { ...get().experimental, ...r } })
+    if (r) {
+      set({ experimental: { ...get().experimental, ...r } })
+      // 逐字歌词开关跟随主进程配置；首次使用时回退 localStorage
+      const hasPref = typeof r.syllables === 'boolean'
+      set({ syllables: hasPref ? r.syllables : LS.get('syllables', false) })
+    }
     return r
   },
   async saveExperimental(patch) {
     const r = await window.fn.experimentalSet?.(patch || {})
     if (r?.ok) set({ experimental: { ...get().experimental, ...r.settings } })
     return r
+  },
+  async setSyllables(on) {
+    LS.set('syllables', !!on)
+    set({ syllables: !!on })
+    // 同时写进主进程 prefs（experimental 配置），重启后 loadExperimental 会恢复
+    await window.fn.experimentalSet?.({ syllables: !!on }).catch(() => {})
+  },
+  toggleSyllablesDebug() {
+    const on = !get().syllablesDebug
+    LS.set('sylDebug', on)
+    set({ syllablesDebug: on })
+    if (on) get().showToast('逐字调试已开启：切歌时会提示逐字命中情况')
   },
   async loadLyricsPrefs() {
     const r = await window.fn.lyricsGet?.().catch(() => null)

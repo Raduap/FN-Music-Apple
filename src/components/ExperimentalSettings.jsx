@@ -2,11 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useUI } from '../store'
 import * as Icon from '../icons'
 
-const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false }
+const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablesDebug: false }
 const SECTIONS = [
-  { id: 'overview', label: '翻译总览', icon: Icon.Translate },
-  { id: 'endpoint', label: '翻译端点', icon: Icon.Wave },
-  { id: 'notes', label: '安全说明', icon: Icon.Monitor },
+  { id: 'translate', label: '歌词翻译', icon: Icon.Translate },
+  { id: 'syllables', label: '逐字歌词', icon: Icon.Lyrics },
 ]
 
 export function ExperimentalSettings() {
@@ -16,16 +15,17 @@ export function ExperimentalSettings() {
   const ui = useUI.getState
   const ref = useRef(null)
   const lastFocus = useRef(null)
-  const [tab, setTab] = useState('overview')
+  const [tab, setTab] = useState('translate')
   const [form, setForm] = useState({ ...DEFAULTS, ...saved, apiKey: '' })
   const [busy, setBusy] = useState('')
   const [status, setStatus] = useState(null)
 
   useEffect(() => {
     if (!open) return
-    setTab('overview')
+    setTab('translate')
     ui().loadExperimental().then((r) => {
-      setForm({ ...DEFAULTS, ...r, apiKey: '' })
+      const s = useUI.getState()
+      setForm({ ...DEFAULTS, ...r, apiKey: '', syllables: s.syllables, syllablesDebug: s.syllablesDebug })
       setStatus(null)
     })
     lastFocus.current = document.activeElement
@@ -57,6 +57,11 @@ export function ExperimentalSettings() {
     const r = await window.fn.experimentalTest?.({ ...patch, ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}) })
     setBusy('')
     setStatus(r?.ok ? { good: true, text: r.message || '连接正常' } : { bad: true, text: r?.error || '连接失败' })
+  }
+  const toggleSyllables = async () => {
+    const syllables = !form.syllables
+    setForm((f) => ({ ...f, syllables }))
+    await ui().setSyllables(syllables)
   }
   const toggle = async () => {
     const next = !form.enabled
@@ -91,9 +96,9 @@ export function ExperimentalSettings() {
               )
             })}
           </nav>
-          <div className={`exp-nav-state ${form.enabled ? 'on' : ''}`}>
+          <div className={`exp-nav-state ${form.enabled || form.syllables ? 'on' : ''}`}>
             <i aria-hidden="true" />
-            <span>{form.enabled ? 'AI 补译已开启' : 'AI 补译未开启'}</span>
+            <span>{[form.enabled && 'AI 补译', form.syllables && '逐字歌词'].filter(Boolean).join(' · ') || '未开启任何实验功能'}</span>
           </div>
         </aside>
 
@@ -103,7 +108,7 @@ export function ExperimentalSettings() {
             <button className="icon-btn" onClick={close} aria-label="关闭" title="关闭 (Esc)"><Icon.Close size={16} /></button>
           </header>
           <div className="exp-scroll">
-            {tab === 'overview' && (
+            {tab === 'translate' && (
               <>
                 <section className="exp-section">
                   <div className="exp-section-title">功能</div>
@@ -132,11 +137,6 @@ export function ExperimentalSettings() {
                     <li>当前曲目的侧栏歌词、全屏播放页和悬浮歌词都会同步显示译文。</li>
                   </ul>
                 </section>
-              </>
-            )}
-
-            {tab === 'endpoint' && (
-              <>
                 <section className="exp-section">
                   <div className="exp-section-title">OpenAI 兼容端点</div>
                   <label className="exp-field">
@@ -158,11 +158,6 @@ export function ExperimentalSettings() {
                   {status && <div className={`exp-status ${status.good ? 'good' : 'bad'}`}>{status.text}</div>}
                   <p className="exp-hint">测试连接会使用当前输入，但不会保存；API Key 只有点“保存”后才写入本机安全存储。</p>
                 </section>
-              </>
-            )}
-
-            {tab === 'notes' && (
-              <>
                 <section className="exp-section">
                   <div className="exp-section-title">隐私与边界</div>
                   <ul className="exp-list">
@@ -171,9 +166,57 @@ export function ExperimentalSettings() {
                     <li>此设置不会修改飞牛服务器上的原始歌词，也不会写回 NAS。</li>
                   </ul>
                 </section>
+              </>
+            )}
+
+            {tab === 'syllables' && (
+              <>
                 <section className="exp-section">
-                  <div className="exp-section-title">适合使用</div>
-                  <p className="exp-paragraph">当一首外语歌只有原文、没有官方译文时，开启它即可补充中文译文。源站已有译文时仍以原译文为准。</p>
+                  <div className="exp-section-title">功能</div>
+                  <div className="exp-note">
+                    <Icon.Lyrics size={18} />
+                    <div>
+                      <b>逐字 / 卡拉OK歌词</b>
+                      <p>优先使用 AMLL TTML DB 的社区人工逐字歌词，其次通过聚合接口获取各平台词级时间轴；当前句按真实播放进度逐字扫色。</p>
+                    </div>
+                  </div>
+                  <button className={`fl-toggle exp-toggle ${form.syllables ? 'on' : ''}`} role="switch" aria-checked={!!form.syllables} onClick={toggleSyllables}>
+                    <span>启用逐字歌词</span><span className="fl-switch" aria-hidden="true" />
+                  </button>
+                </section>
+                <section className="exp-section">
+                  <div className="exp-section-title">工作方式</div>
+                  <ul className="exp-list">
+                    <li>只在当前句显示逐字扫色；没有逐字数据的歌自动退回逐行歌词，不影响显示。</li>
+                    <li>数据来源：AMLL TTML DB（社区人工校准）→ LiriQo 聚合接口（Apple / QQ / 酷狗 / 网易等），均带节流与超时。</li>
+                    <li>抓取在后台异步进行，失败静默退回，不弹错误提示。</li>
+                    <li>侧栏歌词与全屏播放页都生效；悬浮歌词暂不支持。</li>
+                  </ul>
+                </section>
+                <section className="exp-section">
+                  <div className="exp-section-title">调试</div>
+                  <button
+                    className={`fl-toggle exp-toggle ${form.syllablesDebug ? 'on' : ''}`}
+                    role="switch"
+                    aria-checked={!!form.syllablesDebug}
+                    onClick={async () => {
+                      const syllablesDebug = !form.syllablesDebug
+                      setForm((f) => ({ ...f, syllablesDebug }))
+                      ui().toggleSyllablesDebug()
+                    }}
+                  >
+                    <span>逐字调试提示</span><span className="fl-switch" aria-hidden="true" />
+                  </button>
+                  <ul className="exp-list">
+                    <li>开启后每次切歌都会用 Toast 提示逐字数据是否命中、命中多少行、不生效的原因（无数据 / 来源错误 / 文本不匹配）。</li>
+                  </ul>
+                </section>
+                <section className="exp-section">
+                  <div className="exp-section-title">说明</div>
+                  <ul className="exp-list">
+                    <li>逐字歌词是实验性功能，命中率和扫色精度依赖社区数据质量。</li>
+                    <li>此开关保存在本机偏好里，重启后保持。</li>
+                  </ul>
                 </section>
               </>
             )}
