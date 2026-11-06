@@ -57,6 +57,9 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
   // 这样开关译文 / 下一句时窗口尺寸与位置不变，只有内部胶囊伸缩。
   const winExtra = () => ({ showTranslation: !!layoutState.hasTranslation, showNext: !!layoutState.hasNext })
   const capSize = () => G.capsuleSize(style, extra())
+  // 窗口按 winExtra（整首歌可能出现的最大行数）预留尺寸；它的差值会补到贴屏边一侧，
+  // 使开关译文 / 下一句时窗口位置不变（见 lyricsGeometry.capsuleInset）。
+  const winCapSize = () => G.capsuleSize(style, winExtra())
   // 竖排时限制的是胶囊外框：宽由字号与列数决定，高 = 设置里的长度 + 两端内边距 / 边框
   // 胶囊尺寸上下限：竖排高度（文字方向长度）同时受样式上限与屏幕工作区限制，
   // 横排宽度也限制在工作区宽度内，避免任何方向被拉到屏幕外。
@@ -99,8 +102,25 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     } catch {}
   }
 
-  const capRect = (p = capPos) => ({ x: p.x, y: p.y, ...capSize() })
-  const workAreaFor = (p = capPos) => screen.getDisplayMatching(capRect(p)).workArea
+  // 选中胶囊中心所在的那块屏（按「点」判定，不用「矩形交集面积」）。
+  // 为什么必须按点：窗口矩形（含上下控制条，比胶囊高得多）与胶囊矩形尺寸差很大，
+  // 用 getDisplayMatching 按交集面积选屏时，两者在多屏拼接 / 错位屏上可能各选到不同的屏，
+  // 导致「窗口位置 → 胶囊位置」的反算自相矛盾：will-move 会误判越界并取消移动（拖不动、
+  // 表现为穿透），内容更新 / 缩放也会按另一块屏重排（弹回）。按点判定只有唯一答案。
+  const capCenter = (p = capPos) => { const c = capSize(); return { x: p.x + c.width / 2, y: p.y + c.height / 2 } }
+  const workAreaFor = (p = capPos) => screen.getDisplayNearestPoint(capCenter(p)).workArea
+  // 拖动边界用「所有屏幕工作区的并集」，而不是光标所在那一块屏：两块屏拼接处的缝不算墙，
+  // 浮窗可以跨在两者之间；只有整个桌面真正的最外边界才会挡住它。
+  const boundaryArea = () => G.unionWorkArea(screen.getAllDisplays().map((d) => d.workArea)) || workAreaFor(capPos)
+  // 贴边过渡（inset）是相对「胶囊中心所在那块屏」算的，不能用所有屏的并集（L 形桌面上并集的
+  // x / y 基准会错）。选屏规则与 layout / poll 完全一致，所以「窗口位置 -> 胶囊位置」的反算
+  // 与正向布局严格自洽，跨屏拖动不会被误判越界。
+  const capFromWindowBounds = (bounds) => {
+    // 先用窗口中心估一个胶囊位置来选屏，再用该屏反算；两处都按「点」选屏，结果稳定不震荡。
+    const probe = G.capFromWindow(bounds, style, screen.getDisplayNearestPoint({ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }).workArea, capSize(), winCapSize())
+    const area = workAreaFor(probe)
+    return G.capFromWindow(bounds, style, area, capSize(), winCapSize())
+  }
   const layoutPayload = (L, anim = null) => ({
     flip: L.flip,
     side: L.side,
@@ -137,25 +157,47 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     // - 拖动 / 缩放进行中整窗接收，避免指针移出胶囊导致操作中断。
     // 不接收时用 forward:true，窗口仍能拿到鼠标移动，控制条显隐照常。
     const busy = !!resize
-    const receive = busy || (style.clickThrough ? (hovered && controlHot) : (capsuleHot || (hovered && controlHot)))
+    // 浮窗横跨多块屏时整窗接收：跨（尤其不同缩放的）屏时 Windows 对命中区域的判定不可靠，
+    // 若继续按区域穿透，就会出现「另一半拖不动 / 被穿透」。牺牲一点空白区穿透来保证可拖动。
+    const spanning = displayCountFor(win.getBounds()) > 1
+    const receive = busy || spanning || (style.clickThrough ? (hovered && controlHot) : (capsuleHot || (hovered && controlHot)))
     // 值未变化时不重复调用，避免 Windows 上光标样式来回横跳。
     if (receive === receiveMouse) return
     receiveMouse = receive
     win.setIgnoreMouseEvents(!receive, { forward: true })
   }
 
+  // 窗口矩形与几块屏相交。横跨两块屏（尤其是缩放不同的屏）时，Windows 对跨屏窗口的
+  // 命中判定不可靠：光标在「非窗口中心那块屏」的一侧时，既可能收不到鼠标事件（拖不动），
+  // 也可能被 setIgnoreMouseEvents 直接穿透。此时不细分命中区域，整窗接收事件来保证可拖动。
+  function displayCountFor(rect) {
+    let n = 0
+    for (const d of screen.getAllDisplays()) {
+      const b = d.bounds
+      if (rect.x < b.x + b.width && rect.x + rect.width > b.x && rect.y < b.y + b.height && rect.y + rect.height > b.y) n++
+    }
+    return n
+  }
+
   const inRect = (p, r) => p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height
 
-  // 每 60ms 读一次光标：驱动控制条显隐，并只放行按钮矩形，其余区域穿透。
+  // 每 60ms 读一次光标：驱动控制条显隐，并只放行胶囊 / 按钮矩形，其余区域穿透。
+  // 命中判定用「胶囊的屏幕坐标 capPos」：窗口摆放时就保证「窗口 bounds + inset = capPos」，
+  // 所以 capPos 就是胶囊真实屏幕位置，跨屏 / 贴边过渡时都能对得上。
   function poll() {
     if (!alive() || !win.isVisible() || !capPos) return
     const c = screen.getCursorScreenPoint()
-    const bounds = win.getBounds()
-    // 命中区域必须用与当前窗口位置一致的偏移（贴顶时预留带已收掉），否则光标判定会偏移。
-    const inset = G.capsuleInset(capPos, style, workAreaFor(capPos), capSize())
+    const cap = capSize()
+    const onCapsule = inRect(c, { x: capPos.x, y: capPos.y, width: cap.width, height: cap.height })
+    // 按钮位置相对胶囊（inset 在相减中抵消），同样固定在胶囊坐标系里。
+    const inset = G.capsuleInset(capPos, style, workAreaFor(capPos), cap, winCapSize())
     const regs = G.regions(style, flip, extra(), side, winExtra(), inset)
-    const onCapsule = inRect(c, { x: bounds.x + regs.capsule.x, y: bounds.y + regs.capsule.y, width: regs.capsule.width, height: regs.capsule.height })
-    const onControl = G.controlButtons(style, flip, extra(), side, winExtra(), inset).some((r) => inRect(c, { x: bounds.x + r.x, y: bounds.y + r.y, width: r.width, height: r.height }))
+    const onControl = G.controlButtons(style, flip, extra(), side, winExtra(), inset).some((r) => inRect(c, {
+      x: capPos.x + (r.x - regs.capsule.x),
+      y: capPos.y + (r.y - regs.capsule.y),
+      width: r.width,
+      height: r.height,
+    }))
     const changed = onCapsule !== capsuleHot || onControl !== controlHot
     capsuleHot = onCapsule
     controlHot = onControl
@@ -190,7 +232,7 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     const saved = readPrefs().lyrics
     const areas = screen.getAllDisplays().map((d) => d.workArea)
     if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y) && G.isOnScreen(saved, areas, style, extra())) {
-      return G.clampCapsule(saved, screen.getDisplayMatching(capRect(saved)).workArea, style, extra())
+      return G.clampCapsule(saved, G.unionWorkArea(areas) || workAreaFor(saved), style, extra())
     }
     return G.defaultCapsule(screen.getPrimaryDisplay().workArea, style, extra())
   }
@@ -200,7 +242,8 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
   function applyBounds(notify = false, clamp = true, anim = null) {
     if (!alive() || !capPos) return null
     const area = workAreaFor(capPos)
-    if (clamp) capPos = G.clampCapsule(capPos, area, style, extra())
+    // 夹取用所有屏的并集，允许胶囊跨在两块屏之间；inset / flip 仍按所在屏（area）算。
+    if (clamp) capPos = G.clampCapsule(capPos, boundaryArea(), style, extra())
     applyWindowLimits(area)
     const next = G.layout(capPos, style, area, extra(), winExtra())
     flip = next.flip
@@ -220,7 +263,7 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     const areas = screen.getAllDisplays().map((d) => d.workArea)
     const initArea = capPos ? workAreaFor(capPos) : screen.getPrimaryDisplay().workArea
     style = G.clampVerticalLength(style, initArea, extra())
-    capPos = capPos && G.isOnScreen(capPos, areas, style, extra()) ? G.clampCapsule(capPos, workAreaFor(capPos), style, extra()) : initialPos()
+    capPos = capPos && G.isOnScreen(capPos, areas, style, extra()) ? G.clampCapsule(capPos, boundaryArea(), style, extra()) : initialPos()
     const first = G.layout(capPos, style, workAreaFor(capPos), extra(), winExtra())
     flip = first.flip
     side = first.side || side
@@ -261,15 +304,20 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     // 这样窗口顶到屏幕边（y=0）时胶囊仍能继续贴到 y=0，而不是卡在 38px。
     function syncFromWindow() {
       if (!alive() || win !== w || resize) return null
+      const bounds = w.getBounds()
+      // 位置反算与 layout / poll 用同一套选屏规则（都以「胶囊所在屏」为准，见 capFromWindowBounds）；
+      // 边界夹取按所有屏的并集算，允许跨屏但不越出整个桌面。
+      capPos = capFromWindowBounds(bounds)
+      capPos = G.clampCapsule(capPos, boundaryArea(), style, extra())
       const area = workAreaFor(capPos)
-      capPos = G.capFromWindow(w.getBounds(), style, area, capSize())
-      capPos = G.clampCapsule(capPos, area, style, extra())
       // 越过控制条变换线时切换按钮方向（横排上 / 下、竖排左 / 右），进度条随之换边。
       const L = G.layout(capPos, style, area, extra(), winExtra())
       // 贴近屏幕上边 / 左边时 inset 会连续变化（窗口不动、胶囊在窗口内滑），必须同步给
       // 渲染端，否则胶囊会停在固定偏移处、看起来没贴到屏幕边。变化很小，用整数比较去抖。
       const nextInset = { x: Math.round(L.inset.x), y: Math.round(L.inset.y) }
       const insetChanged = !sentInset || sentInset.x !== nextInset.x || sentInset.y !== nextInset.y
+      // 窗口拖动后可能从「单屏内」变成「横跨多屏」（或反之），穿透策略要立即重算。
+      applyMouseEvents()
       if (L.flip !== flip || (L.side && L.side !== side) || L.edge !== edge || insetChanged) {
         flip = L.flip
         side = L.side || side
@@ -279,6 +327,16 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
       }
       return L
     }
+    // 原生拖动越界拦截：在窗口真正移动「之前」判断，越界就直接 preventDefault 取消这一次移动。
+    // 不能像之前那样等 move 之后再 setBounds 回推 —— 那时系统已按光标把窗口拖出去，回推会与
+    // 系统拖动来回拉扯，表现为「闪到墙边又接着原位置往前」。提前取消则窗口停在最后一次合法
+    // 位置，不闪、也不越界。setBounds 不会触发 will-move，所以这里只取消不主动移窗。
+    w.on('will-move', (event, newBounds) => {
+      if (!alive() || win !== w || resize) return
+      const raw = capFromWindowBounds(newBounds)
+      const clamped = G.clampCapsule(raw, boundaryArea(), style, extra())
+      if (clamped.x !== raw.x || clamped.y !== raw.y) event.preventDefault()
+    })
     w.on('move', () => { syncFromWindow() })
     w.on('moved', () => {
       const L = syncFromWindow()
@@ -295,7 +353,7 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
   }
 
   function destroy() {
-    closeMenuWindow()
+    destroyMenuWindow()
     if (resize) endResize()
     stopPoll()
     if (!alive()) return
@@ -328,10 +386,10 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     const sizeChanged = nextCap.width !== prevCap.width || nextCap.height !== prevCap.height
     let anim = null
     if (sameOrientation && lineToggle && sizeChanged) {
-      // 固定「贴屏的那条边」，向远离屏幕的方向生长（见 lyricsGeometry.capsuleGrowthShift）。
-      // 窗口外框锚定同一条边，所以 capPos 补偿后窗口位置也随之不变。
-      const opts = { vertical: style.vertical, side, flip }
-      capPos = G.anchorCapsule(capPos, prevCap, nextCap, opts)
+      // 固定「贴屏的那条边」，向远离屏幕的方向生长。窗口为整首歌预留尺寸，多出的余量补在
+      // 贴屏边一侧（见 lyricsGeometry.capsuleInset），所以用 anchorCapsuleDocked 补偿后
+      // 窗口位置前后完全不变 —— 开关译文 / 下一句时不再移动透明窗，也就不会抖。
+      capPos = G.anchorCapsuleDocked(capPos, prevCap, nextCap, style, area)
     } else if (wasVertical && !style.vertical) {
       // 竖排切横排：以旧竖排胶囊的底边为锚点，避免横排按左上角定位导致整体跳位。
       capPos = G.anchorVerticalToHorizontal(capPos, prevCap, nextCap)
@@ -341,7 +399,7 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     applyWindowLimits(area)
     // 开关译文 / 下一句时不要重新夹取位置：胶囊在窗口内固定、窗口尺寸按整首歌预留，
     // clampCapsule 会因为 capSize 变化在贴边处把胶囊顶走（表现为开关行时整体跳一下）。
-    if (!(sameOrientation && lineToggle)) capPos = G.clampCapsule(capPos, area, style, extra())
+    if (!(sameOrientation && lineToggle)) capPos = G.clampCapsule(capPos, boundaryArea(), style, extra())
     const next = G.layout(capPos, style, area, extra(), winExtra())
     flip = next.flip
     side = next.side || side
@@ -361,71 +419,144 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
   // 悬浮歌词窗口 focusable:false（不抢主窗口焦点），而 Windows 原生菜单必须有焦点窗口
   // 才能停留，Menu.popup 在这里必然一闪就消失。因此改为完全自绘：用一个独立的可聚焦
   // 小窗加载 lyricsMenu.html，点击 / 勾选 / 关闭全部由我们控制。
-  function openMenuWindow() {
-    if (!alive()) return
-    if (menuWin && !menuWin.isDestroyed()) { menuWin.close(); menuWin = null }
-    menuItems = menu() || []
-    const p = screen.getCursorScreenPoint()
-    const area = screen.getDisplayNearestPoint(p).workArea
-    // 先以固定尺寸在目标位置创建但保持隐藏，等页面渲染完、量出真实尺寸后再一次性
-    // 显形到位，避免“小窗 → 撑开”的跳变导致的掉帧观感。
+  //
+  // 菜单窗常驻复用（预加载）而不是每次新建：新建 + loadFile 实测约 190ms，点开有明显等待；
+  // 复用后再次打开只需 show()，几乎瞬时，观感利落（不依赖任何 CSS 动画）。
+  //
+  // 「关闭」不调用 hide()，而是把窗口移到所有屏幕之外（视觉等同关闭）：透明窗 hide 后再 show
+  // 会经历一次隐藏/显示转换，表现为菜单先消失再出现；常驻 shown 状态则不存在该转换。
+  // 每块屏一个 1×1 的"收纳点"：窗口关闭时不跨屏移动（跨 DPI 移动会触发内容重缩放，
+  // 表现为菜单内容被缩放裁切一下再恢复），而是原地缩小到 1×1 并保持不透明 —— 视觉不可见。
+  // 下次打开前若光标所在屏与窗口当前屏缩放不同，直接销毁重建（新窗口创建时就在目标屏）。
+  const menuParkPoint = (disp) => ({ x: disp.workArea.x + disp.workArea.width - 1, y: disp.workArea.y + disp.workArea.height - 1 })
+  function ensureMenuWindow(disp) {
+    if (menuWin && !menuWin.isDestroyed()) return menuWin
+    const park = menuParkPoint(disp || screen.getPrimaryDisplay())
     const mw = menuWin = new BrowserWindow({
-      x: p.x, y: p.y, width: 220, height: 40,
+      x: park.x, y: park.y, width: 1, height: 1,
       frame: false, transparent: true, backgroundColor: '#00000000',
       hasShadow: false, resizable: false, movable: false, minimizable: false,
       maximizable: false, fullscreenable: false, skipTaskbar: true,
+      // 先隐藏创建，加载完成后原地 park（不抢焦点）常驻显示；
+      // 打开 / 关闭都不跨屏移动，避免 DPI 重缩放闪动。
       alwaysOnTop: true, focusable: true, show: false,
       webPreferences: { preload: menuPreload, contextIsolation: true, sandbox: true },
     })
     mw.setAlwaysOnTop(true, 'pop-up-menu')
     const mwContents = mw.webContents
     menuSenders.add(mwContents)
-    mw.__area = area
-    mw.__anchor = p
-    mw.__placed = false
+    mw.__ready = false
     mw.on('closed', () => {
       menuSenders.delete(mwContents)
       if (menuWin === mw) menuWin = null
     })
-    mw.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-    const hash = encodeURIComponent(JSON.stringify(menuItems.map((it) => ({
-      type: it.type, label: it.label, checked: !!it.checked,
-    }))))
-    mw.loadFile(path.join(__dirname, 'lyricsMenu.html'), { hash })
-    mw.webContents.once('did-finish-load', () => {
-      if (mw.isDestroyed()) return
-      // 页面已加载但先不显示：等它上报真实尺寸、窗口一次性摆好后，再 show。
-      // 这样不会先看到 220×40 的小窗再被撑开，观感更稳。
+    mwContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    mw.loadFile(path.join(__dirname, 'lyricsMenu.html'))
+    mwContents.once('did-finish-load', () => {
       mw.__ready = true
-      if (mw.__pendingSize) placeMenuWindow(mw, mw.__pendingSize)
-      // 兜底：页面若没有上报尺寸，也要让菜单可见。
-      setTimeout(() => {
-        if (!mw.isDestroyed() && !mw.__placed) placeMenuWindow(mw, [220, 200])
-      }, 200)
+      // 常驻显示在屏幕外：后续打开只是把它移回光标处，不存在隐藏/显示转换。
+      if (!mw.isDestroyed()) {
+        mw.setBounds({ ...menuParkPoint(disp || screen.getPrimaryDisplay()), width: 1, height: 1 })
+        mw.showInactive(); mw.__shown = true
+      }
     })
+    return mw
   }
 
-  // 把菜单窗一次性摆到锚点附近的正确尺寸并显示
+  async function openMenuWindow() {
+    if (!alive()) return
+    // 去重：右键会同时触发渲染端 onContextMenu 与 Windows 的 system-context-menu（后者延迟 60ms），
+    // 两条路径各调一次本函数；若不去重，第二次会把刚显示的菜单先藏再显示（表现为「消失一下再出现」）。
+    // 用时间窗把这一对调用合并成一次。
+    const now = Date.now()
+    if (openMenuWindow.__at && now - openMenuWindow.__at < 400) return
+    openMenuWindow.__at = now
+    menuItems = menu() || []
+    const p = screen.getCursorScreenPoint()
+    const dstDisplay = screen.getDisplayNearestPoint(p)
+    // 光标所在屏与菜单窗当前屏缩放不同（如 1.25 vs 1.5）时，直接销毁重建：
+    // 新窗口创建时就在目标屏，从未跨屏，不存在 DPI 重缩放闪动。
+    const curDisplay = menuWin && !menuWin.isDestroyed()
+      ? screen.getDisplayNearestPoint(menuWin.getBounds().x < 0 || menuWin.getBounds().y < 0
+        ? { x: menuWin.getBounds().x, y: menuWin.getBounds().y }
+        : { x: menuWin.getBounds().x + Math.round(menuWin.getBounds().width / 2), y: menuWin.getBounds().y + Math.round(menuWin.getBounds().height / 2) })
+      : null
+    if (curDisplay && curDisplay.scaleFactor !== dstDisplay.scaleFactor) destroyMenuWindow()
+    const mw = ensureMenuWindow(dstDisplay)
+    if (mw.isDestroyed()) return
+    mw.__area = screen.getDisplayNearestPoint(p).workArea
+    mw.__anchor = p
+    // 打开期间先解除「失焦即关闭」：show / focus 过程中可能出现瞬时失焦，若此时已武装会
+    // 立刻把菜单关掉（表现为「闪一下又出现」）。等窗口显示、焦点稳定后再武装。
+    mw.webContents.send('menu:disarm')
+    const payload = menuItems.map((it) => ({ type: it.type, label: it.label, checked: !!it.checked }))
+    // 等页面加载完成（仅首次），再由主进程主动调用渲染端重建列表并同步取回尺寸，
+    // 一次性摆位并显示。不依赖 rAF（隐藏窗口的 rAF 会停），也不依赖任何动画。
+    if (!mw.__ready) await new Promise((resolve) => { mw.webContents.once('did-finish-load', () => resolve()) })
+    if (mw.isDestroyed() || menuWin !== mw) return
+    let size
+    try { size = await mw.webContents.executeJavaScript(`window.__renderMenu(${JSON.stringify(payload)})`, true) } catch { size = null }
+    if (mw.isDestroyed() || menuWin !== mw) return
+    if (!Array.isArray(size) || !(size[0] > 0) || !(size[1] > 0)) size = [220, 200]
+    placeMenuWindow(mw, size)
+  }
+
+  // 把菜单窗摆到锚点附近。
+  //
+  // 窗口常驻显示，若直接 setBounds（位置 + 尺寸一起改），Windows 会先按「旧尺寸」把窗口
+  // 画到新位置，随后尺寸才生效 —— 观感就是「先放大/缩小一下再回正常尺寸」的闪动。
+  // 这里把整个摆放过程用「完全透明」遮住：调整尺寸、移到目标位置全部在 opacity=0 下完成，
+  // 最后一步才恢复不透明，因此任何中间态都不会被看到。
   function placeMenuWindow(mw, size) {
     if (!mw || mw.isDestroyed()) return
     const area = mw.__area || screen.getDisplayNearestPoint(mw.__anchor || screen.getCursorScreenPoint()).workArea
     const anchor = mw.__anchor || screen.getCursorScreenPoint()
     const w = Math.max(1, Math.round(size[0]))
     const h = Math.max(1, Math.round(size[1]))
-    const x = Math.min(anchor.x, area.x + area.width - w - 8)
-    const y = Math.min(anchor.y, area.y + area.height - h - 8)
-    mw.setBounds({ x: Math.max(area.x + 8, x), y: Math.max(area.y + 8, y), width: w, height: h })
-    if (!mw.__placed) {
-      mw.__placed = true
-      mw.show()
+    const x = Math.max(area.x + 8, Math.min(anchor.x, area.x + area.width - w - 8))
+    const y = Math.max(area.y + 8, Math.min(anchor.y, area.y + area.height - h - 8))
+    const token = (mw.__placeToken = (mw.__placeToken || 0) + 1)
+    mw.setOpacity(0)
+    mw.setBounds({ x, y, width: w, height: h })
+    if (!mw.__shown) { mw.showInactive(); mw.__shown = true }
+    mw.setIgnoreMouseEvents(false)
+    setTimeout(() => {
+      if (!mw || mw.isDestroyed() || mw.__placeToken !== token) return
+      // 尺寸 / 位置已就位（上面那次 setBounds 在 opacity=0 下已完成），恢复不透明并聚焦。
+      mw.setOpacity(1)
       mw.focus()
-    }
+      // 延迟武装「失焦即关闭」：避开 show / focus 期间可能的瞬时失焦。
+      if (mw.__armTimer) clearTimeout(mw.__armTimer)
+      mw.__armTimer = setTimeout(() => {
+        mw.__armTimer = null
+        if (!mw || mw.isDestroyed() || !mw.isVisible()) return
+        if (!mw.isFocused()) { closeMenuWindow(); return }
+        mw.webContents.send('menu:arm')
+      }, 220)
+    }, 0)
   }
 
   function closeMenuWindow() {
+    // 关闭 = 原地缩小到 1×1 并保持不透明（视觉不可见），不跨屏移动、不 hide。
+    // 跨 DPI 屏移动会触发内容重缩放（菜单内容被缩放裁切一下再恢复）；hide→show 有闪现转换。
+    // 原地收纳既不跨屏也不隐藏，两种问题都避开。下次打开若光标在另一缩放屏则直接重建。
+    const mw = menuWin
+    if (!mw || mw.isDestroyed()) return
+    if (mw.__armTimer) { clearTimeout(mw.__armTimer); mw.__armTimer = null }
+    mw.__placeToken = (mw.__placeToken || 0) + 1 // 取消未完成的摆放回调
+    mw.setOpacity(1)                             // 复位透明度，避免残留全透明
+    mw.webContents.send('menu:disarm')
+    const d = screen.getDisplayNearestPoint({ x: mw.getBounds().x, y: mw.getBounds().y })
+    mw.setBounds({ ...menuParkPoint(d), width: 1, height: 1 })
+    mw.setIgnoreMouseEvents(true, { forward: false })
+  }
+
+  // 真正销毁（歌词窗口关闭 / 应用退出时）
+  function destroyMenuWindow() {
     const mw = menuWin
     menuWin = null
-    if (mw && !mw.isDestroyed()) mw.close()
+    if (mw && mw.__armTimer) { clearTimeout(mw.__armTimer); mw.__armTimer = null }
+    if (mw && !mw.isDestroyed()) mw.destroy()
   }
 
   // ---------- 缩放（八向：上下左右 + 四角；字号随胶囊高度等比变化） ----------
@@ -440,8 +571,9 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     const x = resize.dir.includes('e') ? resize.bounds.x : anchor.x
     const y = resize.dir.includes('s') ? resize.bounds.y : anchor.y
     applyWindowLimits(resize.area)
-    capPos = G.clampCapsule({ x, y }, resize.area, style, extra())
-    const L = G.layout(capPos, style, resize.area, extra(), winExtra())
+    // 位置夹取用所有屏的并集：跨屏的浮窗缩放时不能被单块屏工作区拉回中心所在屏。
+    capPos = G.clampCapsule({ x, y }, boundaryArea(), style, extra())
+    const L = G.layout(capPos, style, workAreaFor(capPos), extra(), winExtra())
     flip = L.flip
     side = L.side || side
     edge = L.edge
@@ -452,7 +584,7 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
   function endResize() {
     if (!resize) return
     resize = null
-    capPos = G.clampCapsule(capPos, workAreaFor(capPos), style, extra())
+    capPos = G.clampCapsule(capPos, boundaryArea(), style, extra())
     layout()
     applyMouseEvents()
     writePrefs({ ...readPrefs(), lyricsStyle: style, lyrics: { x: capPos.x, y: capPos.y } })
@@ -491,17 +623,11 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     }
     closeMenuWindow()
   })
-  ipcMain.on('menu:resize', (e, width, height) => {
-    if (!fromMenu(e)) return
-    const mw = menuWin
-    if (!mw || mw.isDestroyed()) return
-    mw.__pendingSize = [width, height]
-    if (mw.__ready) placeMenuWindow(mw, mw.__pendingSize)
-  })
   ipcMain.on('menu:close', (e) => { if (fromMenu(e)) closeMenuWindow() })
   ipcMain.on('lyrics:resize-start', (e, dir, x, y) => {
     if (!fromLyrics(e) || style.clickThrough) return
-    const area = workAreaFor(capPos)
+    // 尺寸上限 / 位置夹取都用所有屏的并集：跨屏浮窗缩放时不被单块屏限制或拉回。
+    const area = boundaryArea()
     const startCursor = Number.isFinite(x) && Number.isFinite(y) ? { x, y } : screen.getCursorScreenPoint()
     resize = { cursor: startCursor, startCursor, bounds: { x: capPos.x, y: capPos.y, ...capSize() }, dir: typeof dir === 'string' ? dir : 'se', extra: extra(), area }
   })
@@ -541,7 +667,8 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
         void prevCap; void nextCap
         // 行预留已按“整首歌”计算，胶囊尺寸在一首歌内恒定，切句不会改变高度；
         // 这里可以安全夹取，避免贴边时因为窗口伸出屏幕而被裁掉。
-        capPos = G.clampCapsule(capPos, workAreaFor(capPos), style, extra())
+        // 夹取用所有屏的并集：跨屏的浮窗不能被单屏工作区拉回某一侧（否则内容一更新就弹回去）。
+        capPos = G.clampCapsule(capPos, boundaryArea(), style, extra())
         applyBounds(true, false, anim)
         writePrefs({ ...readPrefs(), lyrics: { x: capPos.x, y: capPos.y } })
       }

@@ -316,13 +316,19 @@ describe('悬浮歌词几何与样式', () => {
     expect(G.clampCapsule({ x: 0, y: 99999 }, wa, style, twoRows)).toEqual({ x: 0, y: 1040 - cap.height })
   })
 
-  it('当胶囊中心在屏幕上方 2/3 时控制条放到下方，否则放到上方', () => {
+  it('当胶囊中心在屏幕上方 1/3 区域时控制条放到下方，否则放到上方', () => {
     const style = { fontSize: 30, width: 760 }
     const cap = G.capsuleSize(style, twoRows)
     const high = { x: 0, y: 0 }
     const low = { x: 0, y: wa.height - cap.height }
     expect(G.controlFlip(high, cap, wa)).toBe('below')
     expect(G.controlFlip(low, cap, wa)).toBe('above')
+    // 分界线在屏幕上方 1/3 处：中心略高于 1/3 放下方，略低于 1/3 放上方。
+    const line = wa.y + wa.height / 3
+    const justAbove = { x: 0, y: Math.round(line - cap.height / 2) - 1 }
+    const justBelow = { x: 0, y: Math.round(line - cap.height / 2) + 1 }
+    expect(G.controlFlip(justAbove, cap, wa)).toBe('below')
+    expect(G.controlFlip(justBelow, cap, wa)).toBe('above')
 
     const aboveWindow = G.layout(low, style, wa, twoRows)
     expect(aboveWindow.flip).toBe('above')
@@ -440,6 +446,21 @@ describe('悬浮歌词几何与样式', () => {
     expect(G.isOnScreen(onSecond, [wa], {}, twoRows)).toBe(false)
   })
 
+  it('多屏工作区并集：拼接处的缝不算边界，浮窗可跨在两块屏之间', () => {
+    // wa=1920×1040，second 紧贴其右侧（x=1920）。
+    const union = G.unionWorkArea([wa, second])
+    expect(union).toEqual({ x: 0, y: 0, width: 1920 + 1280, height: 1040 })
+    // 单块屏（getDisplayMatching）会把跨屏位置夹回一块屏内；并集则允许停在拼接处。
+    const straddling = { x: 1800, y: 900 } // 胶囊横跨 x=1920 拼缝
+    const style = { fontSize: 30, width: 760 }
+    const cap = G.capsuleSize(style, oneRow)
+    const single = G.clampCapsule(straddling, wa, style, oneRow)
+    const unioned = G.clampCapsule(straddling, union, style, oneRow)
+    expect(single.x).toBe(1920 - cap.width) // 被单屏夹回，不能跨缝
+    expect(unioned.x).toBe(straddling.x)    // 并集下保持跨屏
+    expect(G.unionWorkArea([])).toBeNull()
+  })
+
   it('拖动/缩放纯计算：位置按指针偏移，缩放保持未拖动边且更新样式', () => {
     expect(I.nextDragPosition({ cap: { x: 100, y: 80 }, cursor: { x: 10, y: 20 } }, { x: 35, y: 12 })).toEqual({ x: 125, y: 72 })
     const bounds = { x: 100, y: 100, width: 800, height: 200 }
@@ -497,14 +518,14 @@ describe('悬浮歌词几何与样式', () => {
     it('窗口按预留行数固定，增减行时窗口外框不变', () => {
       const pos = { x: 400, y: 900 }
       const win1 = G.layout(pos, style, wa, oneRow, threeRows).win
-      const p3 = G.anchorCapsule(pos, cap1, cap3, { vertical: false, flip: 'above' })
+      const p3 = G.anchorCapsuleDocked(pos, cap1, cap3, style, wa)
       const win3 = G.layout(p3, style, wa, threeRows, threeRows).win
       expect(win1.width).toBe(win3.width)
       expect(win1.height).toBe(win3.height)
       expect(win1.x).toBe(win3.x)
-      // 窗口位置只跟 capPos 走（= 胶囊锚定后的坐标），因此它随贴屏边的生长一起平移，
-      // 而尺寸恒定。这样窗口本身永远不需要在越界时移动（避免跨进程的中间帧跳动）。
-      expect(win3.y - win1.y).toBe(p3.y - pos.y)
+      // 窗口为整首歌预留尺寸，未用到的行余量补在贴屏边一侧（见 capsuleInset 的 slack 项）。
+      // 因此增减行时窗口位置与尺寸都完全不变 —— 透明窗不需要重新合成，也就不会抖。
+      expect(win3.y).toBe(win1.y)
     })
   })
 
@@ -549,7 +570,7 @@ describe('悬浮歌词几何与样式', () => {
     function drag(win0, cap0, delta) {
       const capSize = G.capsuleSize(style, one)
       const win = { ...win0, y: win0.y + delta }
-      const capPos = G.capFromWindow(win, style, wa, capSize)
+      const capPos = G.capFromWindow(win, style, wa, capSize, G.capsuleSize(style, two))
       const L = G.layout(capPos, style, wa, one, two)
       return { capPos, win: { ...L.win }, flip: L.flip, capScreenY: L.win.y + L.inset.y }
     }
@@ -562,7 +583,8 @@ describe('悬浮歌词几何与样式', () => {
         const r = drag(win, capPos, 10)
         capPos = r.capPos
         win = r.win
-        expect(r.capScreenY).toBe(capPos.y) // 胶囊屏幕 y 始终等于 capPos.y
+        // 窗口位置取整，胶囊屏幕 y 与 capPos.y 允许 1px 取整误差；关键是任何时候都不跳变。
+        expect(Math.abs(r.capScreenY - capPos.y)).toBeLessThanOrEqual(1)
         if (r.flip === 'above') crossed = true
       }
       expect(crossed).toBe(true) // 确认确实越过了变换线

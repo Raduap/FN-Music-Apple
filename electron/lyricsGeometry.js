@@ -5,7 +5,7 @@
 //
 // 窗口结构（外框 = 胶囊 + 控制条）：
 //   控制条在胶囊上方（flip = 'above'）或下方（flip = 'below'）
-//   —— 胶囊在屏幕上方 2/3 时按钮放下方，避免贴顶时按钮被顶出屏幕；否则放上方
+//   —— 胶囊在屏幕上 1/3 区域时按钮放下方，避免贴顶时按钮被顶出屏幕；否则放上方
 //
 // 胶囊高度按“当前实际会显示的行数”计算：原文 + 可选译文 + 可选下一句。
 // 这样视觉黑块、窗口外框和鼠标命中区域一致，切换翻译时不会在下方留下透明空白。
@@ -168,6 +168,23 @@ function anchorCapsule(capPos, prevCap, nextCap, opts = {}) {
 }
 
 /**
+ * 与 anchorCapsule 相同，但把「贴屏边一侧补回的预留余量」也考虑进去（见 dockBlend）。
+ *
+ * 开关译文 / 下一句时，只有到达贴屏边（横排贴底、竖排贴右）才需要完整固定那条边；
+ * 在控制条变换线附近只有一部分边被固定，这样窗口位置（capsuleInset 的 slack 项同样按比例）
+ * 前后完全一致，不会因为透明窗移动而抖。远离变换线时 t=1，退化为原来的完整锚定。
+ */
+function anchorCapsuleDocked(capPos, prevCap, nextCap, style, workArea) {
+  const s = normalizeStyle(style)
+  if (s.vertical) {
+    const t = dockBlend(capPos, prevCap, workArea, true)
+    return { x: Math.round(capPos.x - (nextCap.width - prevCap.width) * t), y: Math.round(capPos.y) }
+  }
+  const t = dockBlend(capPos, prevCap, workArea, false)
+  return { x: Math.round(capPos.x), y: Math.round(capPos.y - (nextCap.height - prevCap.height) * t) }
+}
+
+/**
  * 竖排切横排：横排胶囊保持旧竖排胶囊的底边 y 坐标不变。
  * 横排高度通常小于竖排胶囊高度，因此需要向上移动，避免整体跳到左上角。
  */
@@ -223,7 +240,7 @@ function controlSide(capPos, capSize, workArea) {
  */
 function blendDistance(capSize, workArea, vertical) {
   const margin = vertical ? SIDE_W : CONTROL_H
-  // 横排的翻转线在居中 2/3 处、竖排在 1/2 处，各留 20% 余量作为上限。
+  // 横排的翻转线在上方 1/3 处、竖排在 1/2 处，各留 20% 余量作为上限。
   const axis = vertical ? workArea.width : workArea.height
   const extent = vertical ? capSize.width : capSize.height
   const ratio = vertical ? 0.5 : FLIP_RATIO
@@ -232,6 +249,27 @@ function blendDistance(capSize, workArea, vertical) {
   // 同时把影响范围限制在贴边后的 228px 内，正常位置仍是原来的固定偏移。
   const desired = margin * 6
   return Math.max(margin * 1.5, Math.min(desired, flipLimit * 0.8))
+}
+
+/**
+ * 「窗口为整首歌预留的尺寸」比「胶囊实际尺寸」多出来的余量，应该补到贴屏边一侧。
+ *
+ * 为什么：a49efc6 之后窗口位置 = 胶囊位置 - inset。这样越过控制条变换线（flip / side）
+ * 时窗口不动，但「开关译文 / 下一句」时胶囊要沿贴屏边生长，capPos 会移动，窗口也就跟着
+ * 移动 —— 透明置顶窗每次移动都会被 Windows 重新合成，在 125% 这类非整数 DPI 下表现为
+ * 胶囊抖动。要消除它，就得让这部分「预留余量」落在贴屏边一侧：胶囊越长，窗口内偏移越小
+ * （朝贴屏边收），少显示了几行，就在对应侧补回多少像素，于是窗口位置在开关行前后完全不变。
+ *
+ * 但这只在该侧确实是贴屏边时成立。控制条变换线附近还没有明确的贴屏边，余量必须随位置
+ * 连续地 0 -> 1 过渡，否则拖动过线时窗口位置会突变（正是 a49efc6 修掉的跳变）。这里用与
+ * 贴边收带相同尺度的过渡带（见 blendDistance），保证窗口位置始终是胶囊位置的连续函数。
+ */
+function dockBlend(capPos, size, workArea, vertical, band) {
+  const center = vertical ? capPos.x + size.width / 2 : capPos.y + size.height / 2
+  const flipLine = vertical ? workArea.x + workArea.width / 2 : workArea.y + workArea.height * FLIP_RATIO
+  const span = band || blendDistance(size, workArea, vertical)
+  if (span <= 0) return center >= flipLine ? 1 : 0
+  return clamp((center - flipLine) / span + 0.5, 0, 1)
 }
 
 /**
@@ -247,20 +285,27 @@ function blendDistance(capSize, workArea, vertical) {
  * 所以贴近屏幕边时把这条带按比例收掉：窗口停在屏幕边上，胶囊自己走完最后一段。
  * 收掉的比例与「离屏幕边的距离」成正比（见 blendDistance），保证 窗口位置 ←→ 胶囊位置
  * 严格互逆（见 capFromWindow）：过渡区内胶囊位移略快于手指，越过后回到 1:1。
+ *
+ * 偏移里还包含「窗口为整首歌预留的余量」补到贴屏边一侧的部分（见 dockBlend）：窗口尺寸
+ * 按 winCap 算、胶囊按当前尺寸算，二者之差 slack 在贴屏边一侧补回。这样开关译文 / 下一句
+ * 时窗口位置不变，只有胶囊在窗口内滑动，避免透明窗重新合成导致的抖动。
  */
-function capsuleInset(capPos, style, workArea, capSize) {
+function capsuleInset(capPos, style, workArea, capSize, winCap) {
   const s = normalizeStyle(style)
   const size = capSize || capsuleSize(s, {})
+  const win = winCap || size
   if (s.vertical) {
     const d = Math.max(0, capPos.x - workArea.x)
     const blend = blendDistance(size, workArea, true)
+    const slack = Math.max(0, win.width - size.width)
     // y 是长度轴方向的安全边（竖排长度轴为纵向）：固定留出，避免下边框压在窗口最外缘。
-    return { x: PAD + SIDE_W * clamp(d / blend, 0, 1), y: PAD + EDGE_BLEED }
+    return { x: PAD + SIDE_W * clamp(d / blend, 0, 1) + slack * dockBlend(capPos, size, workArea, true, blend), y: PAD + EDGE_BLEED }
   }
   const d = Math.max(0, capPos.y - workArea.y)
   const blend = blendDistance(size, workArea, false)
+  const slack = Math.max(0, win.height - size.height)
   // x 是长度轴方向的安全边（横排长度轴为横向）：固定留出，避免右边框压在窗口最外缘。
-  return { x: PAD + EDGE_BLEED, y: PAD + CONTROL_H * clamp(d / blend, 0, 1) }
+  return { x: PAD + EDGE_BLEED, y: PAD + CONTROL_H * clamp(d / blend, 0, 1) + slack * dockBlend(capPos, size, workArea, false, blend) }
 }
 
 /**
@@ -309,22 +354,43 @@ function sideWindowRect(capPos, capSize, side, winCap = capSize, inset = null) {
  *
  * 过渡区内 window = capPos - margin * (capPos / blend)，反解得 capPos = window / (1 - margin/blend)；
  * 过渡区外 window = capPos - margin，直接加回 margin 即可。
+ *
+ * 贴屏边一侧还会补回预留余量（见 capsuleInset 的 slack 项），它同样依赖 capPos，无法直接
+ * 反解。但这部分斜率很小（收带 + 补回的总斜率 < 1），用不动点迭代即可稳定收敛；一次拖动
+ * 内尺寸不变，因此迭代几步就足够精确（见下方 solveInset）。
  */
-function capFromWindow(win, style, workArea, capSize) {
+function capFromWindow(win, style, workArea, capSize, winCap) {
   const s = normalizeStyle(style)
   const size = capSize || capsuleSize(s, {})
+  const win2 = winCap || size
   if (s.vertical) {
-    const blend = blendDistance(size, workArea, true)
-    const slope = 1 - SIDE_W / blend
-    const w = win.x - workArea.x
-    const d = w >= blend * slope ? w + SIDE_W : w / slope
-    return { x: Math.round(workArea.x + d), y: Math.round(win.y + PAD + EDGE_BLEED) }
+    const slack = Math.max(0, win2.width - size.width)
+    let x
+    if (slack === 0) {
+      const blend = blendDistance(size, workArea, true)
+      const slope = 1 - SIDE_W / blend
+      const w = win.x - workArea.x
+      const d = w >= blend * slope ? w + SIDE_W : w / slope
+      x = workArea.x + d
+    } else {
+      x = win.x + PAD + SIDE_W
+      for (let i = 0; i < 40; i++) x = win.x + capsuleInset({ x, y: win.y }, s, workArea, size, win2).x
+    }
+    return { x: Math.round(x), y: Math.round(win.y + PAD + EDGE_BLEED) }
   }
-  const blend = blendDistance(size, workArea, false)
-  const slope = 1 - CONTROL_H / blend
-  const w = win.y - workArea.y
-  const d = w >= blend * slope ? w + CONTROL_H : w / slope
-  return { x: Math.round(win.x + PAD + EDGE_BLEED), y: Math.round(workArea.y + d) }
+  const slack = Math.max(0, win2.height - size.height)
+  let y
+  if (slack === 0) {
+    const blend = blendDistance(size, workArea, false)
+    const slope = 1 - CONTROL_H / blend
+    const w = win.y - workArea.y
+    const d = w >= blend * slope ? w + CONTROL_H : w / slope
+    y = workArea.y + d
+  } else {
+    y = win.y + PAD + CONTROL_H
+    for (let i = 0; i < 40; i++) y = win.y + capsuleInset({ x: win.x, y }, s, workArea, size, win2).y
+  }
+  return { x: Math.round(win.x + PAD + EDGE_BLEED), y: Math.round(y) }
 }
 
 /**
@@ -410,7 +476,7 @@ function layout(capPos, style, workArea, extra = {}, winExtra = extra) {
   const s = normalizeStyle(style)
   const capSize = capsuleSize(s, extra)
   const winCap = capsuleSize(s, winExtra)
-  const inset = capsuleInset(capPos, s, workArea, capSize)
+  const inset = capsuleInset(capPos, s, workArea, capSize, winCap)
   if (s.vertical) {
     const side = controlSide(capPos, capSize, workArea)
     const part = capsulePart({ vertical: true, side })
@@ -537,6 +603,25 @@ function isOnScreen(capPos, workAreas, style, extra = {}) {
 }
 
 /**
+ * 多显示器的「虚拟工作区」：所有工作区的并集外框。
+ *
+ * 拖动边界必须用它而不是「光标所在那一块屏」的工作区，否则两块屏拼接处的缝会被当成墙，
+ * 浮窗跨屏时会被弹回单块屏内。并集外框只去掉真正的桌面外边界，屏幕之间的缝保持可跨越。
+ */
+function unionWorkArea(workAreas) {
+  const list = (workAreas || []).filter((a) => a && Number.isFinite(a.x) && Number.isFinite(a.y) && Number.isFinite(a.width) && Number.isFinite(a.height))
+  if (!list.length) return null
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity
+  for (const a of list) {
+    left = Math.min(left, a.x)
+    top = Math.min(top, a.y)
+    right = Math.max(right, a.x + a.width)
+    bottom = Math.max(bottom, a.y + a.height)
+  }
+  return { x: left, y: top, width: right - left, height: bottom - top }
+}
+
+/**
  * 按拖动方向缩放胶囊（纯函数）。
  * dir 由 n/s/e/w 组合，例如 'se'（右下角）、'n'（上边）、'w'（左边）。
  *
@@ -566,6 +651,6 @@ module.exports = {
   SPEC, SPEC_GEOMETRY: GEO, DEFAULT_STYLE,
   PAD, BORDER, V_PAD, H_PAD, V_CHROME, ROW_GAP, COLUMN_EXTRA_RATIO, CONTROL_H, SIDE_W, CONTROL_BTN_W, CONTROL_BTN_H, CONTROL_BTN_GAP, CONTROL_BTN_COUNT, CONTROL_BTN_COUNT_LOCKED, FLIP_RATIO,
   MIN_W, MAX_W, MAX_LEN, EDGE_BLEED, MIN_FONT, MAX_FONT, DEFAULT_W, DEFAULT_FONT, MIN_CAP_H, MAX_CAP_H,
-  normalizeStyle, layoutFlags, resolveLayoutState, lineHeight, subHeight, mainColumnWidth, subColumnWidth, columnExtra, visibleRows, capsuleSize, minCapHeight, maxCapHeight, minCapWidth, maxCapWidth, maxVerticalLength, capsulePart, anchorCapsule, anchorVerticalToHorizontal, capsuleGrowthShift, nearestEdge, controlFlip, controlSide, sideWindowRect, capFromWindow, clampStyleToArea, clampVerticalLength, windowRect, regions, controlButtons, layout,
-  windowSize, fontFromCapsuleHeight, fontFromCapsuleWidth, defaultCapsule, clampCapsule, isOnScreen, resizeCapsule, capsuleInset, blendDistance,
+  normalizeStyle, layoutFlags, resolveLayoutState, lineHeight, subHeight, mainColumnWidth, subColumnWidth, columnExtra, visibleRows, capsuleSize, minCapHeight, maxCapHeight, minCapWidth, maxCapWidth, maxVerticalLength, capsulePart, anchorCapsule, anchorCapsuleDocked, anchorVerticalToHorizontal, capsuleGrowthShift, nearestEdge, controlFlip, controlSide, sideWindowRect, capFromWindow, clampStyleToArea, clampVerticalLength, windowRect, regions, controlButtons, layout,
+  windowSize, fontFromCapsuleHeight, fontFromCapsuleWidth, defaultCapsule, clampCapsule, isOnScreen, unionWorkArea, resizeCapsule, capsuleInset, blendDistance,
 }
