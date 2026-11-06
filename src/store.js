@@ -566,27 +566,23 @@ let lyricsReady = true
 let lastKey = ''
 let lastSync = { at: 0, time: 0, playing: false }
 
-// 悬浮歌词的逐字数据：按歌曲缓存合并结果，开关反复切换 / 每秒广播都不会重复抓取。
-// 缓存的只是「词级时间轴」合并版，切到别的歌会自然淘汰。
-const syllableMerged = new Map()
+// 悬浮歌词的逐字数据：远端候选按歌曲缓存（只抓一次网络），合并每次现场做——
+// 缓存合并结果会把「原词版」的行覆盖到译文版上，丢掉翻译。
+const syllableRemote = new Map()
 async function enrichSyllableLines(id, song, lines) {
   if (!song) return lines
-  let pending = syllableMerged.get(id)
+  let pending = syllableRemote.get(id)
   if (!pending) {
-    pending = window.fn?.lyricsSyllables?.({ title: song.title, artist: song.artist })
-      .then((r) => {
-        if (!r?.ok || !r.candidates?.length) return null
-        return pickSyllableCandidate(lines, r.candidates)?.merged || null
-      })
-      .catch(() => null)
-    syllableMerged.set(id, pending)
-    if (syllableMerged.size > 30) {
-      const oldest = syllableMerged.keys().next().value
-      syllableMerged.delete(oldest)
+    pending = window.fn?.lyricsSyllables?.({ title: song.title, artist: song.artist }).catch(() => null)
+    syllableRemote.set(id, pending)
+    if (syllableRemote.size > 30) {
+      const oldest = syllableRemote.keys().next().value
+      syllableRemote.delete(oldest)
     }
   }
-  const merged = await pending
-  return merged || lines
+  const r = await pending
+  if (!r?.ok || !r.candidates?.length) return lines
+  return pickSyllableCandidate(lines, r.candidates)?.merged || lines
 }
 
 function broadcast() {
@@ -598,20 +594,31 @@ function broadcast() {
     lyricsReady = !song
     if (song) {
       const id = song.id
-      loadLyrics(id, song, { translate: useUI.getState().experimental?.enabled }).then(async (lines) => {
+      // 不管开关状态如何，切歌都先取「不翻译的原词」立即广播：翻译（AI 可能很慢）
+      // 和逐字抓取都在后台分步补，不能让悬浮歌词一直停在加载阶段。
+      const run = async () => {
+        const original = await loadLyrics(id, song, { translate: false })
         if (lyricFor !== id) return
-        // 先用普通 LRC 立即显示，逐字抓取在后台补；合并完成后再广播一次带 words 的版本
-        lyricLines = lines
+        lyricLines = original
         lyricsReady = true
         broadcast()
+        if (useUI.getState().experimental?.enabled) {
+          const translated = await loadLyrics(id, song, { translate: true })
+          if (lyricFor !== id) return
+          if (translated !== original) {
+            lyricLines = translated
+            broadcast()
+          }
+        }
         if (useUI.getState().syllables) {
-          const merged = await enrichSyllableLines(id, song, lines)
+          const merged = await enrichSyllableLines(id, song, lyricLines)
           if (lyricFor === id && merged !== lyricLines) {
             lyricLines = merged
             broadcast()
           }
         }
-      })
+      }
+      run()
     }
   }
   const ui = useUI.getState()
@@ -690,5 +697,6 @@ export function restorePlayer() {
 }
 export const getAudio = () => audio
 export const useCurrent = () => usePlayer((s) => s.queue[s.index] || null)
+
 
 
