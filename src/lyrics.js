@@ -69,6 +69,128 @@ export function hasNextLyric(lines) {
 }
 
 export const peekLyrics = (id) => done.get(id)
+
+// 把逐字（词 / 字 / 音节）时间轴合并进 LRC 行：按行起点就近匹配，文本不一致时退回 LRC 原文。
+// 歌词行本身不做改动，只在命中行上挂 words，供歌词视图做逐字高亮。
+// 逐字比对用的文本归一化：去空白 + 繁简残留字符统一（妳→你 等）。
+// 数据源偶尔会漏掉个别异体字（妳 / 麽 / 著），逐字层面做等价映射，
+// 避免整行因一两个字对不上而被丢弃。
+const CHAR_EQUIV = { '妳': '你', '麽': '么', '裏': '里', '著': '着', '為': '为', '於': '于', '後': '后', '發': '发', '颱': '台' }
+const normForMatch = (v) => String(v || '').replace(/\s+/g, '').replace(/[妳麽裏著為於後發颱]/g, (c) => CHAR_EQUIV[c] || c)
+
+/**
+ * 把远端逐字时间映射到本地行文本：显示内容永远来自本地 LRC 的字，
+ * 远端只贡献时间轴。字数一致时按位替换；不一致时按比例取位，
+ * 每个远端时间槽都能对应到本地文本的某个字符（不足时重复填充）。
+ */
+/**
+ * 把远端逐字时间映射成本地行文本的「逐字符时间轴」：
+ * 返回的 spans 拼接后与本地行文本完全一致（含空格与标点），
+ * 远端只贡献时间，显示内容一个字符都不改。
+ * 映射方式：按本地文本（去空白）的字符序号比例对应远端词序号。
+ */
+/**
+ * 把远端逐字时间映射成本地行文本的「逐字符时间轴」：
+ * 返回的 spans 拼接后与本地行文本完全一致（含空格），远端只贡献时间，
+ * 显示内容一个字符都不改。空格归入其后的词首（无后词时归入前词尾）。
+ */
+function alignCharTimeline(localText, remoteWords) {
+  const chars = [...String(localText || '')]
+  const n = remoteWords.length
+  const solid = chars.filter((c) => /\S/.test(c)).length
+  if (!solid || !n) return null
+  let solidIdx = 0
+  const wordIndexOf = chars.map((c) => (/\S/.test(c) ? Math.min(n - 1, Math.floor((solidIdx++ * n) / solid)) : -1))
+  // 每个远端词收集自己的字符（把紧随其后的空格带上）
+  const buckets = Array.from({ length: n }, () => [])
+  chars.forEach((c, i) => {
+    let wi = wordIndexOf[i]
+    if (wi < 0) {
+      // 空格：交给下一个非空格字符所属的词；行尾空格归最后一个词
+      let k = i + 1
+      while (k < chars.length && wordIndexOf[k] < 0) k++
+      wi = k < chars.length ? wordIndexOf[k] : n - 1
+    }
+    buckets[wi].push(c)
+  })
+  return buckets
+    .map((chars2, wi) => ({ text: chars2.join(''), w: remoteWords[wi] }))
+    .filter((s) => s.text)
+    .map(({ text, w }) => ({ text, time: w.time, end: w.end ?? w.time }))
+}
+
+/**
+ * 从多个来源候选中挑选与本地 LRC 最匹配的逐字数据：
+ * 逐个试合并，覆盖率（命中行 / 本地行）≥ 0.85 即采纳（先到先得，AMLL 优先级最高）；
+ * 都达不到 85% 时选覆盖率最高的那个。candidates 顺序即来源优先级。
+ */
+export function pickSyllableCandidate(localLines, candidates = []) {
+  let best = null
+  for (const cand of candidates) {
+    if (!cand?.lines?.length) continue
+    const merged = mergeSyllableLines(localLines, cand.lines)
+    const hit = merged.filter((l) => l.words?.length).length
+    const coverage = localLines.length ? hit / localLines.length : 0
+    if (!best || coverage > best.coverage) best = { ...cand, merged, coverage }
+    if (coverage >= 0.85) break
+  }
+  return best
+}
+export function mergeSyllableLines(lines, syllables, debug = null) {
+  const stats = { matched: 0, skippedText: 0, skippedTime: 0, textMismatches: [], timeMismatches: [] }
+  if (!lines.length || !syllables?.length) {
+    if (debug) debug(stats)
+    return lines
+  }
+  const out = lines.map((l) => ({ ...l }))
+  const used = new Array(syllables.length).fill(false)
+  const norm = normForMatch
+  const apply = (li, si) => {
+    const s = syllables[si]
+    if (!s.words?.length) return false
+    const timeline = alignCharTimeline(out[li].text, s.words)
+    if (timeline) out[li].words = timeline
+    if (Number.isFinite(s.end) && !Number.isFinite(out[li].end)) out[li].end = s.end
+    used[si] = true
+    stats.matched++
+    return true
+  }
+  // Pass 1：按顺序做「文本相同」锚点匹配（时间窗放宽到 3s，允许版本间整体漂移）
+  let j = 0
+  for (let li = 0; li < out.length; li++) {
+    const t = norm(out[li].text)
+    if (!t) continue
+    while (j < syllables.length && syllables[j].time < out[li].time - 3) j++
+    for (let k = j; k < syllables.length && syllables[k].time <= out[li].time + 3; k++) {
+      if (used[k]) continue
+      if (norm(syllables[k].text) === t) { apply(li, k); break }
+    }
+  }
+  // Pass 2：剩余行做单调顺序配对（双指针，±5s），文本不一致也算命中——
+  // 不同来源对同一句的分行/标点常有差异，时间对上的词级时间轴照样可用。
+  // 顺序约束避免「全局最近」把副歌重复段配错位。
+  let p = 0
+  for (let li = 0; li < out.length; li++) {
+    if (out[li].words) continue
+    while (p < syllables.length && (used[p] || syllables[p].time < out[li].time - 5)) p++
+    let best = -1
+    let bestD = Infinity
+    for (let k = p; k < syllables.length && syllables[k].time <= out[li].time + 5; k++) {
+      if (used[k]) continue
+      const d = Math.abs(syllables[k].time - out[li].time)
+      if (d < bestD) { bestD = d; best = k }
+    }
+    if (best >= 0 && bestD <= 5) {
+      apply(li, best)
+      if (p <= best) p = best + 1
+      if (norm(syllables[best].text) !== norm(out[li].text)) stats.skippedText++
+    } else {
+      stats.skippedTime++
+      if (stats.timeMismatches.length < 3) stats.timeMismatches.push({ local: { time: out[li].time, text: out[li].text }, remote: syllables[best] ? { time: syllables[best].time, text: syllables[best].text } : null })
+    }
+  }  if (debug) debug(stats)
+  return out
+}
 export const peekTranslationMeta = (id) => translationMeta.get(id)
 export function clearLyricsTranslation(id) {
   if (!id) return
@@ -233,4 +355,52 @@ export function lyricFrame(lines, t) {
     nextNextLyric: afterNext.line?.text || '',
     nextNextLyricTrans: afterNext.line?.translation || '',
   }
+}
+
+/**
+ * 逐字卡拉OK：把整句看成一条连续的“唱到第几个字”进度边。
+ * 在词内按词时长线性推进；词与词的间隙也线性推进到下一个词的起点，
+ * 因此进度边单调连续——快唱 / 词速不均 / 停顿都只是扫速变化，不会跳变。
+ * 返回每个词的 fill（0..1）与字符区间，渲染层直接铺色。
+ */
+export function karaokeFills(line, t) {
+  const words = line?.words || []
+  const text = String(line?.text || '')
+  const n = words.length
+  if (!n) return null
+  // 顺序定位每个词在整句文本中的字符区间（包含词间空格）
+  const spans = []
+  let cursor = 0
+  let total = 0
+  for (const w of words) {
+    const idx = text.indexOf(w.text, cursor)
+    const start = idx >= 0 ? idx : total
+    spans.push({ start, len: Math.max(1, String(w.text).length) })
+    total = start + spans[spans.length - 1].len
+    cursor = start + 1
+  }
+  const t0 = words[0].time
+  const lastEnd = words[n - 1].end ?? (words[n - 1].time + 0.5)
+  const edge = (i, t) => spans[i].start + Math.min(1, Math.max(0, (t - words[i].time) / Math.max(0.08, (words[i].end ?? words[i + 1]?.time ?? t0 + 0.5) - words[i].time))) * spans[i].len
+  let pos = 0
+  if (t <= t0) pos = 0
+  else if (t >= lastEnd) pos = total
+  else {
+    // 找到当前所在区间：词内或词间间隙
+    let i = 0
+    while (i < n && t >= (words[i].end ?? words[i + 1]?.time ?? lastEnd)) i++
+    const w = words[i]
+    const endT = w.end ?? words[i + 1]?.time ?? lastEnd
+    if (t < endT) {
+      pos = edge(i, t)
+    } else if (i + 1 < n) {
+      // 词间间隙：从本词末尾线性推进到下一个词起点
+      const nextStartT = words[i + 1].time
+      const gapT = Math.max(0.001, nextStartT - endT)
+      const p = Math.min(1, Math.max(0, (t - endT) / gapT))
+      pos = spans[i].start + spans[i].len + p * Math.max(0, spans[i + 1].start - (spans[i].start + spans[i].len))
+    }
+  }
+  const fills = spans.map((s) => Math.min(1, Math.max(0, (pos - s.start) / s.len)))
+  return { fills, starts: spans.map((s) => s.start), spans: spans.map((s) => s.len), total, pos }
 }
