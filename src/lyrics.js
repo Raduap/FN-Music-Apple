@@ -288,21 +288,27 @@ export function loadLyrics(id, song = null, { translate = false } = {}) {
     }
     return Promise.resolve(original)
   }
-  if (!pending.has(id)) {
-    pending.set(id, api.lyric(id).then(async (text) => {
-      const lines = toLines(text)
-      raw.set(id, lines)
-      let out = lines
-      if (translate) out = await translateLines(id, lines, song)
-      done.set(id, out)
-      if (done.size > MAX) {
-        const oldest = done.keys().next().value
-        done.delete(oldest)
-        raw.delete(oldest)
-      }
-      return out
-    }).catch(() => []).finally(() => pending.delete(id)))
+  // 首个请求可能是不带翻译的（悬浮歌词切歌要先立即显示原词）；
+  // 此时晚到的翻译请求不能直接复用原词 Promise 就完事，要在它完成后补翻译。
+  // translateLines 内部用 translating Map 去重，多个并发翻译请求只会真正翻译一次。
+  if (pending.has(id)) {
+    const base = pending.get(id)
+    if (!translate) return base
+    return base.then((lines) => translateLines(id, lines, song))
   }
+  pending.set(id, api.lyric(id).then(async (text) => {
+    const lines = toLines(text)
+    raw.set(id, lines)
+    let out = lines
+    if (translate) out = await translateLines(id, lines, song)
+    done.set(id, out)
+    if (done.size > MAX) {
+      const oldest = done.keys().next().value
+      done.delete(oldest)
+      raw.delete(oldest)
+    }
+    return out
+  }).catch(() => []).finally(() => pending.delete(id)))
   return pending.get(id)
 }
 
@@ -408,4 +414,7 @@ export function karaokeFills(line, t) {
   const fills = spans.map((s) => Math.min(1, Math.max(0, (pos - s.start) / s.len)))
   return { fills, starts: spans.map((s) => s.start), spans: spans.map((s) => s.len), total, pos }
 }
+
+
+
 

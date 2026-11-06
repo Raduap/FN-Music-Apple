@@ -94,6 +94,40 @@ describe('歌词', () => {
     }
   })
 
+  it('悬浮歌词先取原词时，晚到的翻译请求在共享加载完成后补翻译', async () => {
+    const lyrics = '[00:01.00]Hello\n[00:05.00]World'
+    const id = 'late-translate-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    let translateCalls = 0
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => ({ json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) })
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async ({ lines }) => {
+        translateCalls++
+        return { ok: true, translations: lines.map((t) => `译:${t}`), source: 'netease', sourceCount: lines.length, aiCount: 0 }
+      },
+    }
+    try {
+      const song = { id, title: 'Late', artist: 'Tester', album: '', duration: 180 }
+      // 悬浮歌词链路先发起（不翻译），主窗口歌词视图紧接着要译文
+      const originalP = loadLyrics(id, song, { translate: false })
+      const translatedP = loadLyrics(id, song, { translate: true })
+      const original = await originalP
+      const translated = await translatedP
+      expect(translateCalls).toBe(1)
+      expect(original[0].translation).toBeUndefined()
+      expect(translated[0].translation).toBe('译:Hello')
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+      else delete globalThis.window.fn
+    }
+  })
+
   it('只为缺译文的外语行生成翻译目标', () => {
     const lines = [
       { time: 1, text: 'Hello' },
@@ -172,4 +206,5 @@ describe('歌词', () => {
     })
   })
 })
+
 
