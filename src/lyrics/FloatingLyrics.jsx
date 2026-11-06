@@ -141,7 +141,6 @@ function useLayer() {
 export default function FloatingLyrics() {
   const { state, style, active, flip, side, edge, layout, backgroundUrl } = useLayer()
   const shown = !!active // 控制条是否显示（显隐延迟由主进程统一管理）
-  const dragRef = useRef(false)
   const lineRef = useRef(null)
   const capRef = useRef(null)
 
@@ -191,17 +190,6 @@ export default function FloatingLyrics() {
     const id = setInterval(draw, 250)
     return () => clearInterval(id)
   }, [state.currentTime, state.at, state.playing, state.duration, edge, s.showProgress])
-
-  const startDrag = (e) => {
-    if (e.button !== 0 || e.target.closest('button')) return
-    dragRef.current = true
-    // 传绝对屏幕坐标：触控时主进程的 getCursorScreenPoint() 不跟手指，
-    // 只有渲染端的 e.screenX/Y 会随手指移动。
-    bridge?.dragStart(e.screenX, e.screenY)
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }
-  const moveDrag = (e) => { if (dragRef.current) bridge?.dragMove(e.screenX, e.screenY) }
-  const endDrag = () => { if (dragRef.current) { dragRef.current = false; bridge?.dragEnd() } }
 
   const startResize = (dir) => (e) => {
     if (e.button !== 0) return
@@ -285,12 +273,9 @@ export default function FloatingLyrics() {
           ref={capRef}
           className="lc"
           style={{ backdropFilter: `blur(${s.frost}px) saturate(150%)`, WebkitBackdropFilter: `blur(${s.frost}px) saturate(150%)` }}
-          onPointerDown={startDrag}
-          onPointerMove={moveDrag}
-          onPointerUp={endDrag}
-          onPointerCancel={endDrag}
           onContextMenu={(e) => { e.preventDefault(); bridge?.menu() }}
         >
+          <div className="ldrag" aria-hidden="true" />
           <div className="lrows">
             <div className={`lmain${verticalClass(main)}${upcoming ? ' upcoming' : ''}`} title={state.lyric || state.nextLyric || state.title || ''}>{main}</div>
             <div className={`lsub-wrap ${showTrans ? 'on' : ''}`} aria-hidden={!showTrans}>
@@ -301,20 +286,19 @@ export default function FloatingLyrics() {
             </div>
           </div>
           {s.showProgress && <div className="lbar"><i ref={lineRef} /></div>}
+          {!s.clickThrough && DIRS.map((d) => (
+            <div
+              key={d}
+              className={`lresize lresize-${d}`}
+              onPointerDown={startResize(d)}
+              onPointerMove={moveResize}
+              onPointerUp={endResize}
+              onPointerCancel={endResize}
+              aria-hidden="true"
+            />
+          ))}
         </div>
       </div>
-
-      {!s.clickThrough && DIRS.map((d) => (
-        <div
-          key={d}
-          className={`lresize lresize-${d}`}
-          onPointerDown={startResize(d)}
-          onPointerMove={moveResize}
-          onPointerUp={endResize}
-          onPointerCancel={endResize}
-          aria-hidden="true"
-        />
-      ))}
     </div>
   )
 }

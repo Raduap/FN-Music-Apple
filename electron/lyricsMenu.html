@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; background: transparent; overflow: hidden;
+    font: 13px/1.4 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    color: #f2f2f4; user-select: none; -webkit-user-select: none;
+  }
+  .menu {
+    padding: 6px; border-radius: 10px;
+    background: rgba(32, 32, 36, 0.96);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  }
+  .item {
+    display: flex; align-items: center; gap: 8px;
+    height: 28px; padding: 0 10px; border-radius: 6px; white-space: nowrap;
+  }
+  .item:hover { background: rgba(255, 255, 255, 0.14); }
+  .box { width: 14px; flex: none; text-align: center; font-size: 12px; opacity: 0.9; }
+  .sep { height: 1px; margin: 5px 8px; background: rgba(255, 255, 255, 0.14); }
+</style>
+</head>
+<body>
+<div class="menu" id="menu"></div>
+<script>
+  const api = window.menuApi
+  const rawHash = location.hash.slice(1)
+  const rawItems = rawHash.startsWith('items=') ? rawHash.slice(6) : rawHash
+  const items = JSON.parse(decodeURIComponent(rawItems || '[]'))
+  const menu = document.getElementById('menu')
+
+  items.forEach((it, i) => {
+    if (it.type === 'separator') {
+      const d = document.createElement('div')
+      d.className = 'sep'
+      menu.appendChild(d)
+      return
+    }
+    const row = document.createElement('div')
+    row.className = 'item'
+    const box = document.createElement('span')
+    box.className = 'box'
+    box.textContent = it.type === 'checkbox' && it.checked ? '✓' : ''
+    const label = document.createElement('span')
+    label.className = 'label'
+    label.textContent = it.label == null ? '' : String(it.label)
+    row.appendChild(box)
+    row.appendChild(label)
+    row.addEventListener('click', () => api.choose(i))
+    menu.appendChild(row)
+  })
+
+  addEventListener('keydown', (e) => { if (e.key === 'Escape') api.close() })
+  let armed = false
+  setTimeout(() => { armed = true }, 250)
+  addEventListener('blur', () => { if (armed) api.close() })
+
+  requestAnimationFrame(() => {
+    const r = menu.getBoundingClientRect()
+    api.resize(r.width, r.height)
+  })
+</script>
+</body>
+</html>

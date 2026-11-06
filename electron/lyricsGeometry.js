@@ -233,6 +233,16 @@ function sideWindowRect(capPos, capSize, side) {
   return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) }
 }
 
+/**
+ * windowRect / sideWindowRect 的反向计算：由原生拖动后的窗口位置反推胶囊左上角。
+ * 窗口外框相对胶囊的偏移只取决于横 / 竖排，与 flip / side 无关，可安全用于位置同步。
+ */
+function capFromWindow(win, style) {
+  const s = normalizeStyle(style)
+  if (s.vertical) return { x: Math.round(win.x + PAD + SIDE_W), y: Math.round(win.y + PAD) }
+  return { x: Math.round(win.x + PAD), y: Math.round(win.y + PAD + CONTROL_H) }
+}
+
 /** 胶囊与控制条在窗口内的矩形（窗口左上角为原点），供命中测试 / 布局用 */
 function regions(style, flip, extra = {}, side = 'right') {
   const s = normalizeStyle(style)
@@ -420,6 +430,6 @@ module.exports = {
   SPEC, SPEC_GEOMETRY: GEO, DEFAULT_STYLE,
   PAD, BORDER, V_PAD, H_PAD, V_CHROME, ROW_GAP, COLUMN_EXTRA_RATIO, CONTROL_H, SIDE_W, CONTROL_BTN_W, CONTROL_BTN_H, CONTROL_BTN_GAP, CONTROL_BTN_COUNT, CONTROL_BTN_COUNT_LOCKED, FLIP_RATIO,
   MIN_W, MAX_W, MIN_FONT, MAX_FONT, DEFAULT_W, DEFAULT_FONT, MIN_CAP_H, MAX_CAP_H,
-  normalizeStyle, layoutFlags, resolveLayoutState, lineHeight, subHeight, mainColumnWidth, subColumnWidth, columnExtra, visibleRows, capsuleSize, minCapHeight, maxCapHeight, minCapWidth, maxCapWidth, maxVerticalLength, capsulePart, anchorCapsule, anchorVerticalToHorizontal, capsuleGrowthShift, nearestEdge, controlFlip, controlSide, sideWindowRect, clampStyleToArea, clampVerticalLength, windowRect, regions, controlButtons, layout,
+  normalizeStyle, layoutFlags, resolveLayoutState, lineHeight, subHeight, mainColumnWidth, subColumnWidth, columnExtra, visibleRows, capsuleSize, minCapHeight, maxCapHeight, minCapWidth, maxCapWidth, maxVerticalLength, capsulePart, anchorCapsule, anchorVerticalToHorizontal, capsuleGrowthShift, nearestEdge, controlFlip, controlSide, sideWindowRect, capFromWindow, clampStyleToArea, clampVerticalLength, windowRect, regions, controlButtons, layout,
   windowSize, fontFromCapsuleHeight, fontFromCapsuleWidth, defaultCapsule, clampCapsule, isOnScreen, resizeCapsule,
 }

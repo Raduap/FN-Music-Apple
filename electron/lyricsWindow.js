@@ -7,7 +7,8 @@
 //
 // 拖动：按住胶囊空白处移动；缩放：直接拉胶囊的四边 / 四角（八向）。
 // 内部始终保存“胶囊左上角”的坐标，窗口只是胶囊的紧贴外框；这样胶囊四边才能真正贴屏幕边。
-const { BrowserWindow, Menu, screen, ipcMain } = require('electron')
+const path = require('path')
+const { BrowserWindow, screen, ipcMain } = require('electron')
 const G = require('./lyricsGeometry')
 const I = require('./lyricsInteraction')
 
@@ -25,16 +26,17 @@ const CAN_PASS_THROUGH = process.platform === 'win32' || process.platform === 'd
  * @param {() => void} o.onClose        关闭悬浮歌词
  * @param {() => void} o.onStyleChanged 样式变化后刷新托盘等外部 UI
  */
-function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, openSettings, onClose, onStyleChanged }) {
+function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, command, menu, openSettings, onClose, onStyleChanged }) {
   let win = null
+  let menuWin = null
+  let menuItems = []
+  const menuSenders = new Set()
   let capPos = null // 歌词胶囊左上角的屏幕坐标（持久化坐标）
   let flip = 'above' // 横排：控制条在胶囊上方 / 下方
   let side = 'right' // 竖排：控制条在胶囊左侧 / 右侧
-  let edge = 'bottom' // 胶囊最贴近工作区的边，决定进度条贴哪条边
   let style = G.normalizeStyle(readPrefs().lyricsStyle)
   let state = {}
   let layoutState = {}
-  let drag = null // { cursor, cap, follow, timer }
   let resize = null // { cursor, bounds, dir, extra }
   let pollTimer = null
   let hovered = false // 控制条是否处于显示状态（由主进程按时延迟隐藏）
@@ -107,7 +109,7 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
     // 因此普通模式不再依赖光标轮询决定是否接收事件：整个窗口始终接收，保证触摸一定能命中胶囊。
     // 真正的鼠标穿透交给锁定模式；锁定模式下只有光标悬停在解锁按钮上时临时接收点击。
     // 拖动 / 缩放进行中整窗保持接收，避免指针短暂离开胶囊导致操作中断。
-    const busy = !!drag || !!resize
+    const busy = !!resize
     const receive = busy || !style.clickThrough || (hovered && controlHot)
     // 值未变化时不重复调用，避免 Windows 上光标样式来回横跳。
     if (receive === receiveMouse) return
@@ -214,6 +216,27 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
     applyMouseEvents()
     w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     w.webContents.on('will-navigate', (e) => e.preventDefault())
+    // -webkit-app-region: drag 的区域被 Windows 当成标题栏：右键时系统先弹自己的
+    // 窗口菜单。本窗口 focusable:false，系统菜单停不住，所以压掉它，改用自绘菜单窗。
+    w.on('system-context-menu', (event) => {
+      event.preventDefault()
+      setTimeout(() => { if (alive()) openMenuWindow() }, 60)
+    })
+    // 原生拖动由 Windows 直接移动窗口。拖动过程中持续把窗口位置反推回 capPos：
+    // 否则歌曲状态广播触发的 layout() 会按旧坐标把窗口拉回起点（表现为松手弹回）。
+    w.on('move', () => {
+      if (!alive() || win !== w || resize) return
+      const bounds = w.getBounds()
+      const expected = G.layout(capPos, style, workAreaFor(capPos), extra()).win
+      if (bounds.x === expected.x && bounds.y === expected.y) return
+      capPos = G.capFromWindow(bounds, style)
+    })
+    w.on('moved', () => {
+      if (!alive() || win !== w || resize) return
+      capPos = G.clampCapsule(capPos, workAreaFor(capPos), style, extra())
+      layout()
+      writePrefs({ ...readPrefs(), lyrics: { x: capPos.x, y: capPos.y } })
+    })
     w.once('ready-to-show', () => { if (wanted && win === w) w.showInactive() })
     w.on('closed', () => { if (win === w) win = null })
     load(w)
@@ -221,7 +244,7 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
   }
 
   function destroy() {
-    if (drag) endDrag()
+    closeMenuWindow()
     if (resize) endResize()
     stopPoll()
     if (!alive()) return
@@ -277,31 +300,77 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
   }
 
   // ---------- 拖动 ----------
-  // 触控友好：由渲染端上报指针的屏幕坐标，主进程按位移移动窗口。
-  // 不再轮询系统鼠标光标，因此手指拖动（不更新鼠标坐标）也能正常移动。
-  // 实时跟手：每一个指针事件都立即移动窗口，不做帧合并 / 节流。
-  function doDrag(cursor) {
-    if (!drag || !alive()) return
-    const next = I.nextDragPosition(drag, cursor)
-    if (next.x !== capPos.x || next.y !== capPos.y) {
-      capPos = next
-      const L = G.layout(capPos, style, workAreaFor(capPos), extra())
-      if (L.flip !== flip || (L.side && L.side !== side) || L.edge !== edge) {
-        flip = L.flip
-        side = L.side || side
-        edge = L.edge
-        send('lyrics:layout', layoutPayload(L))
-      }
-      win.setBounds(L.win)
+  // 拖动由 CSS -webkit-app-region: drag 交给 Windows 原生处理，不再经 JS 移窗。
+
+  // ---------- 右键菜单 ----------
+  // 悬浮歌词窗口 focusable:false（不抢主窗口焦点），而 Windows 原生菜单必须有焦点窗口
+  // 才能停留，Menu.popup 在这里必然一闪就消失。因此改为完全自绘：用一个独立的可聚焦
+  // 小窗加载 lyricsMenu.html，点击 / 勾选 / 关闭全部由我们控制。
+  function openMenuWindow() {
+    if (!alive()) return
+    if (menuWin && !menuWin.isDestroyed()) { menuWin.close(); menuWin = null }
+    menuItems = menu() || []
+    const p = screen.getCursorScreenPoint()
+    const area = screen.getDisplayNearestPoint(p).workArea
+    // 先以固定尺寸在目标位置创建但保持隐藏，等页面渲染完、量出真实尺寸后再一次性
+    // 显形到位，避免“小窗 → 撑开”的跳变导致的掉帧观感。
+    const mw = menuWin = new BrowserWindow({
+      x: p.x, y: p.y, width: 220, height: 40,
+      frame: false, transparent: true, backgroundColor: '#00000000',
+      hasShadow: false, resizable: false, movable: false, minimizable: false,
+      maximizable: false, fullscreenable: false, skipTaskbar: true,
+      alwaysOnTop: true, focusable: true, show: false,
+      webPreferences: { preload: menuPreload, contextIsolation: true, sandbox: true },
+    })
+    mw.setAlwaysOnTop(true, 'pop-up-menu')
+    const mwContents = mw.webContents
+    menuSenders.add(mwContents)
+    mw.__area = area
+    mw.__anchor = p
+    mw.__placed = false
+    mw.on('closed', () => {
+      menuSenders.delete(mwContents)
+      if (menuWin === mw) menuWin = null
+    })
+    mw.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    const hash = encodeURIComponent(JSON.stringify(menuItems.map((it) => ({
+      type: it.type, label: it.label, checked: !!it.checked,
+    }))))
+    mw.loadFile(path.join(__dirname, 'lyricsMenu.html'), { hash })
+    mw.webContents.once('did-finish-load', () => {
+      if (mw.isDestroyed()) return
+      // 页面已加载但先不显示：等它上报真实尺寸、窗口一次性摆好后，再 show。
+      // 这样不会先看到 220×40 的小窗再被撑开，观感更稳。
+      mw.__ready = true
+      if (mw.__pendingSize) placeMenuWindow(mw, mw.__pendingSize)
+      // 兜底：页面若没有上报尺寸，也要让菜单可见。
+      setTimeout(() => {
+        if (!mw.isDestroyed() && !mw.__placed) placeMenuWindow(mw, [220, 200])
+      }, 200)
+    })
+  }
+
+  // 把菜单窗一次性摆到锚点附近的正确尺寸并显示
+  function placeMenuWindow(mw, size) {
+    if (!mw || mw.isDestroyed()) return
+    const area = mw.__area || screen.getDisplayNearestPoint(mw.__anchor || screen.getCursorScreenPoint()).workArea
+    const anchor = mw.__anchor || screen.getCursorScreenPoint()
+    const w = Math.max(1, Math.round(size[0]))
+    const h = Math.max(1, Math.round(size[1]))
+    const x = Math.min(anchor.x, area.x + area.width - w - 8)
+    const y = Math.min(anchor.y, area.y + area.height - h - 8)
+    mw.setBounds({ x: Math.max(area.x + 8, x), y: Math.max(area.y + 8, y), width: w, height: h })
+    if (!mw.__placed) {
+      mw.__placed = true
+      mw.show()
+      mw.focus()
     }
   }
-  function endDrag() {
-    if (!drag) return
-    drag = null
-    capPos = G.clampCapsule(capPos, workAreaFor(capPos), style, extra())
-    layout()
-    applyMouseEvents()
-    writePrefs({ ...readPrefs(), lyrics: { x: capPos.x, y: capPos.y } })
+
+  function closeMenuWindow() {
+    const mw = menuWin
+    menuWin = null
+    if (mw && !mw.isDestroyed()) mw.close()
   }
 
   // ---------- 缩放（八向：上下左右 + 四角；字号随胶囊高度等比变化） ----------
@@ -320,7 +389,6 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
     const L = G.layout(capPos, style, resize.area, extra())
     flip = L.flip
     side = L.side || side
-    edge = L.edge
     win.setBounds(L.win)
     send('lyrics:layout', layoutPayload(L))
     send('lyrics:style', style)
@@ -342,23 +410,39 @@ function createLyrics({ preload, load, readPrefs, writePrefs, command, menu, ope
     send('lyrics:layout', layoutPayload(G.layout(capPos, style, workAreaFor(capPos), extra())))
     send('lyrics:state', state)
   })
-  ipcMain.on('lyrics:menu', (e) => { if (fromLyrics(e)) Menu.buildFromTemplate(menu()).popup({ window: win }) })
+  // ⋯ 按钮与右键走同一套自绘菜单
+  ipcMain.on('lyrics:menu', (e) => { if (fromLyrics(e)) openMenuWindow() })
   ipcMain.on('lyrics:settings', (e) => { if (fromLyrics(e)) openSettings() })
   ipcMain.on('lyrics:toggle-lock', (e) => { if (fromLyrics(e)) applyStyle({ clickThrough: !style.clickThrough }) })
   ipcMain.on('lyrics:prev', (e) => { if (fromLyrics(e)) command?.('prev') })
   ipcMain.on('lyrics:toggle', (e) => { if (fromLyrics(e)) command?.('toggle') })
   ipcMain.on('lyrics:next', (e) => { if (fromLyrics(e)) command?.('next') })
   ipcMain.on('lyrics:close', (e) => { if (fromLyrics(e)) onClose?.() })
-  ipcMain.on('lyrics:drag-start', (e, x, y) => {
-    if (!fromLyrics(e)) return
-    const start = Number.isFinite(x) && Number.isFinite(y) ? { x, y } : screen.getCursorScreenPoint()
-    drag = { cursor: start, cap: { ...capPos } }
+  // 自绘菜单窗口：选择菜单项 / 调整尺寸 / 关闭。
+  // 注意：菜单窗在失焦时会自行发 menu:close，可能与点击同帧到达，所以这里不要求
+  // menuWin 仍然存在，只校验消息来自我们创建的菜单窗。
+  const fromMenu = (e) => menuSenders.has(e.sender)
+  ipcMain.on('menu:choose', (e, i) => {
+    if (!fromMenu(e)) return
+    const item = menuItems[i]
+    // 先执行菜单项动作再关窗：有些动作会打开主窗口 / 设置面板，
+    // 若先关窗可能连带动到焦点，导致动作看起来没生效。
+    if (item && typeof item.click === 'function') {
+      // 原生菜单会自动翻转 checkbox 的 checked 再触发 click；自绘菜单必须自己翻转，
+      // 否则 toggle 类菜单项拿到的还是旧值，表现为“点了没反应”。
+      const arg = item.type === 'checkbox' ? { ...item, checked: !item.checked } : item
+      try { item.click(arg) } catch {}
+    }
+    closeMenuWindow()
   })
-  ipcMain.on('lyrics:drag-move', (e, x, y) => {
-    if (!fromLyrics(e) || !drag) return
-    if (Number.isFinite(x) && Number.isFinite(y)) doDrag({ x, y })
+  ipcMain.on('menu:resize', (e, width, height) => {
+    if (!fromMenu(e)) return
+    const mw = menuWin
+    if (!mw || mw.isDestroyed()) return
+    mw.__pendingSize = [width, height]
+    if (mw.__ready) placeMenuWindow(mw, mw.__pendingSize)
   })
-  ipcMain.on('lyrics:drag-end', (e) => { if (fromLyrics(e)) endDrag() })
+  ipcMain.on('menu:close', (e) => { if (fromMenu(e)) closeMenuWindow() })
   ipcMain.on('lyrics:resize-start', (e, dir, x, y) => {
     if (!fromLyrics(e) || style.clickThrough) return
     const area = workAreaFor(capPos)

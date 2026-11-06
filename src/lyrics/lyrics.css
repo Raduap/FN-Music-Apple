@@ -7,9 +7,11 @@ html, body, #root { touch-action: none; }
 
 /* 与 lyricsGeometry 的常量对应：外框无透明留白，控制条 38 */
 :root {
-  --pad: 0px; --ctl: 38px; --edge: 7px; --btn-w: 30px; --btn-gap: 4px;
+  --pad: 0px; --ctl: 38px; --btn-w: 30px; --btn-gap: 4px;
+  /* 边 / 角热区与拖动层内缩量必须一致，否则两层之间会留出既不缩放也不拖动的死区。 */
+  --edge: 20px; --handle: 20px;
   --radius: 20px; --vpad: 18px; --hpad: 28px; --line-ratio: 1.35; --sub-ratio: 0.62;
-  --progress-inset: 20px; --handle: 18px;
+  --progress-inset: 20px;
 }
 
 .lw {
@@ -110,6 +112,20 @@ html, body, #root { touch-action: none; }
 .lw.custom-bg .lc { background: rgba(18, 18, 22, calc(var(--custom-alpha, 0.55) * 0.68)); }
 .lw.custom-bg[data-dark='0'] .lc { background: rgba(255, 255, 255, calc(var(--custom-alpha, 0.55) * 0.6)); }
 .lc:active { cursor: grabbing; }
+
+/* 原生拖动层：只覆盖胶囊内部，四周留给缩放热区，两者几何上完全不重叠。
+   Windows 的原生拖动区会在浏览器进程吞掉鼠标事件，靠子元素 no-drag 挖洞不可靠，
+   所以拖动与缩放用位置分离而不是命中分离。 */
+.lc .ldrag {
+  position: absolute;
+  left: var(--handle); right: var(--handle);
+  top: var(--handle); bottom: var(--handle);
+  z-index: 1;
+  cursor: grab;
+  -webkit-app-region: drag;
+}
+.lc .lrows { position: relative; z-index: 2; pointer-events: none; }
+.lc .lbar { z-index: 2; }
 
 .lrows { display: flex; flex-direction: column; align-items: stretch; }
 
@@ -242,30 +258,18 @@ html, body, #root { touch-action: none; }
 .lw.vertical .lnext-wrap > .lnext { width: calc(var(--fs) * 1.35 * 0.62 + var(--col-extra)); }
 .lw.vertical .lnext:not(.empty)::before { content: '↳'; position: absolute; transform: translateX(100%); }
 
-/* ---------- 八向缩放热区：贴合胶囊四边与四角，直接拉边缩放 ---------- */
-/* 胶囊在窗口内的位置恒定（横排上下各留一条控制条带，竖排左右各留一条），
-   所以热区不再随 flip / side 变化，一套坐标即可。 */
+/* ---------- 八向缩放热区：位于胶囊外圈，与内部拖动层不重叠 ---------- */
+/* 热区是胶囊 .lc 的子元素，坐标相对胶囊四边与四角；外圈 --edge / --handle 宽，
+   恰好是拖动层让出的那一圈，所以缩放与拖动不会互相抢事件。 */
 .lresize { position: absolute; z-index: 5; }
-
-/* 横排：胶囊上下各留 ctl，左右贴边 */
-.lw:not(.vertical) .lresize-n { left: var(--pad); right: var(--pad); top: calc(var(--pad) + var(--ctl)); height: var(--edge); cursor: ns-resize; }
-.lw:not(.vertical) .lresize-s { left: var(--pad); right: var(--pad); bottom: calc(var(--pad) + var(--ctl)); height: var(--edge); cursor: ns-resize; }
-.lw:not(.vertical) .lresize-w { top: calc(var(--pad) + var(--ctl)); bottom: calc(var(--pad) + var(--ctl)); left: var(--pad); width: var(--edge); cursor: ew-resize; }
-.lw:not(.vertical) .lresize-e { top: calc(var(--pad) + var(--ctl)); bottom: calc(var(--pad) + var(--ctl)); right: var(--pad); width: var(--edge); cursor: ew-resize; }
-.lw:not(.vertical) .lresize-nw { left: var(--pad); top: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
-.lw:not(.vertical) .lresize-ne { right: var(--pad); top: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
-.lw:not(.vertical) .lresize-sw { left: var(--pad); bottom: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
-.lw:not(.vertical) .lresize-se { right: var(--pad); bottom: calc(var(--pad) + var(--ctl)); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
-
-/* 竖排：胶囊左右各留 ctl，上下贴边 */
-.lw.vertical .lresize-n { left: calc(var(--pad) + var(--ctl)); right: calc(var(--pad) + var(--ctl)); top: var(--pad); height: var(--edge); cursor: ns-resize; }
-.lw.vertical .lresize-s { left: calc(var(--pad) + var(--ctl)); right: calc(var(--pad) + var(--ctl)); bottom: var(--pad); height: var(--edge); cursor: ns-resize; }
-.lw.vertical .lresize-w { top: var(--pad); bottom: var(--pad); left: calc(var(--pad) + var(--ctl)); width: var(--edge); cursor: ew-resize; }
-.lw.vertical .lresize-e { top: var(--pad); bottom: var(--pad); right: calc(var(--pad) + var(--ctl)); width: var(--edge); cursor: ew-resize; }
-.lw.vertical .lresize-nw { left: calc(var(--pad) + var(--ctl)); top: var(--pad); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
-.lw.vertical .lresize-ne { right: calc(var(--pad) + var(--ctl)); top: var(--pad); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
-.lw.vertical .lresize-sw { left: calc(var(--pad) + var(--ctl)); bottom: var(--pad); width: var(--handle); height: var(--handle); cursor: nesw-resize; }
-.lw.vertical .lresize-se { right: calc(var(--pad) + var(--ctl)); bottom: var(--pad); width: var(--handle); height: var(--handle); cursor: nwse-resize; }
+.lresize-n { left: 0; right: 0; top: 0; height: var(--edge); cursor: ns-resize; }
+.lresize-s { left: 0; right: 0; bottom: 0; height: var(--edge); cursor: ns-resize; }
+.lresize-w { top: 0; bottom: 0; left: 0; width: var(--edge); cursor: ew-resize; }
+.lresize-e { top: 0; bottom: 0; right: 0; width: var(--edge); cursor: ew-resize; }
+.lresize-nw { left: 0; top: 0; width: var(--handle); height: var(--handle); cursor: nwse-resize; }
+.lresize-ne { right: 0; top: 0; width: var(--handle); height: var(--handle); cursor: nesw-resize; }
+.lresize-sw { left: 0; bottom: 0; width: var(--handle); height: var(--handle); cursor: nesw-resize; }
+.lresize-se { right: 0; bottom: 0; width: var(--handle); height: var(--handle); cursor: nwse-resize; }
 
 /* 减少动效 */
 html[data-motion='reduce'] *, html[data-motion='reduce'] *::before, html[data-motion='reduce'] *::after {

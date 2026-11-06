@@ -210,6 +210,7 @@ function setupBall() {
 function setupLyrics() {
   lyricsWin = createLyrics({
     preload: path.join(__dirname, 'lyricsPreload.js'),
+    menuPreload: path.join(__dirname, 'lyricsMenuPreload.js'),
     load: (win) => loadPage(win, 'lyrics.html'),
     readPrefs,
     writePrefs,
@@ -220,8 +221,7 @@ function setupLyrics() {
     menu: () => {
       const s = readPrefs().lyricsStyle || {}
       return [
-        { label: '显示悬浮歌词', type: 'checkbox', checked: lyricsOn(), click: (it) => setLyricsOn(it.checked) },
-        { type: 'separator' },
+        // 这个菜单本来就挂在悬浮歌词窗口上，不需要再放“显示悬浮歌词”开关。
         { label: '竖排显示', type: 'checkbox', checked: !!s.vertical, click: (it) => setLyricsStyle({ vertical: it.checked }) },
         { label: '显示翻译', type: 'checkbox', checked: s.showTranslation !== false, click: (it) => setLyricsStyle({ showTranslation: it.checked }) },
         { label: '显示下一句', type: 'checkbox', checked: !!s.showNext, click: (it) => setLyricsStyle({ showNext: it.checked }) },
