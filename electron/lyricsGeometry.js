@@ -71,6 +71,8 @@ function normalizeStyle(input) {
     showNext: !!s.showNext,
     clickThrough: !!s.clickThrough,
     vertical: !!s.vertical,
+    // 逐字（卡拉OK）扫色开关；没有词级数据时渲染层自动退回普通文本
+    karaoke: s.karaoke !== false,
     // 横排长度不限制上限（用户要求）；竖排长度仍受 MAX_W 限制（见 clampVerticalLength）。
     width: Math.round(clamp(num(Number(s.width), DEFAULT_W), MIN_W, MAX_LEN)),
   }
@@ -654,3 +656,4 @@ module.exports = {
   normalizeStyle, layoutFlags, resolveLayoutState, lineHeight, subHeight, mainColumnWidth, subColumnWidth, columnExtra, visibleRows, capsuleSize, minCapHeight, maxCapHeight, minCapWidth, maxCapWidth, maxVerticalLength, capsulePart, anchorCapsule, anchorCapsuleDocked, anchorVerticalToHorizontal, capsuleGrowthShift, nearestEdge, controlFlip, controlSide, sideWindowRect, capFromWindow, clampStyleToArea, clampVerticalLength, windowRect, regions, controlButtons, layout,
   windowSize, fontFromCapsuleHeight, fontFromCapsuleWidth, defaultCapsule, clampCapsule, isOnScreen, unionWorkArea, resizeCapsule, capsuleInset, blendDistance,
 }
+

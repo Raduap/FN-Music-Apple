@@ -583,6 +583,7 @@ function broadcast() {
       })
     }
   }
+  const ui = useUI.getState()
   const frame = lyricFrame(lyricLines, s.currentTime + 0.25)
   const state = {
     title: song?.title || '',
@@ -605,8 +606,12 @@ function broadcast() {
     nextLyricTrans: frame.nextLyricTrans,
     nextNextLyric: frame.nextNextLyric,
     nextNextLyricTrans: frame.nextNextLyricTrans,
-    motion: useUI.getState().motion,
-    palette: useUI.getState().palette,
+    // 逐字开关开启时把当前句（+下一句）的词级时间轴塞进广播 payload；
+    // 关闭或该句没有 words 时为 null，payload 不会因此变大。
+    lyricWords: ui.syllables ? frame.lyricWords || null : null,
+    nextLyricWords: ui.syllables ? frame.nextLyricWords || null : null,
+    motion: ui.motion,
+    palette: ui.palette,
   }
   const key = JSON.stringify(state)
   const now = Date.now()
@@ -653,3 +658,4 @@ export function restorePlayer() {
 }
 export const getAudio = () => audio
 export const useCurrent = () => usePlayer((s) => s.queue[s.index] || null)
+

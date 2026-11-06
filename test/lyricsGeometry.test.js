@@ -11,7 +11,13 @@ const threeRows = { showTranslation: true, showNext: true }
 describe('悬浮歌词几何与样式', () => {
   it('默认样式：深色玻璃 + 白字 + 显示边框和译文、不显示下一句、不穿透、不竖排', () => {
     const s = G.normalizeStyle({})
-    expect(s).toMatchObject({ fontSize: 30, backgroundMode: 'dark', textColor: '#ffffff', textColorCustom: false, customImage: false, showBorder: true, showProgress: true, frost: 18, showTranslation: true, showNext: false, clickThrough: false, vertical: false, width: 760 })
+    expect(s).toMatchObject({ fontSize: 30, backgroundMode: 'dark', textColor: '#ffffff', textColorCustom: false, customImage: false, showBorder: true, showProgress: true, frost: 18, showTranslation: true, showNext: false, clickThrough: false, vertical: false, karaoke: true, width: 760 })
+  })
+
+  it('逐字扫色开关：默认开启，显式 false 保留', () => {
+    expect(G.normalizeStyle({}).karaoke).toBe(true)
+    expect(G.normalizeStyle({ karaoke: false }).karaoke).toBe(false)
+    expect(G.normalizeStyle({ karaoke: 'x' }).karaoke).toBe(true)
   })
 
   it('非法输入被夹到合法范围并补全，背景不透明度允许 100%', () => {
@@ -639,3 +645,4 @@ describe('悬浮歌词几何与样式', () => {
     })
   })
 })
+

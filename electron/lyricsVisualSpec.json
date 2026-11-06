@@ -53,6 +53,8 @@
     "showNext": false,
     "clickThrough": false,
     "vertical": false,
+    "karaoke": true,
     "width": 760
   }
 }
+

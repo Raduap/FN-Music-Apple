@@ -9,6 +9,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import SPEC from '../../electron/lyricsVisualSpec.json'
 import { lyricPlaceholder } from '../lyrics'
+import { karaokeClock, karaokeProgress, karaokeWords } from '../karaoke'
 
 const bridge = window.lyricsWin
 const { defaultStyle: DEFAULT_STYLE, fontStacks: FONT_STACKS } = SPEC
@@ -157,6 +158,9 @@ export default function FloatingLyrics() {
   const showNext = !!s.showNext && !!state.hasNext
   const transText = upcoming ? state.nextLyricTrans : state.lyricTrans
   const nextText = upcoming ? state.nextNextLyric : state.nextLyric
+  // 逐字高亮只做当前句：upcoming（前奏预告）时显示的是下一句，跟着用下一句的词级数据。
+  // words 文本与整句文本逐字符一致（合并层已保证），宽度不由 React 管，rAF 直接写 DOM。
+  const karaoke = !upcoming ? karaokeWords({ text: state.lyric, words: state.lyricWords }) : null
 
   // 行 / 列开关时，主进程已经按“靠近边框的边不动”把窗口移到位；
   // 这里让胶囊从旧尺寸和反向位移滑到最终尺寸，避免边框和已有歌词闪现。
@@ -190,6 +194,32 @@ export default function FloatingLyrics() {
     const id = setInterval(draw, 250)
     return () => clearInterval(id)
   }, [state.currentTime, state.at, state.playing, state.duration, edge, s.showProgress])
+
+  // 逐字扫色：悬浮窗没有 audio 元素，用「上次广播的 currentTime + 本地流逝」推算时钟，
+  // 每帧用 karaokeFills 的连续进度边直接写 .kw-fill 宽度；暂停 / 切句时贴齐或清零。
+  // 这与全屏页 LyricsView 的扫色语义一致，只是时钟来源不同。
+  const mainRef = useRef(null)
+  const karaokeOn = !!karaoke && !!s.karaoke
+  useEffect(() => {
+    if (!karaokeOn) return
+    const el = mainRef.current
+    if (!el) return
+    let raf = 0
+    const step = () => {
+      const t = karaokeClock(state) + 0.25
+      const fills = karaokeProgress(karaoke, t)
+      el.querySelectorAll('.kw-fill').forEach((node, wi) => {
+        const f = fills?.[wi] ?? 0
+        node.style.width = `${(f * 100).toFixed(2)}%`
+      })
+      raf = requestAnimationFrame(step)
+    }
+    raf = requestAnimationFrame(step)
+    return () => {
+      cancelAnimationFrame(raf)
+      el.querySelectorAll('.kw-fill').forEach((node) => { node.style.width = '0%' })
+    }
+  }, [karaokeOn, karaoke, state]) // state.currentTime / at / playing 变化时贴齐真实时间；karaokeClock 只读这三个字段
 
   const startResize = (dir) => (e) => {
     if (e.button !== 0) return
@@ -243,6 +273,9 @@ export default function FloatingLyrics() {
     '--col-extra': `${css.colExtra}px`,
     '--row-gap': `${css.rowGap}px`,
     '--sub-h': `${css.subH}px`,
+    // 逐字已唱部分的颜色：默认跟 --fg 同色系（亮），白/浅色文字在暗底上表现为白扫色；
+    // 浅色背景模式下文字是深色，跟随 --fg 也保持一致。
+    '--karaoke-color': 'var(--fg)',
     ...capVars,
     ...insetVars,
   }
@@ -295,7 +328,20 @@ export default function FloatingLyrics() {
         >
           <div className="ldrag" aria-hidden="true" />
           <div className="lrows">
-            <div className={`lmain${verticalClass(main)}${upcoming ? ' upcoming' : ''}`} title={state.lyric || state.nextLyric || state.title || ''}>{main}</div>
+            <div
+              ref={mainRef}
+              className={`lmain${karaokeOn ? ' karaoke' : ''}${verticalClass(main)}${upcoming ? ' upcoming' : ''}`}
+              title={state.lyric || state.nextLyric || state.title || ''}
+            >
+              {karaokeOn
+                ? karaoke.words.map((w, wi) => (
+                  <span key={wi} className="kw">
+                    <span className="kw-fill">{w.text}</span>
+                    {w.text}
+                  </span>
+                ))
+                : main}
+            </div>
             <div className={`lsub-wrap ${showTrans ? 'on' : ''}`} aria-hidden={!showTrans}>
               <div className={`lsub${verticalClass(transText)}`}>{transText}</div>
             </div>
@@ -320,3 +366,4 @@ export default function FloatingLyrics() {
     </div>
   )
 }
+

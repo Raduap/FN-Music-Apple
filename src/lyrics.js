@@ -354,6 +354,10 @@ export function lyricFrame(lines, t) {
     nextLyricTrans: next.line?.translation || '',
     nextNextLyric: afterNext.line?.text || '',
     nextNextLyricTrans: afterNext.line?.translation || '',
+    // 逐字时间轴（合并过 syllables 的行才有 words）：悬浮歌词按 lyricIndex 对齐，
+    // 只带当前句与下一句，避免整首歌的词级数据随每次广播序列化。
+    lyricWords: cur?.words?.length ? cur.words : null,
+    nextLyricWords: next.line?.words?.length ? next.line.words : null,
   }
 }
 
@@ -404,3 +408,4 @@ export function karaokeFills(line, t) {
   const fills = spans.map((s) => Math.min(1, Math.max(0, (pos - s.start) / s.len)))
   return { fills, starts: spans.map((s) => s.start), spans: spans.map((s) => s.len), total, pos }
 }
+

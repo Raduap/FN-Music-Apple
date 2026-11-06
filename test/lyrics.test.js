@@ -157,5 +157,19 @@ describe('歌词', () => {
       const mono = toLines('[00:01.00]甲\n[00:05.00]乙')
       expect(lyricFrame(mono, 2)).toMatchObject({ index: 0, lyric: '甲', lyricTrans: '', nextLyric: '乙', nextLyricTrans: '' })
     })
+    it('普通行没有 words，逐字行把词级时间轴带给悬浮窗', () => {
+      const plain = toLines('[00:01.00]甲\n[00:05.00]乙')
+      expect(lyricFrame(plain, 2).lyricWords).toBe(null)
+      const karaoke = [
+        { time: 1, text: '甲', words: [{ text: '甲', time: 1, end: 2 }] },
+        { time: 5, text: '乙', words: [{ text: '乙', time: 5, end: 6 }] },
+        { time: 9, text: '丙' },
+      ]
+      const frame = lyricFrame(karaoke, 2)
+      expect(frame.lyricWords).toEqual([{ text: '甲', time: 1, end: 2 }])
+      expect(frame.nextLyricWords).toEqual([{ text: '乙', time: 5, end: 6 }])
+      expect(lyricFrame(karaoke, 10).lyricWords).toBe(null)
+    })
   })
 })
+
