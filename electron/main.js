@@ -4,6 +4,7 @@ const fs = require('fs')
 const { sha256, newDeviceId, normalizeBase, hostOf, authx, friendlyError } = require('./util')
 const { createTray, BALL_MODES } = require('./tray')
 const { createBall } = require('./ball')
+const { createLyrics } = require('./lyricsWindow')
 const { createCoverCache, coverKey } = require('./coverCache')
 
 const isDev = process.env.NODE_ENV === 'development'
@@ -111,6 +112,7 @@ function writePrefs(p) {
 let mainWindow = null
 let tray = null
 let ball = null
+let lyricsWin = null
 let mainHidden = false // 主窗口被用户隐藏到托盘或最小化（启动时窗口还没显示出来不算）
 let quitting = false // 为 true 时关闭窗口即退出，不再最小化到托盘
 
@@ -145,6 +147,29 @@ function syncBall() {
   ball.setVisible(!quitting && (mode === 'always' || (mode === 'hidden' && mainHidden)))
 }
 
+// 打开主窗口里的“悬浮歌词样式”面板。主窗口可能是刚重建的，页面还没就绪，
+// 所以幂等重发几次（重复打开是幂等的，不会闪烁或叠加）。
+function openLyricsSettings() {
+  showMainWindow()
+  const send = () => mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.send('lyrics:open-settings')
+  send()
+  setTimeout(send, 400)
+  setTimeout(send, 1200)
+}
+
+// 悬浮歌词：开关状态持久化在 prefs.lyricsOn；样式存在 prefs.lyricsStyle，位置存在 prefs.lyrics
+const lyricsOn = () => readPrefs().lyricsOn === true
+function setLyricsOn(on) {
+  writePrefs({ ...readPrefs(), lyricsOn: !!on })
+  syncLyrics()
+  tray?.refresh()
+  // 通知主窗口渲染进程：悬浮歌词可能在浮窗 / 托盘 / 右键菜单里被开关，播放栏按钮需要同步状态
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('lyrics:on-changed', !!on)
+}
+function syncLyrics() {
+  if (!lyricsWin) return
+  lyricsWin.setVisible(!quitting && lyricsOn())
+}
 // 托盘菜单里显示的当前歌曲封面（从封面磁盘缓存读取）
 async function coverImage(coverId) {
   if (!covers || !state.base) return null
@@ -182,6 +207,46 @@ function setupBall() {
   syncBall()
 }
 
+function setupLyrics() {
+  lyricsWin = createLyrics({
+    preload: path.join(__dirname, 'lyricsPreload.js'),
+    load: (win) => loadPage(win, 'lyrics.html'),
+    readPrefs,
+    writePrefs,
+    command: playerCommand,
+    openSettings: openLyricsSettings,
+    onClose: () => setLyricsOn(false),
+    onStyleChanged: () => tray?.refresh(),
+    menu: () => {
+      const s = readPrefs().lyricsStyle || {}
+      return [
+        { label: '显示悬浮歌词', type: 'checkbox', checked: lyricsOn(), click: (it) => setLyricsOn(it.checked) },
+        { type: 'separator' },
+        { label: '竖排显示', type: 'checkbox', checked: !!s.vertical, click: (it) => setLyricsStyle({ vertical: it.checked }) },
+        { label: '显示翻译', type: 'checkbox', checked: s.showTranslation !== false, click: (it) => setLyricsStyle({ showTranslation: it.checked }) },
+        { label: '显示下一句', type: 'checkbox', checked: !!s.showNext, click: (it) => setLyricsStyle({ showNext: it.checked }) },
+        { label: '鼠标穿透', type: 'checkbox', checked: !!s.clickThrough, click: (it) => setLyricsStyle({ clickThrough: it.checked }) },
+        { type: 'separator' },
+        { label: '歌词样式…', click: openLyricsSettings },
+        { label: '重置位置', click: () => lyricsWin?.resetPosition() },
+        { type: 'separator' },
+        { label: '关闭悬浮歌词', click: () => setLyricsOn(false) },
+      ]
+    },
+  })
+  syncLyrics()
+}
+
+// 更新悬浮歌词样式（浅合并）；点击穿透等变化即时生效
+// 窗口实例负责规范化并写盘，写完后通过 onStyleChanged 刷新托盘
+function setLyricsStyle(patch) {
+  const merged = { ...(readPrefs().lyricsStyle || {}), ...patch }
+  if (lyricsWin) lyricsWin.setStyle(merged)
+  else {
+    writePrefs({ ...readPrefs(), lyricsStyle: merged })
+    tray?.refresh()
+  }
+}
 function setupTray() {
   try {
     tray = createTray({
@@ -191,6 +256,9 @@ function setupTray() {
       setCloseToTray: (on) => writePrefs({ ...readPrefs(), closeToTray: on }),
       getBallMode: ballMode,
       setBallMode,
+      getLyricsOn: lyricsOn,
+      setLyricsOn,
+      openLyricsSettings,
       coverImage,
       quit: quitApp,
     })
@@ -334,33 +402,44 @@ function relogin() {
   return reloginInFlight
 }
 
-// ---------- 自定义壁纸 ----------
-// 选中的图片复制到 userData/wallpaper/，原图被移动或删除也不影响；渲染进程通过 IPC 取回字节生成 blob URL
-const WALLPAPER_TYPES = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', avif: 'image/avif' }
-const WALLPAPER_MAX = 40 * 1024 * 1024
-const wallpaperDir = () => path.join(app.getPath('userData'), 'wallpaper')
-function wallpaperFile() {
+// ---------- 自定义图片（壁纸 / 悬浮歌词背景） ----------
+// 选中的图片复制到 userData/<目录>/，原图被移动或删除也不影响；渲染进程通过 IPC 取回字节生成 blob URL。
+const IMAGE_TYPES = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', avif: 'image/avif' }
+const IMAGE_MAX = 40 * 1024 * 1024
+const imageDir = (name) => path.join(app.getPath('userData'), name)
+function imageFile(name, basename) {
   try {
-    const name = fs.readdirSync(wallpaperDir()).find((f) => /^wallpaper\.\w+$/.test(f))
-    return name ? path.join(wallpaperDir(), name) : null
+    const dir = imageDir(name)
+    const file = fs.readdirSync(dir).find((f) => new RegExp(`^${basename}\\.\\w+$`).test(f))
+    return file ? path.join(dir, file) : null
   } catch { return null }
 }
-async function chooseWallpaper(win) {
+async function chooseImage(win, { title, dir, basename }) {
   const r = await dialog.showOpenDialog(win, {
-    title: '选择壁纸',
+    title,
     properties: ['openFile'],
-    filters: [{ name: '图片', extensions: Object.keys(WALLPAPER_TYPES) }],
+    filters: [{ name: '图片', extensions: Object.keys(IMAGE_TYPES) }],
   })
   if (r.canceled || !r.filePaths[0]) return { ok: false, cancelled: true }
   const src = r.filePaths[0]
   const ext = path.extname(src).slice(1).toLowerCase()
-  if (!WALLPAPER_TYPES[ext]) return { ok: false, error: '不支持的图片格式' }
-  if (fs.statSync(src).size > WALLPAPER_MAX) return { ok: false, error: '图片太大（超过 40 MB）' }
-  fs.rmSync(wallpaperDir(), { recursive: true, force: true })
-  fs.mkdirSync(wallpaperDir(), { recursive: true })
-  fs.copyFileSync(src, path.join(wallpaperDir(), `wallpaper.${ext}`))
+  if (!IMAGE_TYPES[ext]) return { ok: false, error: '不支持的图片格式' }
+  if (fs.statSync(src).size > IMAGE_MAX) return { ok: false, error: '图片太大（超过 40 MB）' }
+  const target = imageDir(dir)
+  fs.rmSync(target, { recursive: true, force: true })
+  fs.mkdirSync(target, { recursive: true })
+  fs.copyFileSync(src, path.join(target, `${basename}.${ext}`))
   return { ok: true }
 }
+function readImage(name, basename) {
+  const f = imageFile(name, basename)
+  if (!f) return null
+  try { return { data: fs.readFileSync(f), type: IMAGE_TYPES[path.extname(f).slice(1).toLowerCase()] } } catch { return null }
+}
+const wallpaperDir = () => imageDir('wallpaper')
+const lyricsBackgroundDir = () => imageDir('lyrics-background')
+const chooseWallpaper = (win) => chooseImage(win, { title: '选择壁纸', dir: 'wallpaper', basename: 'wallpaper' })
+const chooseLyricsBackground = (win) => chooseImage(win, { title: '选择悬浮歌词背景图片', dir: 'lyrics-background', basename: 'background' })
 
 // ---------- 封面磁盘缓存 ----------
 let covers = null
@@ -484,17 +563,21 @@ function registerIpc() {
   ipcMain.handle('covers:stats', () => covers?.init().then(() => covers.stats()) ?? { count: 0, bytes: 0 })
   ipcMain.handle('covers:clear', async () => { await covers?.clear(); return true })
   ipcMain.handle('wallpaper:choose', (e) => chooseWallpaper(BrowserWindow.fromWebContents(e.sender)).catch((err) => ({ ok: false, error: err.message })))
-  ipcMain.handle('wallpaper:get', () => {
-    const f = wallpaperFile()
-    if (!f) return null
-    try { return { data: fs.readFileSync(f), type: WALLPAPER_TYPES[path.extname(f).slice(1).toLowerCase()] } } catch { return null }
-  })
+  ipcMain.handle('wallpaper:get', () => readImage('wallpaper', 'wallpaper'))
   ipcMain.handle('wallpaper:clear', () => { fs.rmSync(wallpaperDir(), { recursive: true, force: true }); return true })
+  ipcMain.handle('lyrics:choose-background', (e) => chooseLyricsBackground(BrowserWindow.fromWebContents(e.sender)).catch((err) => ({ ok: false, error: err.message })))
+  ipcMain.handle('lyrics:get-background', () => readImage('lyrics-background', 'background'))
+  ipcMain.handle('lyrics:clear-background', () => { fs.rmSync(lyricsBackgroundDir(), { recursive: true, force: true }); return true })
   ipcMain.handle('app:info', () => ({ version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }))
   ipcMain.handle('prefs:get', () => readPrefs())
-  ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); tray?.refresh(); syncBall(); return true })
-  ipcMain.handle('tray:info', () => ({ available: !!tray, closeToTray: closeToTray(), ballMode: ballMode() }))
-  ipcMain.on('player:state', (_e, s) => { tray?.setPlayer(s); ball?.setState(s) })
+  ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); syncBall(); syncLyrics(); if (p && p.lyricsStyle) lyricsWin?.setStyle(readPrefs().lyricsStyle); tray?.refresh(); return true })
+  ipcMain.handle('tray:info', () => ({ available: !!tray, closeToTray: closeToTray(), ballMode: ballMode(), lyricsOn: lyricsOn() }))
+  ipcMain.handle('lyrics:get', () => ({ on: lyricsOn(), style: { ...(readPrefs().lyricsStyle || {}) } }))
+  ipcMain.handle('lyrics:set-on', (_e, on) => { setLyricsOn(on); return lyricsOn() })
+  ipcMain.handle('lyrics:set-style', (_e, patch) => { setLyricsStyle(patch || {}); return readPrefs().lyricsStyle || {} })
+  ipcMain.handle('lyrics:reset-style', () => { if (lyricsWin) lyricsWin.resetStyle(); else writePrefs({ ...readPrefs(), lyricsStyle: {} }); return readPrefs().lyricsStyle || {} })
+  ipcMain.on('lyrics:reset-position', () => lyricsWin?.resetPosition())
+  ipcMain.on('player:state', (_e, s) => { tray?.setPlayer(s); ball?.setState(s); lyricsWin?.setState(s) })
 
   ipcMain.on('win:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
   ipcMain.on('win:toggle-maximize', (e) => {
@@ -611,6 +694,7 @@ if (!gotLock) {
     mainWindow = createWindow()
     setupTray()
     setupBall()
+    setupLyrics()
     app.on('activate', showMainWindow)
   })
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
