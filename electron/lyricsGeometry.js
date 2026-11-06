@@ -206,17 +206,72 @@ function controlSide(capPos, capSize, workArea) {
 }
 
 /**
+ * 收掉预留带的「过渡距离」：在这段距离内，朝屏幕外那条控制条带线性收掉。
+ *
+ * 目的是让胶囊能真正贴到工作区上边 / 左边，而不只是贴到窗口的预留带内侧。
+ *
+ * 约束：过渡区必须完全落在「控制条不在该侧」的区间内，否则收掉预留带会把控制条裁掉。
+ */
+function blendDistance(capSize, workArea, vertical) {
+  const margin = vertical ? SIDE_W : CONTROL_H
+  // 横排的翻转线在居中 2/3 处、竖排在 1/2 处，各留 20% 余量作为上限。
+  const axis = vertical ? workArea.width : workArea.height
+  const extent = vertical ? capSize.width : capSize.height
+  const ratio = vertical ? 0.5 : FLIP_RATIO
+  const flipLimit = Math.max(margin * 1.5, axis * ratio - extent / 2)
+  // 取 6 倍预留带宽：反算斜率 = 1 - 1/6 ≈ 0.83，胶囊最多比手指快约 1.2 倍，几乎察觉不到；
+  // 同时把影响范围限制在贴边后的 228px 内，正常位置仍是原来的固定偏移。
+  const desired = margin * 6
+  return Math.max(margin * 1.5, Math.min(desired, flipLimit * 0.8))
+}
+
+/**
+ * 胶囊在窗口内的偏移（窗口左上角为原点）。
+ *
+ * 正常是「朝屏幕外那一侧控制条带的宽度」：横排取上方 CONTROL_H，竖排取左侧 SIDE_W。
+ * 窗口两侧各留一条带，这样切换按钮方向（flip / side）时胶囊屏幕位置完全不动，不会抖。
+ *
+ * 但原生拖动（-webkit-app-region: drag，触控唯一跟手的方式）不允许窗口越过工作区的
+ * 上边 / 左边。窗口被那条预留带顶住，胶囊就永远差一条带贴不到屏幕边（表现为顶部一片
+ * 空白拉不上去）。而贴近屏幕边时朝外那条带本来就是空的——此时控制条必然在另一侧。
+ *
+ * 所以贴近屏幕边时把这条带按比例收掉：窗口停在屏幕边上，胶囊自己走完最后一段。
+ * 收掉的比例与「离屏幕边的距离」成正比（见 blendDistance），保证 窗口位置 ←→ 胶囊位置
+ * 严格互逆（见 capFromWindow）：过渡区内胶囊位移略快于手指，越过后回到 1:1。
+ */
+function capsuleInset(capPos, style, workArea, capSize) {
+  const s = normalizeStyle(style)
+  const size = capSize || capsuleSize(s, {})
+  if (s.vertical) {
+    const d = Math.max(0, capPos.x - workArea.x)
+    const blend = blendDistance(size, workArea, true)
+    return { x: PAD + SIDE_W * clamp(d / blend, 0, 1), y: PAD }
+  }
+  const d = Math.max(0, capPos.y - workArea.y)
+  const blend = blendDistance(size, workArea, false)
+  return { x: PAD, y: PAD + CONTROL_H * clamp(d / blend, 0, 1) }
+}
+
+/**
  * 横排窗口外框。
  *
- * 为了让「切换控制条在上 / 下方」时胶囊屏幕位置完全不动，窗口固定在上方预留一条
- * 控制条高度的透明区、下方也预留一条，胶囊在窗口内的 y 恒为 PAD + CONTROL_H。
- * 这样 flip 只改变控制条渲染在窗口内的哪一侧，窗口外框本身不变 -> 胶囊不可能抖。
+ * 窗口尺寸恒为「这首歌预留的最大行数 + 上下各一条控制条带」，位置 = 胶囊位置 - 偏移。
+ * 偏移由 capsuleInset 决定：正常为 CONTROL_H（与 flip 无关，所以越过变换线不抖），
+ * 贴近工作区上边时连续收小到 0，让窗口能停在屏幕边上。
  */
-function windowRect(capPos, capSize) {
-  const width = capSize.width + PAD * 2
-  const height = capSize.height + PAD * 2 + CONTROL_H * 2
+function windowRect(capPos, capSize, winCap = capSize, inset = null) {
+  const capTop = inset ? inset.y : PAD + CONTROL_H
+  const width = winCap.width + PAD * 2
+  // 高度按「这首歌预留的最多行数」算：窗口在一首歌内保持不变。
+  const height = winCap.height + PAD * 2 + CONTROL_H * 2
   const x = capPos.x - PAD
-  const y = capPos.y - PAD - CONTROL_H
+  // 窗口位置只由 capPos 与偏移决定，与 flip / side 无关。
+  //
+  // 为什么不用「按贴屏边锚定」：那种写法下越过控制条变换线要同时改窗口位置与渲染端的
+  // 按钮侧，而窗口位移走原生同步调用、按钮侧走异步 IPC，两者必然差一帧，表现为越界
+  // 瞬间胶囊跳一下（实测 41px）。改成窗口只跟 capPos 走之后，越界只需要切换按钮渲染在
+  // 哪一侧，窗口与胶囊都不动。贴屏边的生长改由 capPos 体现（见 anchorCapsule）。
+  const y = capPos.y - capTop
   return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) }
 }
 
@@ -225,41 +280,83 @@ function windowRect(capPos, capSize) {
  * 与横排同理：左右各预留一条控制条宽度，胶囊在窗口内的 x 恒为 PAD + SIDE_W，
  * side 只改变控制条画在哪一侧，窗口外框不变 -> 胶囊不会抖。
  */
-function sideWindowRect(capPos, capSize, side) {
-  const width = capSize.width + PAD * 2 + SIDE_W * 2
-  const height = capSize.height + PAD * 2
-  const x = capPos.x - PAD - SIDE_W
+function sideWindowRect(capPos, capSize, side, winCap = capSize, inset = null) {
+  const capLeft = inset ? inset.x : PAD + SIDE_W
+  const width = winCap.width + PAD * 2 + SIDE_W * 2
+  const height = winCap.height + PAD * 2
+  // 与横排同理：窗口位置只由 capPos 与偏移决定，与 side 无关。
+  const x = capPos.x - capLeft
   const y = capPos.y - PAD
   return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) }
 }
 
 /**
  * windowRect / sideWindowRect 的反向计算：由原生拖动后的窗口位置反推胶囊左上角。
- * 窗口外框相对胶囊的偏移只取决于横 / 竖排，与 flip / side 无关，可安全用于位置同步。
+ * 必须是 capsuleInset 的严格逆运算，否则拖动时胶囊会漂移或卡在离屏幕边一条带的位置。
+ *
+ * 过渡区内 window = capPos - margin * (capPos / blend)，反解得 capPos = window / (1 - margin/blend)；
+ * 过渡区外 window = capPos - margin，直接加回 margin 即可。
  */
-function capFromWindow(win, style) {
+function capFromWindow(win, style, workArea, capSize) {
   const s = normalizeStyle(style)
-  if (s.vertical) return { x: Math.round(win.x + PAD + SIDE_W), y: Math.round(win.y + PAD) }
-  return { x: Math.round(win.x + PAD), y: Math.round(win.y + PAD + CONTROL_H) }
+  const size = capSize || capsuleSize(s, {})
+  if (s.vertical) {
+    const blend = blendDistance(size, workArea, true)
+    const slope = 1 - SIDE_W / blend
+    const w = win.x - workArea.x
+    const d = w >= blend * slope ? w + SIDE_W : w / slope
+    return { x: Math.round(workArea.x + d), y: Math.round(win.y + PAD) }
+  }
+  const blend = blendDistance(size, workArea, false)
+  const slope = 1 - CONTROL_H / blend
+  const w = win.y - workArea.y
+  const d = w >= blend * slope ? w + CONTROL_H : w / slope
+  return { x: Math.round(win.x + PAD), y: Math.round(workArea.y + d) }
 }
 
-/** 胶囊与控制条在窗口内的矩形（窗口左上角为原点），供命中测试 / 布局用 */
-function regions(style, flip, extra = {}, side = 'right') {
+/**
+ * 胶囊与控制条在窗口内的矩形（窗口左上角为原点），供布局与命中测试用。
+ *
+ * 布局规则（对应「固定贴屏边、向远离屏幕方向生长」）：
+ *
+ * - 横排字幕在底部：胶囊下边固定，向上长高；
+ * - 横排字幕在顶部：胶囊上边固定，向下长高；
+ * - 竖排字幕在左部：胶囊左边固定，向右长宽；
+ * - 竖排字幕在右部：胶囊右边固定，向左长宽。
+ *
+ * 同时保证：
+ * 1. 控制条紧贴胶囊（在胶囊朝屏幕中心的一侧），胶囊变矮时不会留出空白；
+ * 2. 窗口按 winExtra（这首歌可能出现的最大行数）预留，多出的空间永远落在
+ *    「远离贴屏边」的一侧，既不夹在按钮与胶囊之间，也仍在窗口内可点击。
+ */
+function regions(style, flip, extra = {}, side = 'right', winExtra = extra, inset = null) {
   const s = normalizeStyle(style)
   const cap = capsuleSize(s, extra)
+  const winCap = capsuleSize(s, winExtra)
   if (s.vertical) {
-    // 胶囊在窗口内的 x 恒为 PAD + SIDE_W（与 side 无关），控制条占左 / 右其中一条预留带。
+    const winW = winCap.width + PAD * 2 + SIDE_W * 2
+    // 胶囊在窗口内的偏移与 side / 行数无关；贴近屏幕左边时会收小（见 capsuleInset），
+    // 让窗口能停在屏幕边上、胶囊仍然贴住屏幕边。
+    const capX = inset ? inset.x : PAD + SIDE_W
     return {
-      capsule: { x: PAD + SIDE_W, y: PAD, width: cap.width, height: cap.height },
-      control: { x: side === 'left' ? PAD : PAD + SIDE_W + cap.width, y: PAD, width: SIDE_W, height: cap.height },
-      window: { width: cap.width + PAD * 2 + SIDE_W * 2, height: cap.height + PAD * 2 },
+      capsule: { x: capX, y: PAD, width: cap.width, height: cap.height },
+      control: {
+        x: side === 'left' ? capX - SIDE_W : capX + cap.width,
+        y: PAD, width: SIDE_W, height: cap.height,
+      },
+      window: { width: winW, height: winCap.height + PAD * 2 },
     }
   }
-  // 胶囊在窗口内的 y 固定为 PAD + CONTROL_H（与 flip 无关），控制条占上 / 下其中一条预留带。
+  const winH = winCap.height + PAD * 2 + CONTROL_H * 2
+  // 胶囊在窗口内的偏移与 flip / 行数无关；贴近屏幕上边时会收小（见 capsuleInset）。
+  const capY = inset ? inset.y : PAD + CONTROL_H
   return {
-    capsule: { x: PAD, y: PAD + CONTROL_H, width: cap.width, height: cap.height },
-    control: { x: PAD, y: flip === 'above' ? PAD : PAD + CONTROL_H + cap.height, width: cap.width, height: CONTROL_H },
-    window: { width: cap.width + PAD * 2, height: cap.height + PAD * 2 + CONTROL_H * 2 },
+    capsule: { x: PAD, y: capY, width: cap.width, height: cap.height },
+    control: {
+      x: PAD, y: flip === 'above' ? capY - CONTROL_H : capY + cap.height,
+      width: cap.width, height: CONTROL_H,
+    },
+    window: { width: winCap.width + PAD * 2, height: winH },
   }
 }
 
@@ -267,9 +364,9 @@ function regions(style, flip, extra = {}, side = 'right') {
  * 控制按钮在窗口内的实际矩形，用于鼠标穿透判定。
  * 容器与按钮间空隙不属于按钮区域：主进程只放行这些矩形，其余控制条区域继续穿透。
  */
-function controlButtons(style, flip, extra = {}, side = 'right') {
+function controlButtons(style, flip, extra = {}, side = 'right', winExtra = extra, inset = null) {
   const s = normalizeStyle(style)
-  const control = regions(s, flip, extra, side).control
+  const control = regions(s, flip, extra, side, winExtra, inset).control
   const count = s.clickThrough ? CONTROL_BTN_COUNT_LOCKED : CONTROL_BTN_COUNT
   const rects = []
   if (s.vertical) {
@@ -286,28 +383,48 @@ function controlButtons(style, flip, extra = {}, side = 'right') {
   return rects
 }
 
-/** 计算完整布局：胶囊屏幕矩形、窗口屏幕矩形、控制条方向 / 侧边 */
-function layout(capPos, style, workArea, extra = {}) {
+/**
+ * 计算完整布局：胶囊屏幕矩形、窗口屏幕矩形、控制条方向 / 侧边。
+ * winExtra 传「窗口预留行数」时窗口按该尺寸固定；省略时退化为窗口贴合胶囊。
+ */
+function layout(capPos, style, workArea, extra = {}, winExtra = extra) {
   const s = normalizeStyle(style)
   const capSize = capsuleSize(s, extra)
-  const edge = nearestEdge(capPos, capSize, workArea, s.vertical)
+  const winCap = capsuleSize(s, winExtra)
+  const inset = capsuleInset(capPos, s, workArea, capSize)
   if (s.vertical) {
     const side = controlSide(capPos, capSize, workArea)
+    const part = capsulePart({ vertical: true, side })
+    // 进度条与按钮用同一套判断，且永远在按钮的另一侧：
+    // 按钮在右（side=right）→ 进度条贴左边；按钮在左 → 贴右边。
+    // 竖排进度条是竖线，所以只取 left / right。
+    const edge = side === 'right' ? 'left' : 'right'
     return {
       flip: null,
       side,
       edge,
       cap: { x: Math.round(capPos.x), y: Math.round(capPos.y), ...capSize },
-      win: sideWindowRect(capPos, capSize, side),
+      winCap,
+      part,
+      inset,
+      win: sideWindowRect(capPos, capSize, side, winCap, inset),
     }
   }
   const flip = controlFlip(capPos, capSize, workArea)
+  const part = capsulePart({ vertical: false, flip })
+  // 进度条与按钮用同一套判断，且永远在按钮的另一侧：
+  // 按钮在上（flip=above）→ 进度条贴下边；按钮在下 → 贴上边。
+  // 横排进度条是横线，所以只取 top / bottom。
+  const edge = flip === 'above' ? 'bottom' : 'top'
   return {
     flip,
     side: null,
     edge,
     cap: { x: Math.round(capPos.x), y: Math.round(capPos.y), ...capSize },
-    win: windowRect(capPos, capSize),
+    winCap,
+    part,
+    inset,
+    win: windowRect(capPos, capSize, winCap, inset),
   }
 }
 
@@ -431,5 +548,5 @@ module.exports = {
   PAD, BORDER, V_PAD, H_PAD, V_CHROME, ROW_GAP, COLUMN_EXTRA_RATIO, CONTROL_H, SIDE_W, CONTROL_BTN_W, CONTROL_BTN_H, CONTROL_BTN_GAP, CONTROL_BTN_COUNT, CONTROL_BTN_COUNT_LOCKED, FLIP_RATIO,
   MIN_W, MAX_W, MIN_FONT, MAX_FONT, DEFAULT_W, DEFAULT_FONT, MIN_CAP_H, MAX_CAP_H,
   normalizeStyle, layoutFlags, resolveLayoutState, lineHeight, subHeight, mainColumnWidth, subColumnWidth, columnExtra, visibleRows, capsuleSize, minCapHeight, maxCapHeight, minCapWidth, maxCapWidth, maxVerticalLength, capsulePart, anchorCapsule, anchorVerticalToHorizontal, capsuleGrowthShift, nearestEdge, controlFlip, controlSide, sideWindowRect, capFromWindow, clampStyleToArea, clampVerticalLength, windowRect, regions, controlButtons, layout,
-  windowSize, fontFromCapsuleHeight, fontFromCapsuleWidth, defaultCapsule, clampCapsule, isOnScreen, resizeCapsule,
+  windowSize, fontFromCapsuleHeight, fontFromCapsuleWidth, defaultCapsule, clampCapsule, isOnScreen, resizeCapsule, capsuleInset, blendDistance,
 }

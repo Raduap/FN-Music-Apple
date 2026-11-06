@@ -108,7 +108,7 @@ function useLayer() {
       if (l?.flip) setFlip(l.flip)
       if (l?.side) setSide(l.side)
       if (l?.edge) setEdge(l.edge)
-      if (l?.cap) setLayout({ cap: l.cap, css: l.css || null, anim: l.anim || null })
+      if (l?.cap) setLayout({ cap: l.cap, winCap: l.winCap || l.cap, inset: l.inset || null, css: l.css || null, anim: l.anim || null })
     })
     const offActive = bridge.onActive((v) => setActive(!!v))
     // 背景图被更换 / 移除时，即使样式里的 customImage 没变也要重拉图片
@@ -202,7 +202,21 @@ export default function FloatingLyrics() {
 
   // 胶囊精确尺寸由主进程唯一计算；demo 模式没有 IPC 时交给 CSS 自适应。
   const css = layout.css || { rowGap: SPEC.geometry.rowGap, subH: Math.round(s.fontSize * SPEC.geometry.lineRatio * SPEC.geometry.subRatio), colExtra: Math.max(2, s.fontSize * SPEC.geometry.columnExtraRatio) }
-  const capVars = layout.cap ? { '--cap-w': `${layout.cap.width}px`, '--cap-h': `${layout.cap.height}px` } : {}
+  // --cap-* 是当前实际胶囊尺寸；--win-cap-* 是窗口为该歌预留的尺寸。
+  // 网格轨道用预留尺寸（窗口内固定），玻璃胶囊用实际尺寸，开关翻译 / 下一句时窗口不动。
+  const cap = layout.cap || null
+  const winCap = layout.winCap || cap
+  const capVars = cap ? {
+    '--cap-w': `${cap.width}px`, '--cap-h': `${cap.height}px`,
+    '--win-cap-w': `${winCap.width}px`, '--win-cap-h': `${winCap.height}px`,
+  } : {}
+  // 胶囊在窗口内的偏移。贴近屏幕上边 / 左边时主进程会把它收小到 0（见 lyricsGeometry.capsuleInset），
+  // 让窗口能停在屏幕边上、胶囊仍然贴住屏幕边（原生拖动不允许窗口越过屏幕边）。
+  const ins = layout.inset
+  const insetVars = {
+    '--cap-top': `${ins ? ins.y : SPEC.geometry.controlH}px`,
+    '--cap-left': `${ins ? ins.x : SPEC.geometry.controlH}px`,
+  }
 
   const accent = ACCENT[state.palette] || ACCENT.red
   const vars = {
@@ -227,6 +241,7 @@ export default function FloatingLyrics() {
     '--row-gap': `${css.rowGap}px`,
     '--sub-h': `${css.subH}px`,
     ...capVars,
+    ...insetVars,
   }
   const dark = s.backgroundMode !== 'light'
   if (s.backgroundMode === 'light') Object.assign(vars, { '--fg': '#1a1a1c', '--fg2': 'rgba(26,26,28,0.6)', '--fg3': 'rgba(26,26,28,0.4)', '--glass': `rgba(255,255,255,${s.opacity})`, '--glass-bd': 'rgba(0,0,0,0.08)' })

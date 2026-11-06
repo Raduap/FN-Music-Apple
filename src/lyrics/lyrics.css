@@ -21,14 +21,31 @@ html, body, #root { touch-action: none; }
   color: var(--fg); font-family: var(--fst); font-weight: var(--fw);
   text-align: var(--align);
 }
-/* 横排三行网格：上下各预留一条控制条带，胶囊固定占中间一行。
-   这样切换控制条在上 / 下方时胶囊在窗口内的位置完全不变，越过交换边界也不会抖。 */
+/* 胶囊 / 控制条在窗口内绝对定位。
+
+   窗口按「这首歌可能的最大行数」预留尺寸，并且位置只跟胶囊坐标走、与按钮方向无关。
+   因此胶囊在窗口内的偏移必须**固定**（横排 top 恒为控制条高，竖排 left 恒为控制条宽）：
+   越过控制条变换线时只切换按钮画在哪一侧，窗口与胶囊都不动，不存在跨进程的中间帧。
+   余量永远落在窗口末尾（横排在下、竖排在右），既不夹在按钮与胶囊之间，也仍在窗口内可点击。 */
 .lcore {
+  position: relative;
   width: 100%; height: 100%;
-  display: grid;
-  grid-template-rows: var(--ctl) var(--cap-h, auto) var(--ctl);
-  grid-template-columns: 1fr;
 }
+/* 横排：宽度撑满，胶囊固定在「上控制条带之下」 */
+.lw:not(.vertical) .lc {
+  position: absolute;
+  left: var(--pad); right: var(--pad);
+  top: var(--cap-top, calc(var(--ctl) + var(--pad)));
+  width: auto; height: var(--cap-h);
+}
+.lw:not(.vertical) .lctl {
+  position: absolute;
+  left: var(--pad); right: var(--pad);
+  height: var(--ctl);
+}
+/* 控制条紧贴胶囊：按钮在上时贴胶囊上方，在下时贴胶囊下方 */
+.lw.flip-above:not(.vertical) .lctl { --ctl-dir: 6px; top: calc(var(--cap-top, var(--ctl)) - var(--ctl)); }
+.lw.flip-below:not(.vertical) .lctl { --ctl-dir: -6px; top: calc(var(--cap-top, var(--ctl)) + var(--cap-h)); }
 
 /* 控制条：默认隐藏，光标进入胶囊时显示（离开 3s 后由页面计时隐藏）。
    容器与按钮间隙本身不接收鼠标；只有按钮是命中目标。 */
@@ -41,11 +58,6 @@ html, body, #root { touch-action: none; }
 }
 .lw.show .lctl { opacity: 1; transform: none; pointer-events: none; }
 .lw.show .lbtn { pointer-events: auto; }
-/* 胶囊恒在中间一行；控制条在上 / 下预留带之间切换，但胶囊位置不变。 */
-.lw:not(.vertical) .lc { grid-row: 2; grid-column: 1; }
-.lw:not(.vertical) .lctl { grid-column: 1; }
-.lw.flip-above .lctl { --ctl-dir: 6px; grid-row: 1; }
-.lw.flip-below .lctl { --ctl-dir: -6px; grid-row: 3; }
 .lbtn {
   width: var(--btn-w); min-width: var(--btn-w); height: 28px; padding: 0;
   display: grid; place-items: center;
@@ -190,22 +202,24 @@ html, body, #root { touch-action: none; }
 .edge-left .lbar > i, .edge-right .lbar > i { transform-origin: center top; transform: scaleY(0); }
 
 /* ---------- 竖排：原文 / 译文 / 下一句三列，从右到左排列 ---------- */
-/* 竖排三列网格：左右各预留一条控制条带，胶囊固定占中间列，
-   side 只改变控制条在左 / 右哪一侧，胶囊不动。 */
-.lw.vertical .lcore {
-  grid-template-columns: var(--ctl) var(--cap-w, auto) var(--ctl);
-  grid-template-rows: 1fr;
+/* 竖排：高度撑满，胶囊固定在「左控制条带之右」，与按钮方向无关。 */
+.lw.vertical .lc {
+  position: absolute;
+  top: var(--pad); bottom: var(--pad);
+  left: var(--cap-left, calc(var(--ctl) + var(--pad)));
+  width: var(--cap-w); height: auto; min-height: 0;
+  padding-right: 28px; overflow: hidden;
 }
-/* 竖排控制条：左 / 右预留带里的一条竖列，按钮从上到下排列 */
 .lw.vertical .lctl {
-  width: var(--ctl); height: var(--cap-h); flex: none;
-  flex-direction: column; align-items: center; justify-content: center;
+  position: absolute;
+  top: var(--pad); height: var(--cap-h);
+  width: var(--ctl); flex-direction: column; align-items: center; justify-content: center;
   gap: var(--btn-gap); padding: 0;
   transform: translateX(var(--ctl-dir, 6px));
 }
-.lw.vertical .lc { grid-row: 1; grid-column: 2; width: var(--cap-w); height: var(--cap-h); min-height: 0; padding-right: 28px; overflow: hidden; }
-.lw.vertical.side-right .lctl { --ctl-dir: 6px; grid-row: 1; grid-column: 3; }
-.lw.vertical.side-left .lctl { --ctl-dir: -6px; grid-row: 1; grid-column: 1; }
+/* 控制条紧贴胶囊：按钮在右时贴胶囊右侧，在左时贴胶囊左侧 */
+.lw.vertical.side-right .lctl { --ctl-dir: 6px; left: calc(var(--cap-left, var(--ctl)) + var(--cap-w)); }
+.lw.vertical.side-left .lctl { --ctl-dir: -6px; left: calc(var(--cap-left, var(--ctl)) - var(--ctl)); }
 /* 竖排控制条的显隐位移也要在显示时归零，否则会偏移 6px 被裁 */
 .lw.vertical.show .lctl { transform: none; }
 .lw.vertical .lrows {

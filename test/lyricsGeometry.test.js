@@ -187,14 +187,17 @@ describe('悬浮歌词几何与样式', () => {
     const right = G.layout({ x: 0, y: 100 }, v, wa, twoRows)
     expect(right.side).toBe('right')
     expect(right.flip).toBe(null)
-    // 窗口左右各预留一条控制条带，胶囊在窗口内的 x 恒为 PAD + SIDE_W
-    expect(right.win.x + G.PAD + G.SIDE_W).toBe(0)
+    // 胶囊贴到工作区左边：朝外那条预留带收掉（否则原生拖动下窗口进不了负坐标、
+    // 胶囊就永远差一条带贴不到边）。窗口停在 x=0，胶囊仍在 x=0。
+    expect(right.win.x).toBe(0)
+    expect(right.win.x + right.inset.x).toBe(0)
     expect(right.win.width).toBe(cap.width + G.SIDE_W * 2)
     expect(right.win.height).toBe(cap.height)
 
     const left = G.layout({ x: wa.width - cap.width, y: 100 }, v, wa, twoRows)
     expect(left.side).toBe('left')
-    expect(left.win.x + G.PAD + G.SIDE_W).toBe(wa.width - cap.width)
+    expect(left.inset.x).toBe(G.PAD + G.SIDE_W)
+    expect(left.win.x + left.inset.x).toBe(wa.width - cap.width)
     expect(left.win.width).toBe(cap.width + G.SIDE_W * 2)
   })
 
@@ -326,7 +329,10 @@ describe('悬浮歌词几何与样式', () => {
 
     const belowWindow = G.layout(high, style, wa, twoRows)
     expect(belowWindow.flip).toBe('below')
-    expect(belowWindow.win.y).toBe(high.y - G.PAD - G.CONTROL_H)
+    // 胶囊贴顶（y=0）：上方预留带收掉，窗口停在 y=0 而不是 -38，
+    // 这样原生拖动（不能进负坐标）也能让胶囊真正贴上屏幕顶。
+    expect(belowWindow.win.y).toBe(0)
+    expect(belowWindow.win.y + belowWindow.inset.y).toBe(high.y)
   })
 
   it('控制按钮命中区域：普通模式 7 个、锁定模式仅 1 个解锁按钮，且与容器居中', () => {
@@ -441,5 +447,171 @@ describe('悬浮歌词几何与样式', () => {
     expect(moved.bounds.width).toBe(850)
     expect(moved.style.width).toBe(850)
     expect(I.anchoredResizePosition(bounds, { width: 750, height: 180 }, 'nw')).toEqual({ x: 150, y: 120 })
+  })
+
+  describe('增减行：固定贴屏边、向远离屏幕方向生长', () => {
+    // 一行的胶囊 vs 三行的胶囊（预留区按三行算）
+    const style = { fontSize: 30, width: 760 }
+    const cap1 = G.capsuleSize(style, oneRow)
+    const cap3 = G.capsuleSize(style, threeRows)
+
+    it('横排字幕在底部：固定下边，向上长高', () => {
+      const pos = { x: 400, y: 900 }
+      const part = G.capsulePart({ vertical: false, flip: 'above' })
+      expect(part).toBe('bottom')
+      // 从三行收到一行：capPos 应下移 (cap3.height - cap1.height)，保持底边不动
+      const next = G.anchorCapsule(pos, cap3, cap1, { vertical: false, flip: 'above' })
+      expect(next.y + cap1.height).toBe(pos.y + cap3.height)
+      expect(next.x).toBe(pos.x)
+    })
+
+    it('横排字幕在顶部：固定上边，向下长高', () => {
+      const pos = { x: 400, y: 60 }
+      expect(G.capsulePart({ vertical: false, flip: 'below' })).toBe('top')
+      const next = G.anchorCapsule(pos, cap1, cap3, { vertical: false, flip: 'below' })
+      expect(next.y).toBe(pos.y) // 上边不动
+    })
+
+    it('竖排字幕在左部：固定左边，向右长宽', () => {
+      const v = { fontSize: 30, width: 620, vertical: true }
+      const v1 = G.capsuleSize(v, oneRow)
+      const v3 = G.capsuleSize(v, threeRows)
+      const pos = { x: 60, y: 200 }
+      expect(G.capsulePart({ vertical: true, side: 'right' })).toBe('left')
+      const next = G.anchorCapsule(pos, v1, v3, { vertical: true, side: 'right' })
+      expect(next.x).toBe(pos.x) // 左边不动
+    })
+
+    it('竖排字幕在右部：固定右边，向左长宽', () => {
+      const v = { fontSize: 30, width: 620, vertical: true }
+      const v1 = G.capsuleSize(v, oneRow)
+      const v3 = G.capsuleSize(v, threeRows)
+      const pos = { x: 1600, y: 200 }
+      expect(G.capsulePart({ vertical: true, side: 'left' })).toBe('right')
+      const next = G.anchorCapsule(pos, v1, v3, { vertical: true, side: 'left' })
+      expect(next.x + v3.width).toBe(pos.x + v1.width) // 右边不动
+    })
+
+    it('窗口按预留行数固定，增减行时窗口外框不变', () => {
+      const pos = { x: 400, y: 900 }
+      const win1 = G.layout(pos, style, wa, oneRow, threeRows).win
+      const p3 = G.anchorCapsule(pos, cap1, cap3, { vertical: false, flip: 'above' })
+      const win3 = G.layout(p3, style, wa, threeRows, threeRows).win
+      expect(win1.width).toBe(win3.width)
+      expect(win1.height).toBe(win3.height)
+      expect(win1.x).toBe(win3.x)
+      // 窗口位置只跟 capPos 走（= 胶囊锚定后的坐标），因此它随贴屏边的生长一起平移，
+      // 而尺寸恒定。这样窗口本身永远不需要在越界时移动（避免跨进程的中间帧跳动）。
+      expect(win3.y - win1.y).toBe(p3.y - pos.y)
+    })
+  })
+
+  describe('进度条与按钮同源判断', () => {
+    const style = { fontSize: 30, width: 760 }
+    it('横排：按钮在上时进度条贴下边，按钮在下时贴上边', () => {
+      const upper = G.layout({ x: 400, y: 60 }, style, wa, oneRow)   // 靠上 → 按钮在下
+      expect(upper.flip).toBe('below')
+      expect(upper.edge).toBe('top')
+      const lower = G.layout({ x: 400, y: 900 }, style, wa, oneRow)  // 靠下 → 按钮在上
+      expect(lower.flip).toBe('above')
+      expect(lower.edge).toBe('bottom')
+    })
+    it('竖排：按钮在右时进度条贴左边，按钮在左时贴右边', () => {
+      const v = { fontSize: 30, width: 620, vertical: true }
+      const left = G.layout({ x: 60, y: 200 }, v, wa, oneRow)
+      expect(left.side).toBe('right')
+      expect(left.edge).toBe('left')
+      const right = G.layout({ x: 1600, y: 200 }, v, wa, oneRow)
+      expect(right.side).toBe('left')
+      expect(right.edge).toBe('right')
+    })
+  })
+
+  it('缩放下限按当前行数算：只有一行时能拖到最小字号', () => {
+    const style = G.normalizeStyle({ fontSize: 30 })
+    const curLimits = { minW: G.MIN_W, maxW: G.MAX_W, minH: G.minCapHeight(oneRow), maxH: G.maxCapHeight(oneRow) }
+    const bounds = { x: 400, y: 800, width: style.width, height: G.capsuleSize(style, oneRow).height }
+    // 向下狠拖，应能到最小字号（16），而不是被「预留两行」的下限卡在 30
+    const r = I.nextResizeStyle(style, bounds, { x: 0, y: -9999 }, { x: 0, y: 0 }, 's', curLimits, wa, oneRow)
+    expect(r.style.fontSize).toBe(G.MIN_FONT)
+    expect(G.capsuleSize(r.style, oneRow).height).toBe(G.minCapHeight(oneRow))
+  })
+
+  describe('拖动越界：胶囊相对鼠标不跳', () => {
+    const style = { fontSize: 30, width: 760 }
+    const one = oneRow
+    const two = twoRows
+
+    // 复制主进程的 move 处理：原生拖动只给出窗口位置，胶囊位置由 capFromWindow 反算
+    // （贴近屏幕边时预留带会收掉，所以不能用「加固定偏移」的旧模型）。
+    function drag(win0, cap0, delta) {
+      const capSize = G.capsuleSize(style, one)
+      const win = { ...win0, y: win0.y + delta }
+      const capPos = G.capFromWindow(win, style, wa, capSize)
+      const L = G.layout(capPos, style, wa, one, two)
+      return { capPos, win: { ...L.win }, flip: L.flip, capScreenY: L.win.y + L.inset.y }
+    }
+
+    it('横排越过控制条变换线时，胶囊屏幕坐标继续跟随 capPos（无 31px 跳变）', () => {
+      let capPos = { x: 400, y: 600 }
+      let win = { ...G.layout(capPos, style, wa, one, two).win }
+      let crossed = false
+      for (let i = 0; i < 12; i++) {
+        const r = drag(win, capPos, 10)
+        capPos = r.capPos
+        win = r.win
+        expect(r.capScreenY).toBe(capPos.y) // 胶囊屏幕 y 始终等于 capPos.y
+        if (r.flip === 'above') crossed = true
+      }
+      expect(crossed).toBe(true) // 确认确实越过了变换线
+    })
+
+    it('越界时窗口外框不变（只切换按钮侧）', () => {
+      const capPos = { x: 400, y: 600 }
+      const before = G.layout(capPos, style, wa, one, two).win
+      const after = G.layout(capPos, style, wa, one, two).win
+      // 同一 capPos 下窗口位置与尺寸都只由 capPos 决定，与 flip 无关
+      expect(after).toEqual(before)
+    })
+  })
+
+  describe('贴近屏幕边：收掉朝外预留带，让胶囊真正贴边', () => {
+    const style = { fontSize: 30, width: 760 }
+    const one = oneRow
+
+    it('胶囊贴到工作区顶：窗口停在 y=0，胶囊也在 y=0（不再差 38px）', () => {
+      const L = G.layout({ x: 400, y: wa.y }, style, wa, one)
+      expect(L.inset.y).toBe(0)
+      expect(L.win.y).toBe(0)
+      expect(L.win.y + L.inset.y).toBe(wa.y)
+    })
+
+    it('远离屏幕边时预留带恢复满宽，胶囊位置与改动前一致', () => {
+      const capPos = { x: 400, y: 600 }
+      const L = G.layout(capPos, style, wa, one)
+      expect(L.inset.y).toBe(G.PAD + G.CONTROL_H)
+      expect(L.win.y).toBe(capPos.y - G.PAD - G.CONTROL_H)
+    })
+
+    it('窗口位置与胶囊位置在过渡区内严格互逆（拖动不漂移、不卡住）', () => {
+      const cap = G.capsuleSize(style, one)
+      for (let y = 0; y <= 400; y += 7) {
+        const L = G.layout({ x: 400, y }, style, wa, one)
+        const back = G.capFromWindow(L.win, style, wa, cap)
+        // 允许 1px 取整误差
+        expect(Math.abs(back.y - y)).toBeLessThanOrEqual(1)
+      }
+    })
+
+    it('原生拖动可以一路把胶囊贴到顶：窗口顶到 0 后胶囊继续走到 y=0', () => {
+      const cap = G.capsuleSize(style, one)
+      // 模拟用户向上拖窗口：窗口 y 从起始值一路减到 0（Windows 不允许窗口再往上）。
+      const startWinY = G.layout({ x: 400, y: 600 }, style, wa, one).win.y
+      let capPos = null
+      for (let wy = startWinY; wy >= 0; wy -= 1) {
+        capPos = G.capFromWindow({ x: 400, y: wy, width: 0, height: 0 }, style, wa, cap)
+      }
+      expect(capPos.y).toBe(wa.y) // 窗口顶到 0 时，胶囊也真正贴到屏幕顶部
+    })
   })
 })

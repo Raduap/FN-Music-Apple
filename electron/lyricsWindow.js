@@ -34,11 +34,13 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
   let capPos = null // 歌词胶囊左上角的屏幕坐标（持久化坐标）
   let flip = 'above' // 横排：控制条在胶囊上方 / 下方
   let side = 'right' // 竖排：控制条在胶囊左侧 / 右侧
+  let edge = 'bottom' // 进度条贴哪条边；与按钮同源判断，永远在按钮的另一侧
   let style = G.normalizeStyle(readPrefs().lyricsStyle)
   let state = {}
   let layoutState = {}
   let resize = null // { cursor, bounds, dir, extra }
   let pollTimer = null
+  let sentInset = null // 最近一次下发给渲染端的胶囊偏移（贴近屏幕边时会连续变化）
   let hovered = false // 控制条是否处于显示状态（由主进程按时延迟隐藏）
   let capsuleHot = false // 光标是否在胶囊上（用于显示控制条）
   let controlHot = false // 光标是否在按钮上（用于临时接收点击）
@@ -51,22 +53,39 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
   // 译文行按“整首歌是否有译文”预留，伴奏 / 间奏句不会让胶囊突然收缩。
   // 渲染状态始终是最新值；歌词未就绪时仅布局沿用上一首，避免胶囊先缩再扩。
   const extra = () => G.layoutFlags(style, layoutState)
+  // 窗口预留行数：只看这首歌有没有译文 / 下一句，忽略用户当前开关。
+  // 这样开关译文 / 下一句时窗口尺寸与位置不变，只有内部胶囊伸缩。
+  const winExtra = () => ({ showTranslation: !!layoutState.hasTranslation, showNext: !!layoutState.hasNext })
   const capSize = () => G.capsuleSize(style, extra())
   // 竖排时限制的是胶囊外框：宽由字号与列数决定，高 = 设置里的长度 + 两端内边距 / 边框
   // 胶囊尺寸上下限：竖排高度（文字方向长度）同时受样式上限与屏幕工作区限制，
   // 横排宽度也限制在工作区宽度内，避免任何方向被拉到屏幕外。
   const limits = (area = capPos ? workAreaFor(capPos) : screen.getPrimaryDisplay().workArea) => {
+    // 缩放上下限必须按「当前实际行数」算：拖动的就是现在这块胶囊，用预留行数（可能更多）
+    // 会把下限抬高，导致拖不到设置里能设到的最小字号（例如只有一行时拖不到 16 号）。
+    const e = extra()
     if (style.vertical) {
       const maxLen = G.maxVerticalLength(area)
-      return { minW: G.minCapWidth(extra()), maxW: G.maxCapWidth(extra()), minH: G.MIN_W + G.V_CHROME, maxH: maxLen + G.V_CHROME }
+      return { minW: G.minCapWidth(e), maxW: G.maxCapWidth(e), minH: G.MIN_W + G.V_CHROME, maxH: maxLen + G.V_CHROME }
     }
     const maxW = Math.max(G.MIN_W, Math.min(G.MAX_W, Math.round(area.width - G.PAD * 2)))
-    return { minW: G.MIN_W, maxW, minH: G.minCapHeight(extra()), maxH: G.maxCapHeight(extra()) }
+    return { minW: G.MIN_W, maxW, minH: G.minCapHeight(e), maxH: G.maxCapHeight(e) }
+  }
+  // 窗口自身的 min/max 要按「预留行数」算，否则窗口会小于为整首歌预留的固定尺寸，
+  // 被 setMaximumSize 夹住后就装不下预留内容。
+  const winLimits = (area = capPos ? workAreaFor(capPos) : screen.getPrimaryDisplay().workArea) => {
+    const we = winExtra()
+    if (style.vertical) {
+      const maxLen = G.maxVerticalLength(area)
+      return { minW: G.minCapWidth(we), maxW: G.maxCapWidth(we), minH: G.MIN_W + G.V_CHROME, maxH: maxLen + G.V_CHROME }
+    }
+    const maxW = Math.max(G.MIN_W, Math.min(G.MAX_W, Math.round(area.width - G.PAD * 2)))
+    return { minW: G.MIN_W, maxW, minH: G.minCapHeight(we), maxH: G.maxCapHeight(we) }
   }
   // 窗口的 min/max 必须跟随当前布局刷新：切到竖排后高度要能超过横排时的小上限
   function applyWindowLimits(area = capPos ? workAreaFor(capPos) : screen.getPrimaryDisplay().workArea) {
     if (!alive()) return
-    const lim = limits(area)
+    const lim = winLimits(area)
     const vertical = style.vertical
     // 胶囊两侧各预留一条控制条带，所以窗口尺寸 = 胶囊 + 2 条控制条
     const stripX = vertical ? G.SIDE_W * 2 : 0
@@ -87,7 +106,14 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     flip: L.flip,
     side: L.side,
     edge: L.edge,
+    part: L.part || null,
+    // 胶囊在窗口内的偏移：贴近屏幕上边 / 左边时会缩到 0（见 lyricsGeometry.capsuleInset）。
+    // 渲染端用它决定胶囊与相邻控制条的位置，保证「窗口贴住屏幕边时胶囊仍贴住屏幕边」。
+    inset: { x: L.inset.x, y: L.inset.y },
     cap: { width: L.cap.width, height: L.cap.height },
+    // 窗口为该歌预留的胶囊尺寸：渲染端用它决定网格轨道（窗口内固定），
+    // 用 cap 决定玻璃胶囊本身的大小。
+    winCap: L.winCap ? { width: L.winCap.width, height: L.winCap.height } : { width: L.cap.width, height: L.cap.height },
     css: {
       rowGap: G.ROW_GAP,
       subH: Math.round(G.subHeight(style.fontSize)),
@@ -124,9 +150,11 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     if (!alive() || !win.isVisible() || !capPos) return
     const c = screen.getCursorScreenPoint()
     const bounds = win.getBounds()
-    const regs = G.regions(style, flip, extra(), side)
+    // 命中区域必须用与当前窗口位置一致的偏移（贴顶时预留带已收掉），否则光标判定会偏移。
+    const inset = G.capsuleInset(capPos, style, workAreaFor(capPos), capSize())
+    const regs = G.regions(style, flip, extra(), side, winExtra(), inset)
     const onCapsule = inRect(c, { x: bounds.x + regs.capsule.x, y: bounds.y + regs.capsule.y, width: regs.capsule.width, height: regs.capsule.height })
-    const onControl = G.controlButtons(style, flip, extra(), side).some((r) => inRect(c, { x: bounds.x + r.x, y: bounds.y + r.y, width: r.width, height: r.height }))
+    const onControl = G.controlButtons(style, flip, extra(), side, winExtra(), inset).some((r) => inRect(c, { x: bounds.x + r.x, y: bounds.y + r.y, width: r.width, height: r.height }))
     const changed = onCapsule !== capsuleHot || onControl !== controlHot
     capsuleHot = onCapsule
     controlHot = onControl
@@ -173,9 +201,11 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     const area = workAreaFor(capPos)
     if (clamp) capPos = G.clampCapsule(capPos, area, style, extra())
     applyWindowLimits(area)
-    const next = G.layout(capPos, style, area, extra())
+    const next = G.layout(capPos, style, area, extra(), winExtra())
     flip = next.flip
     side = next.side || side
+    edge = next.edge
+    sentInset = { x: Math.round(next.inset.x), y: Math.round(next.inset.y) }
     win.setBounds(next.win)
     if (notify) send('lyrics:layout', layoutPayload(next, anim))
     return next
@@ -190,9 +220,10 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     const initArea = capPos ? workAreaFor(capPos) : screen.getPrimaryDisplay().workArea
     style = G.clampVerticalLength(style, initArea, extra())
     capPos = capPos && G.isOnScreen(capPos, areas, style, extra()) ? G.clampCapsule(capPos, workAreaFor(capPos), style, extra()) : initialPos()
-    const first = G.layout(capPos, style, workAreaFor(capPos), extra())
+    const first = G.layout(capPos, style, workAreaFor(capPos), extra(), winExtra())
     flip = first.flip
     side = first.side || side
+    edge = first.edge
     const w = win = new BrowserWindow({
       ...first.win,
       frame: false,
@@ -222,19 +253,38 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
       event.preventDefault()
       setTimeout(() => { if (alive()) openMenuWindow() }, 60)
     })
-    // 原生拖动由 Windows 直接移动窗口。拖动过程中持续把窗口位置反推回 capPos：
-    // 否则歌曲状态广播触发的 layout() 会按旧坐标把窗口拉回起点（表现为松手弹回）。
-    w.on('move', () => {
-      if (!alive() || win !== w || resize) return
-      const bounds = w.getBounds()
-      const expected = G.layout(capPos, style, workAreaFor(capPos), extra()).win
-      if (bounds.x === expected.x && bounds.y === expected.y) return
-      capPos = G.capFromWindow(bounds, style)
-    })
+    // 原生拖动由 Windows 直接移动窗口（触控唯一跟手的方式）。
+    //
+    // 关键：贴近屏幕上边 / 左边时，窗口内那条朝外的预留带会连续收掉（capsuleInset），
+    // 所以「窗口位置 → 胶囊位置」不是简单加固定偏移，必须用 capFromWindow 反算。
+    // 这样窗口顶到屏幕边（y=0）时胶囊仍能继续贴到 y=0，而不是卡在 38px。
+    function syncFromWindow() {
+      if (!alive() || win !== w || resize) return null
+      const area = workAreaFor(capPos)
+      capPos = G.capFromWindow(w.getBounds(), style, area, capSize())
+      capPos = G.clampCapsule(capPos, area, style, extra())
+      // 越过控制条变换线时切换按钮方向（横排上 / 下、竖排左 / 右），进度条随之换边。
+      const L = G.layout(capPos, style, area, extra(), winExtra())
+      // 贴近屏幕上边 / 左边时 inset 会连续变化（窗口不动、胶囊在窗口内滑），必须同步给
+      // 渲染端，否则胶囊会停在固定偏移处、看起来没贴到屏幕边。变化很小，用整数比较去抖。
+      const nextInset = { x: Math.round(L.inset.x), y: Math.round(L.inset.y) }
+      const insetChanged = !sentInset || sentInset.x !== nextInset.x || sentInset.y !== nextInset.y
+      if (L.flip !== flip || (L.side && L.side !== side) || L.edge !== edge || insetChanged) {
+        flip = L.flip
+        side = L.side || side
+        edge = L.edge
+        sentInset = nextInset
+        send('lyrics:layout', layoutPayload(L))
+      }
+      return L
+    }
+    w.on('move', () => { syncFromWindow() })
     w.on('moved', () => {
-      if (!alive() || win !== w || resize) return
-      capPos = G.clampCapsule(capPos, workAreaFor(capPos), style, extra())
-      layout()
+      const L = syncFromWindow()
+      if (!L) return
+      // 松手时把窗口贴回「胶囊位置对应的窗口位置」：拖动过程中窗口可能停在过渡区内的
+      // 某个中间点，这一步保证窗口与胶囊严格对齐（也修掉取整误差）。
+      win.setBounds(L.win)
       writePrefs({ ...readPrefs(), lyrics: { x: capPos.x, y: capPos.y } })
     })
     w.once('ready-to-show', () => { if (wanted && win === w) w.showInactive() })
@@ -277,8 +327,9 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     const sizeChanged = nextCap.width !== prevCap.width || nextCap.height !== prevCap.height
     let anim = null
     if (sameOrientation && lineToggle && sizeChanged) {
+      // 固定「贴屏的那条边」，向远离屏幕的方向生长（见 lyricsGeometry.capsuleGrowthShift）。
+      // 窗口外框锚定同一条边，所以 capPos 补偿后窗口位置也随之不变。
       const opts = { vertical: style.vertical, side, flip }
-      anim = { from: prevCap, shift: G.capsuleGrowthShift(prevCap, nextCap, opts) }
       capPos = G.anchorCapsule(capPos, prevCap, nextCap, opts)
     } else if (wasVertical && !style.vertical) {
       // 竖排切横排：以旧竖排胶囊的底边为锚点，避免横排按左上角定位导致整体跳位。
@@ -287,10 +338,13 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
       capPos = G.anchorCapsule(capPos, prevCap, nextCap, { vertical: true, side })
     }
     applyWindowLimits(area)
-    capPos = G.clampCapsule(capPos, area, style, extra())
-    const next = G.layout(capPos, style, area, extra())
+    // 开关译文 / 下一句时不要重新夹取位置：胶囊在窗口内固定、窗口尺寸按整首歌预留，
+    // clampCapsule 会因为 capSize 变化在贴边处把胶囊顶走（表现为开关行时整体跳一下）。
+    if (!(sameOrientation && lineToggle)) capPos = G.clampCapsule(capPos, area, style, extra())
+    const next = G.layout(capPos, style, area, extra(), winExtra())
     flip = next.flip
     side = next.side || side
+    edge = next.edge
     win.setBounds(next.win)
     send('lyrics:layout', layoutPayload(next, anim))
     send('lyrics:style', style)
@@ -386,9 +440,10 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
     const y = resize.dir.includes('s') ? resize.bounds.y : anchor.y
     applyWindowLimits(resize.area)
     capPos = G.clampCapsule({ x, y }, resize.area, style, extra())
-    const L = G.layout(capPos, style, resize.area, extra())
+    const L = G.layout(capPos, style, resize.area, extra(), winExtra())
     flip = L.flip
     side = L.side || side
+    edge = L.edge
     win.setBounds(L.win)
     send('lyrics:layout', layoutPayload(L))
     send('lyrics:style', style)
@@ -407,7 +462,7 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
   ipcMain.on('lyrics:ready', (e) => {
     if (!fromLyrics(e)) return
     send('lyrics:style', style)
-    send('lyrics:layout', layoutPayload(G.layout(capPos, style, workAreaFor(capPos), extra())))
+    send('lyrics:layout', layoutPayload(G.layout(capPos, style, workAreaFor(capPos), extra(), winExtra())))
     send('lyrics:state', state)
   })
   // ⋯ 按钮与右键走同一套自绘菜单
@@ -480,11 +535,9 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
       if (alive()) {
         if (style.vertical) style = G.clampVerticalLength(style, workAreaFor(capPos), extra())
         const nextCap = capSize()
-        const opts = { vertical: style.vertical, side, flip }
-        if (nextCap.width !== prevCap.width || nextCap.height !== prevCap.height) {
-          anim = { from: prevCap, shift: G.capsuleGrowthShift(prevCap, nextCap, opts) }
-          capPos = G.anchorCapsule(capPos, prevCap, nextCap, opts)
-        }
+        // 窗口按整首歌预留尺寸、胶囊在窗口内位置固定，因此行数变化只改胶囊自身大小，
+        // capPos 不变，窗口也不移动。
+        void prevCap; void nextCap
         // 行预留已按“整首歌”计算，胶囊尺寸在一首歌内恒定，切句不会改变高度；
         // 这里可以安全夹取，避免贴边时因为窗口伸出屏幕而被裁掉。
         capPos = G.clampCapsule(capPos, workAreaFor(capPos), style, extra())
