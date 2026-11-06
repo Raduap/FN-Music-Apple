@@ -160,7 +160,8 @@ export default function FloatingLyrics() {
   const nextText = upcoming ? state.nextNextLyric : state.nextLyric
   // 逐字高亮只做当前句：upcoming（前奏预告）时显示的是下一句，跟着用下一句的词级数据。
   // words 文本与整句文本逐字符一致（合并层已保证），宽度不由 React 管，rAF 直接写 DOM。
-  const karaoke = !upcoming ? karaokeWords({ text: state.lyric, words: state.lyricWords }) : null
+  // 只在主窗口送来真实词级时间轴时才扫色；没有数据（或逐字开关关闭）保持普通整句文本。
+  const karaoke = !upcoming && state.lyricWords?.length ? karaokeWords({ text: state.lyric, words: state.lyricWords }) : null
 
   // 行 / 列开关时，主进程已经按“靠近边框的边不动”把窗口移到位；
   // 这里让胶囊从旧尺寸和反向位移滑到最终尺寸，避免边框和已有歌词闪现。
@@ -366,4 +367,5 @@ export default function FloatingLyrics() {
     </div>
   )
 }
+
 
