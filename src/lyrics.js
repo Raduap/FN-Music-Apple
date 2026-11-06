@@ -43,8 +43,21 @@ function mergeTranslations(lines) {
   return out
 }
 
+const hasLyricText = (line) => !!String(line?.text || '').trim()
+
 /** 歌词里是否含译文（用于决定要不要显示翻译开关） */
 export const hasTranslation = (lines) => lines.some((l) => l.translation)
+
+/** 是否存在“下一句”（用于让胶囊尺寸在一首歌内保持恒定，避免伴奏句跳变） */
+export function hasNextLyric(lines) {
+  let found = false
+  for (const line of lines) {
+    if (!hasLyricText(line)) continue
+    if (found) return true
+    found = true
+  }
+  return false
+}
 
 export const peekLyrics = (id) => done.get(id)
 
@@ -70,4 +83,34 @@ export function lineAt(lines, t) {
     if (lines[mid].time <= t) { ans = mid; lo = mid + 1 } else hi = mid - 1
   }
   return ans
+}
+
+/** 从 from 之后找下一句真正有文本的歌词，跳过纯伴奏 / 间隔空行 */
+function nextLyricLine(lines, from) {
+  for (let i = from + 1; i < lines.length; i++) {
+    if (hasLyricText(lines[i])) return { line: lines[i], index: i }
+  }
+  return { line: null, index: -1 }
+}
+
+/**
+ * 悬浮歌词用的“一帧”：当前句原文 + 译文 + 下一句原文。
+ * “下一句”会跳过伴奏 / 间隔空行；前奏时把首句作为“待播放”预告返回。
+ * 同时带下一句的再下一句，方便伴奏期间仍显示真正的后续歌词而不是空行。
+ * 纯函数，便于单测；当前句下标沿用 lineAt 的语义。
+ */
+export function lyricFrame(lines, t) {
+  const i = lineAt(lines, t)
+  const cur = i >= 0 ? lines[i] : null
+  const next = nextLyricLine(lines, i)
+  const afterNext = next.index >= 0 ? nextLyricLine(lines, next.index) : { line: null }
+  return {
+    index: i,
+    lyric: cur?.text || '',
+    lyricTrans: cur?.translation || '',
+    nextLyric: next.line?.text || '',
+    nextLyricTrans: next.line?.translation || '',
+    nextNextLyric: afterNext.line?.text || '',
+    nextNextLyricTrans: afterNext.line?.translation || '',
+  }
 }
