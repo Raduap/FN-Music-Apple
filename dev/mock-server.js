@@ -142,7 +142,9 @@ function wav(track) {
 const wavCache = new Map()
 
 const SHOWCASE_LYRICS = ['晚风把街灯一盏盏点亮', '我把想说的话写进信里', '寄给明天的自己', '路过的云都慢下来', '像在等一首歌唱完', '你说远方并不远', '只要旋律还在耳边', '海浪替我们记住', '那年夏天的形状', '走过人海 也走过长街', '每一步都踩着节拍', '如果你也在听', '就让这一刻再长一点', '灯光落进眼睛里', '像星星落进海里', '我们终会在某个路口', '把故事轻轻讲完', '晚安 城市', '晚安 我的歌']
+const MOCK_LRC_FILE = process.env.FNM_MOCK_LRC_FILE || ''
 function lyric(track) {
+  if (MOCK_LRC_FILE) return require('fs').readFileSync(MOCK_LRC_FILE, 'utf8')
   if (SHOWCASE) {
     const dur = Math.min(90, track.duration / 1000), step = (dur - 4) / SHOWCASE_LYRICS.length
     return SHOWCASE_LYRICS.map((l, i) => { const t = 2 + i * step; return `[${String(Math.floor(t / 60)).padStart(2, '0')}:${(t % 60).toFixed(2).padStart(5, '0')}]${l}` }).join('\n')
