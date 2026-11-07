@@ -82,3 +82,22 @@ export function karaokeProgress(line, t) {
   return karaokeFills(line, t)?.fills || null
 }
 
+/**
+ * 把逐帧目标宽度平滑成实际显示宽度，纯函数，供全屏页 / 悬浮窗共用。
+ * 契约（与 FeiNiuMusic 的裁切高亮一致）：
+ * - 正常播放：宽度只增不减，绝不「铺色 → 褪色 → 再铺色」；
+ * - 用指数缓动逼近目标，消除逐词切换造成的硬跳；
+ * - 需要允许回退（拖动 / seek）时，调用方检测时间回退后重置 prev（传 null），
+ *   而不是靠猜「数据变小的幅度」——脏数据也会让目标变小，用幅度判断必然误伤。
+ * prev 为 null 或长度不一致（切句 / 换歌）时直接采用目标。
+ */
+export function smoothFills(prev, target, { factor = 0.35, epsilon = 0.002 } = {}) {
+  if (!target) return null
+  if (!prev || prev.length !== target.length) return target.slice()
+  return target.map((v, i) => {
+    const p = prev[i] ?? v
+    if (!(v > p)) return p
+    const next = p + (v - p) * factor
+    return Math.abs(next - v) < epsilon ? v : next
+  })
+}

@@ -159,15 +159,41 @@ const MIN_TEXT_OVERLAP = 0.5
  * 映射方式：按本地文本（去空白）的字符序号比例对应远端词序号。
  */
 /**
- * 把远端逐字时间映射成本地行文本的「逐字符时间轴」：
+ * 把远端逐字时间映射成本地行文本的词级时间轴：
  * 返回的 spans 拼接后与本地行文本完全一致（含空格），远端只贡献时间，
  * 显示内容一个字符都不改。空格归入其后的词首（无后词时归入前词尾）。
+ *
+ * 优先「按词对齐」：本地文本的空白分词数量与远端词数一致时，一一对应。
+ * 这样 `Uh, uh huh uh huh` 这种句子不会被按字符比例切成 ` uh h` 半截词——
+ * 半截词是扫色跳变、反复铺色褪色的直接来源之一。
+ * 分词数量对不上（不同来源分行 / 断词差异）时，退回按字符比例映射。
  */
+function localWhitespaceTokens(text) {
+  const tokens = []
+  let pending = ''
+  for (const m of String(text || '').matchAll(/\S+|\s+/g)) {
+    const chunk = m[0]
+    if (!chunk.trim()) { pending += chunk; continue }
+    tokens.push(pending + chunk)
+    pending = ''
+  }
+  if (pending && tokens.length) tokens[tokens.length - 1] += pending
+  return tokens
+}
+
 function alignCharTimeline(localText, remoteWords) {
-  const chars = [...String(localText || '')]
+  const text = String(localText || '')
+  const chars = [...text]
   const n = remoteWords.length
   const solid = chars.filter((c) => /\S/.test(c)).length
   if (!solid || !n) return null
+  const tokens = localWhitespaceTokens(text)
+  if (tokens.length === n) {
+    return tokens.map((t, i) => {
+      const w = remoteWords[i] || {}
+      return { text: t, time: w.time, end: w.end ?? w.time }
+    })
+  }
   let solidIdx = 0
   const wordIndexOf = chars.map((c) => (/\S/.test(c) ? Math.min(n - 1, Math.floor((solidIdx++ * n) / solid)) : -1))
   // 每个远端词收集自己的字符（把紧随其后的空格带上）
@@ -186,6 +212,41 @@ function alignCharTimeline(localText, remoteWords) {
     .map((chars2, wi) => ({ text: chars2.join(''), w: remoteWords[wi] }))
     .filter((s) => s.text)
     .map(({ text, w }) => ({ text, time: w.time, end: w.end ?? w.time }))
+}
+
+// 词级时间轴清洗：源数据里常有 0 时间戳 / 倒退 / 重叠 / 零时长（实测 APT. 一行 14 处），
+// 直接用会让进度在帧与帧之间前后抖动，视觉上就是「铺色 → 褪色 → 再铺色」。
+// 这里只修正时间，不动文本：时间戳只许往前走、每词至少给一点时长，保证进度随时间单调。
+const MIN_WORD_DUR = 0.03
+// rAF 每帧都会调用 karaokeFills；同一行 words 数组引用稳定，缓存清洗结果避免每帧重复分配。
+const sanitizedCache = new WeakMap()
+function sanitizeWordTimeline(words, { start = null, end = null } = {}) {
+  if (!Array.isArray(words) || !words.length) return []
+  const cached = sanitizedCache.get(words)
+  if (cached && cached.start === start && cached.end === end) return cached.words
+  const lineStart = Number.isFinite(start) ? Number(start) : null
+  const lineEnd = Number.isFinite(end) ? Number(end) : null
+  const out = []
+  let prevEnd = null
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i] || {}
+    let t = Number(w.time)
+    let e = Number(w.end)
+    if (!Number.isFinite(t)) t = prevEnd ?? lineStart ?? 0
+    // 首词时间戳是 0 / 负数，但整行明明在几十秒处：按行起点修正
+    if (i === 0 && t <= 0 && lineStart != null && lineStart > 1) t = lineStart
+    // 时间倒退 / 与前词重叠：顺延到前词结束，只许往前走
+    if (prevEnd != null && t < prevEnd) t = prevEnd
+    if (!Number.isFinite(e) || e < t) e = t + MIN_WORD_DUR
+    if (e - t < MIN_WORD_DUR) e = t + MIN_WORD_DUR
+    out.push({ ...w, time: t, end: e })
+    prevEnd = e
+  }
+  // 末词越过行尾时收口（保留最小时长，避免二次清洗来回抖动）
+  const last = out[out.length - 1]
+  if (lineEnd != null && last.end > lineEnd && lineEnd - last.time >= MIN_WORD_DUR) last.end = lineEnd
+  sanitizedCache.set(words, { start, end, words: out })
+  return out
 }
 
 /**
@@ -232,7 +293,7 @@ function mergeSyllableLines(lines, syllables, debug = null) {
     const s = syllables[si]
     if (!s.words?.length) return false
     const timeline = alignCharTimeline(out[li].text, s.words)
-    if (timeline) out[li].words = timeline
+    if (timeline) out[li].words = sanitizeWordTimeline(timeline, { start: out[li].time, end: s.end })
     if (Number.isFinite(s.end) && !Number.isFinite(out[li].end)) out[li].end = s.end
     used[si] = true
     stats.matched++
@@ -304,22 +365,181 @@ function mergeSyllableLines(lines, syllables, debug = null) {
 }
 
 
+// ---------- 智能逐字补全（无词级数据时的预测） ----------
+// 参考 FeiNiuMusic 的 _generateWords：不是把整句时长按字符数平均，
+// 而是按 token 权重分配，让英文单词、中文单字、标点和停顿各拿到更自然的时间比例。
+// 只在用户显式开启「智能逐字补全」时使用；有真实词级时间的行永远优先用真实数据。
+const clampNum = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
+const isAsciiAlnum = (ch) => ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+const isCjkChar = (ch) => /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/.test(ch)
+function isPunctChar(ch) {
+  if (',.!?:;\'"()[]{}-'.includes(ch)) return true
+  return '、。，．！？：；…—'.includes(ch)
+}
+function punctPauseWeight(ch) {
+  if ('。！？!?'.includes(ch)) return 0.9
+  if ('、，．,.;:；：'.includes(ch)) return 0.55
+  if ('…—'.includes(ch)) return 0.8
+  return 0.35
+}
+function latinTokenWeight(len) {
+  if (len <= 0) return 0.6
+  return clampNum(0.55 + 0.14 * len, 0.6, 2.8)
+}
+function charTokenWeight(ch) {
+  if (isCjkChar(ch)) return 1
+  if (isAsciiAlnum(ch)) return 0.55
+  return 0.9
+}
+function tokenizeWithoutTiming(text) {
+  const chars = Array.from(String(text || ''))
+  const raw = []
+  for (let i = 0; i < chars.length;) {
+    const ch = chars[i]
+    if (/\s/.test(ch)) { raw.push({ text: ch, weight: 0 }); i++; continue }
+    if (isAsciiAlnum(ch)) {
+      let word = ''
+      while (i < chars.length && (isAsciiAlnum(chars[i]) || chars[i] === '\u0027' || chars[i] === '\u2019')) { word += chars[i]; i++ }
+      raw.push({ text: word, weight: latinTokenWeight(word.length) })
+      continue
+    }
+    raw.push({ text: ch, weight: charTokenWeight(ch) })
+    i++
+  }
+  // 空白并入前一个 token（不单独占时间）；标点并入前一个 token 并追加停顿权重。
+  // 行首空白先暂存，并到第一个 token 上，保证拼接后逐字符等于原文。
+  const tokens = []
+  let lead = ''
+  for (const t of raw) {
+    if (!t.text) continue
+    if (/\s/.test(t.text[0])) {
+      if (!tokens.length) { lead += t.text; continue }
+      tokens[tokens.length - 1].text += t.text
+      continue
+    }
+    if (lead) { t.text = lead + t.text; lead = '' }
+    if (isPunctChar(t.text)) {
+      if (!tokens.length) { tokens.push({ text: t.text, weight: Math.max(0.2, t.weight) }); continue }
+      const last = tokens[tokens.length - 1]
+      last.text += t.text
+      last.weight += punctPauseWeight(t.text)
+      continue
+    }
+    tokens.push({ ...t })
+  }
+  return tokens
+}
+/**
+ * 按 token 权重把 [start, end] 分配给一句歌词，返回与原文逐字符一致的 words。
+ * 单 token 时长做了 min/max 钳制，并做最多 8 轮再平衡，让总时长精确回到区间长度。
+ */
+function predictWordTimings(text, start, end) {
+  const tokens = tokenizeWithoutTiming(text)
+  if (!tokens.length) return null
+  const t0 = Number.isFinite(start) ? Number(start) : 0
+  let t1 = Number.isFinite(end) && end > t0 ? Number(end) : t0 + Math.max(0.6, String(text || '').length * 0.14)
+  const totalMs = Math.max(1, Math.round((t1 - t0) * 1000))
+  const count = tokens.length
+  const weightSum = tokens.reduce((n, t) => n + (Number.isFinite(t.weight) ? t.weight : 0), 0)
+  if (!(weightSum > 0)) return null
+  const minMs = clampNum(Math.floor(totalMs / (count * 3)), 20, 80)
+  const maxMs = Math.min(1600, Math.max(minMs, clampNum(Math.round(totalMs * 0.45), 120, 1600)))
+  const durations = tokens.map((t) => clampNum(Math.round(totalMs * (t.weight / weightSum)), minMs, maxMs))
+  let diff = totalMs - durations.reduce((n, d) => n + d, 0)
+  for (let iter = 0; iter < 8 && diff !== 0; iter++) {
+    if (diff > 0) {
+      const cand = durations.map((d, i) => (d < maxMs ? i : -1)).filter((i) => i >= 0)
+      const candWeight = cand.reduce((n, i) => n + tokens[i].weight, 0)
+      if (!cand.length || candWeight <= 0) break
+      for (const i of cand) {
+        if (diff <= 0) break
+        const add = Math.max(1, Math.floor(diff * (tokens[i].weight / candWeight)))
+        const applied = Math.min(add, maxMs - durations[i])
+        durations[i] += applied
+        diff -= applied
+      }
+    } else {
+      const cand = durations.map((d, i) => (d > minMs ? i : -1)).filter((i) => i >= 0)
+      const candWeight = cand.reduce((n, i) => n + tokens[i].weight, 0)
+      if (!cand.length || candWeight <= 0) break
+      for (const i of cand) {
+        if (diff >= 0) break
+        const sub = Math.max(1, Math.floor(-diff * (tokens[i].weight / candWeight)))
+        const applied = Math.min(sub, durations[i] - minMs)
+        durations[i] -= applied
+        diff += applied
+      }
+    }
+  }
+  if (diff !== 0) {
+    for (let i = 0; i < count && diff !== 0; i++) {
+      if (diff > 0 && durations[i] < maxMs) { durations[i]++; diff-- }
+      else if (diff < 0 && durations[i] > minMs) { durations[i]--; diff++ }
+    }
+  }
+  const words = []
+  let accMs = 0
+  for (let i = 0; i < count; i++) {
+    const ws = t0 + accMs / 1000
+    accMs += durations[i]
+    // 末词不强行拉到句尾：长间奏 / 歌曲末句会把最后一个 token 拉成慢爬。
+    // 提前扫完让高亮停在全亮即可，这也是正常卡拉OK的行为。
+    const we = Math.min(t1, t0 + accMs / 1000)
+    if (we > ws) words.push({ text: tokens[i].text, time: ws, end: we })
+  }
+  return words.length ? words : null
+}
+/**
+ * 有真实词级时间的行原样保留，其余可唱行按 [本行起点, 下一句起点] 预测逐字时间轴。
+ * 行尾按 FeiNiuMusic 的做法提前 clamp(行时长*8%, 60, 220)ms 收口，
+ * 避免高亮扫到下一句已起唱之后。
+ */
+function predictKaraokeLines(lines, { duration = 0 } = {}) {
+  if (!Array.isArray(lines) || !lines.length) return lines
+  const singable = (l) => !!l && Number.isFinite(l.time) && l.time >= 0 && !!String(l.text || '').trim()
+  const nextStart = new Array(lines.length).fill(null)
+  let nxt = null
+  for (let i = lines.length - 1; i >= 0; i--) {
+    nextStart[i] = nxt
+    if (singable(lines[i])) nxt = lines[i].time
+  }
+  return lines.map((line, i) => {
+    if (!singable(line) || line.words?.length) return line
+    const start = Number(line.time)
+    const following = nextStart[i]
+    let end = Number.isFinite(line.end) && line.end > start ? Number(line.end) : 0
+    if (!(end > start)) end = following ?? (Number(duration) > start ? Number(duration) : start + 3)
+    if (!(end > start)) end = start + 3
+    if (following != null) {
+      const buffer = clampNum(Math.round((end - start) * 1000 * 0.08), 60, 220) / 1000
+      end = Math.max(start + 0.001, end - buffer)
+    }
+    const words = predictWordTimings(line.text, start, end)
+    return words ? { ...line, words, end } : line
+  })
+}
+
 // ---------- 卡拉OK进度 ----------
 function karaokeFills(line, t) {
-  const words = line?.words || []
+  // 防御性清洗：兼容历史 / 外部传入的脏时间轴，保证进度只随时间单调前进
+  const words = sanitizeWordTimeline(line?.words || [], { start: line?.time, end: line?.end })
   const text = String(line?.text || '')
   const n = words.length
   if (!n) return null
-  // 顺序定位每个词在整句文本中的字符区间（包含词间空格）
+  // 顺序定位每个词在整句文本中的字符区间（包含词间空格）。
+  // 必须保证区间不重叠：早期版本用 indexOf 后 cursor 只 +1，一旦词文本与整句
+  // 不能逐字对上（源数据半截词 / 预测分词差异），区间会重叠，pos 就会前后跳。
   const spans = []
   let cursor = 0
   let total = 0
   for (const w of words) {
-    const idx = text.indexOf(w.text, cursor)
-    const start = idx >= 0 ? idx : total
-    spans.push({ start, len: Math.max(1, String(w.text).length) })
-    total = start + spans[spans.length - 1].len
-    cursor = start + 1
+    const wt = String(w.text ?? '')
+    const len = Math.max(1, wt.length)
+    const idx = wt ? text.indexOf(wt, cursor) : -1
+    const start = idx >= 0 ? idx : cursor
+    spans.push({ start, len })
+    total = start + len
+    cursor = total
   }
   const t0 = words[0].time
   const lastEnd = words[n - 1].end ?? (words[n - 1].time + 0.5)
@@ -353,9 +573,17 @@ export {
   mergeTranslations,
   hasTranslation,
   alignCharTimeline,
+  sanitizeWordTimeline,
   normForMatch,
   mergeSyllableLines,
   pickSyllableCandidate,
   karaokeFills,
+  predictWordTimings,
+  predictKaraokeLines,
   textBagOverlap,
 }
+
+
+
+
+

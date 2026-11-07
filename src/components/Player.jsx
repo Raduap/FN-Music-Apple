@@ -4,8 +4,9 @@ import { useShallow } from 'zustand/react/shallow'
 import { api } from '../api'
 import { getAudio, usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
-import { hasTranslation, karaokeFills, lineAt, loadLyrics, mergeSyllableLines, pickSyllableCandidate, toLines } from '../lyrics'
+import { hasTranslation, karaokeFills, lineAt, loadLyrics, mergeSyllableLines, pickSyllableCandidate, predictKaraokeLines, toLines } from '../lyrics'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
+import { smoothFills } from '../karaoke'
 import { closeFullPlayer, openFullPlayer } from '../motion'
 import * as Icon from '../icons'
 
@@ -267,6 +268,7 @@ function useLyrics(song) {
   const id = song?.id
   const translationEnabled = useUI((s) => s.experimental?.enabled)
   const syllablesEnabled = useUI((s) => s.syllables)
+  const syllablePredict = useUI((s) => s.syllablePredict)
   const syllablesDebug = useUI((s) => s.syllablesDebug)
   const sourceEnabled = useUI((s) => s.experimental?.sourceEnabled)
   const aiFallback = useUI((s) => s.experimental?.aiFallback)
@@ -309,12 +311,14 @@ function useLyrics(song) {
       } catch (e) {
         if (syllablesDebug) reason = '逐字抓取失败：' + (e?.message || '未知错误') + '，退回逐行歌词'
       }
+      // 「智能逐字补全」：有真实词级时间的行原样保留，缺的行按字长 / 停顿预测。
+      if (syllablePredict) merged = predictKaraokeLines(merged, { duration: song?.duration || 0 })
       if (syllablesDebug && reason) useUI.getState().showToast(`逐字调试 · ${song?.title || ''}：${reason}`)
       return merged
     }
     enrich().then((lines) => { if (!dead) setState({ lines, loading: false }) })
     return () => { dead = true }
-  }, [id, translationEnabled, syllablesEnabled, syllablesDebug, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [id, translationEnabled, syllablesEnabled, syllablePredict, syllablesDebug, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return state
 }
@@ -420,19 +424,28 @@ export function LyricsView({ song, big = false }) {
     if (!el) return
     let raf = 0
     const line = lines[active]
+    let shown = null
+    let lastT = null
     const step = () => {
-      const k = karaokeFills(line, (getAudio()?.currentTime || 0) + 0.25)
+      const now = (getAudio()?.currentTime || 0) + 0.25
+      // 拖动 / seek 导致时间回退时丢弃已显示宽度，让下一帧贴齐目标（允许回退）。
+      if (lastT != null && now < lastT - 0.05) shown = null
+      lastT = now
+      const k = karaokeFills(line, now)
+      // 只增不减 + 缓动：正常播放宽度绝不倒着褪色。
+      shown = smoothFills(shown, k?.fills || null)
       const fills = el.querySelectorAll(`[data-i="${active}"] .kw-fill`)
       fills.forEach((node, wi) => {
-        const f = k?.fills[wi] ?? 0
-        node.style.width = `${(f * 100).toFixed(2)}%`
+        const f = shown?.[wi] ?? 0
+        // 扫色方向交给 CSS：横排用 width，竖排用 height，都读这个变量。
+        node.style.setProperty('--fill', f.toFixed(4))
       })
       raf = requestAnimationFrame(step)
     }
     raf = requestAnimationFrame(step)
     return () => {
       cancelAnimationFrame(raf)
-      el.querySelectorAll(`[data-i="${active}"] .kw-fill`).forEach((node) => { node.style.width = '0%' })
+      el.querySelectorAll(`[data-i="${active}"] .kw-fill`).forEach((node) => { node.style.setProperty('--fill', '0') })
     }
   }, [karaokeActive, active, lines])
   // 译文补入（lines 引用变化）或翻译显隐时，译文行高度会连续变化，其余歌词随之平移。

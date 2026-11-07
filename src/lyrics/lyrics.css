@@ -151,10 +151,16 @@ html, body, #root { touch-action: none; }
 .lmain.karaoke .kw-fill {
   position: absolute;
   inset: 0;
-  width: 0;
+  /* --fill 由 rAF 逐帧写入（0..1）：横排按宽度扫，竖排按高度扫。 */
+  width: calc(var(--fill, 0) * 100%);
   overflow: hidden;
   color: var(--karaoke-color, var(--accent));
   pointer-events: none;
+}
+/* 竖排：文字自上而下排列，扫色也必须自上而下，所以改为增长高度。 */
+.lw.vertical .lmain.karaoke .kw-fill {
+  width: 100%;
+  height: calc(var(--fill, 0) * 100%);
 }
 .lmain.karaoke.upcoming { color: var(--fg3); }
 .lmain {

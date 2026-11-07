@@ -356,7 +356,8 @@
 .lt-main.karaoke .kw-fill {
   position: absolute;
   inset: 0;
-  width: 0;
+  /* --fill 由 rAF 逐帧写入（0..1），不是写死宽度，所以扫色是纯合成层动画 */
+  width: calc(var(--fill, 0) * 100%);
   overflow: hidden;
   color: var(--accent);
   pointer-events: none;

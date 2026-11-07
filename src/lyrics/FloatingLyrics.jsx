@@ -9,7 +9,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import SPEC from '../../electron/lyricsVisualSpec.json'
 import { lyricPlaceholder } from '../lyrics'
-import { karaokeClock, karaokeProgress, karaokeWords } from '../karaoke'
+import { karaokeClock, karaokeProgress, karaokeWords, smoothFills } from '../karaoke'
 
 const bridge = window.lyricsWin
 const { defaultStyle: DEFAULT_STYLE, fontStacks: FONT_STACKS } = SPEC
@@ -197,30 +197,45 @@ export default function FloatingLyrics() {
   }, [state.currentTime, state.at, state.playing, state.duration, edge, s.showProgress])
 
   // 逐字扫色：悬浮窗没有 audio 元素，用「上次广播的 currentTime + 本地流逝」推算时钟，
-  // 每帧用 karaokeFills 的连续进度边直接写 .kw-fill 宽度；暂停 / 切句时贴齐或清零。
-  // 这与全屏页 LyricsView 的扫色语义一致，只是时钟来源不同。
+  // 每帧用 karaokeFills 的连续进度边直接写 .kw-fill 的 --fill；暂停 / 切句时贴齐或清零。
+  // 关键：rAF 循环不能每秒随广播重建——那样每帧状态会被清空、扫色 1Hz 闪跳。
+  // 所以循环只依赖「是否扫色 + 当前句文本」，时钟从 stateRef 读取最新广播值。
   const mainRef = useRef(null)
+  const stateRef = useRef(state)
+  stateRef.current = state
+  // karaoke 每次渲染都是新对象；放进依赖会让 rAF 每秒重建、扫色闪跳。
+  // 用 ref 持最新值，effect 只依赖「本句是否该扫色」与「歌词下标」。
+  const karaokeRef = useRef(null)
+  karaokeRef.current = karaoke
   const karaokeOn = !!karaoke && !!s.karaoke
   useEffect(() => {
     if (!karaokeOn) return
     const el = mainRef.current
     if (!el) return
     let raf = 0
+    let shown = null
+    let lastT = null
     const step = () => {
-      const t = karaokeClock(state) + 0.25
-      const fills = karaokeProgress(karaoke, t)
+      const t = karaokeClock(stateRef.current) + 0.25
+      // 与全屏页同款：时间回退（拖动 / seek / 广播校正）时丢弃已显示宽度。
+      if (lastT != null && t < lastT - 0.05) shown = null
+      lastT = t
+      const fills = karaokeProgress(karaokeRef.current, t)
+      // 正常播放只增不减；回退已在上面的时间检测里处理。
+      shown = smoothFills(shown, fills)
       el.querySelectorAll('.kw-fill').forEach((node, wi) => {
-        const f = fills?.[wi] ?? 0
-        node.style.width = `${(f * 100).toFixed(2)}%`
+        const f = shown?.[wi] ?? 0
+        // 扫色方向交给 CSS：横排用 width，竖排用 height，都读这个变量。
+        node.style.setProperty('--fill', f.toFixed(4))
       })
       raf = requestAnimationFrame(step)
     }
     raf = requestAnimationFrame(step)
     return () => {
       cancelAnimationFrame(raf)
-      el.querySelectorAll('.kw-fill').forEach((node) => { node.style.width = '0%' })
+      el.querySelectorAll('.kw-fill').forEach((node) => { node.style.setProperty('--fill', '0') })
     }
-  }, [karaokeOn, karaoke, state]) // state.currentTime / at / playing 变化时贴齐真实时间；karaokeClock 只读这三个字段
+  }, [karaokeOn, state.lyricIndex]) // 只在这句开始扫色 / 换句时重建；播放时钟与词级数据都走 ref
 
   const startResize = (dir) => (e) => {
     if (e.button !== 0) return
