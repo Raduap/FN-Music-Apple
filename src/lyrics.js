@@ -1,10 +1,10 @@
 // 歌词加载与缓存：歌词面板、全屏播放页和悬浮球共用
 import { api } from './api'
 // 纯逻辑（LRC 解析 / 双语合并 / 字符对齐 / 候选择优 / 卡拉OK进度）统一放在
-// electron/lyricsMerge.js，供渲染层与 dev 评测工具复用同一份实现。
-import { toLines, hasTranslation } from '../electron/lyricsMerge.js'
+// electron/lyricsMerge.mjs，供渲染层与 dev 评测工具复用同一份实现。
+import { toLines, hasTranslation } from '../electron/lyricsMerge.mjs'
 // 保持既有导出面：其它模块历史上从 ./lyrics 引入这些纯函数。
-export { toLines, hasTranslation, mergeTranslations, mergeSyllableLines, pickSyllableCandidate, karaokeFills } from '../electron/lyricsMerge.js'
+export { toLines, hasTranslation, mergeTranslations, mergeSyllableLines, pickSyllableCandidate, karaokeFills, textBagOverlap } from '../electron/lyricsMerge.mjs'
 
 const MAX = 200
 const raw = new Map() // id -> 原始歌词（始终保留，关闭翻译时返回这一份）

@@ -16,9 +16,9 @@ export function fmtTotal(sec) {
 }
 
 // ---------- LRC 解析 ----------
-// 实现统一在 electron/lyricsMerge.js（纯逻辑零依赖），这里仅做再导出，
+// 实现统一在 electron/lyricsMerge.mjs（纯逻辑零依赖），这里仅做再导出，
 // 保证既有 import 路径与测试不变。
-export { parseLrc } from '../electron/lyricsMerge.js'
+export { parseLrc } from '../electron/lyricsMerge.mjs'
 
 // ---------- 封面主色（用于全屏播放页背景） ----------
 const colorCache = new Map()

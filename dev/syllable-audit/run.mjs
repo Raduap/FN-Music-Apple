@@ -16,7 +16,7 @@ import { app } from 'electron'
 import { createRequire } from 'node:module'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const here = dirname(fileURLToPath(import.meta.url))
@@ -25,8 +25,8 @@ const root = resolve(here, '..', '..')
 const { fetchSyllables, SYLLABLE_SOURCES } = require(join(root, 'electron', 'syllables.js'))
 const { loadLibrary } = require(join(here, 'library.js'))
 const { stratifiedSample } = require(join(here, 'sample.js'))
-const { scoreSource } = require(join(here, 'score.js'))
-const L = require(join(root, 'electron', 'lyricsMerge.js'))
+const { scoreSource } = await import(pathToFileURL(join(here, 'score.mjs')).href)
+const L = await import(pathToFileURL(join(root, 'electron', 'lyricsMerge.mjs')).href)
 
 function parseArgs(argv) {
   const a = {}

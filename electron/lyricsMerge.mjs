@@ -1,7 +1,7 @@
 // 逐字歌词的纯逻辑：LRC 解析 -> 双语合并 -> 词级时间轴对齐 -> 候选择优 -> 卡拉OK进度。
-// CJS、零依赖，供渲染层与 dev 评测工具共用同一份实现（单一事实来源）。
-// 注意：这里只放纯函数，不引用 react / window / electron。
-'use strict'
+// ESM、零依赖，供渲染层（src/，Vite）与 dev 审计工具（Node/Electron）共用同一份实现。
+// 注意：这里只放纯函数，不引用 react / window / electron，也不要用 CJS 的 module.exports，
+// 否则 Vite dev 直接以浏览器原生 ESM 加载时会报「does not provide an export named ...」。
 
 // ---------- LRC 解析 ----------
 function parseLrc(text) {
@@ -126,6 +126,27 @@ function mergeTranslations(lines) {
 const CHAR_EQUIV = { '妳': '你', '麽': '么', '裏': '里', '著': '着', '為': '为', '於': '于', '後': '后', '發': '发', '颱': '台' }
 const normForMatch = (v) => String(v || '').replace(/\s+/g, '').replace(/[妳麽裏著為於後發颱]/g, (c) => CHAR_EQUIV[c] || c)
 
+// 全曲「字符袋」重叠：把两侧歌词各自拆成字符多重集，取交集 / 较小总量。
+// 用于快速判断「本地歌词与候选是不是同一首歌」——同曲异版（Live / DJ / 重制）
+// 的字符构成高度相似（实测 >=0.65），而完全不同的歌（哪怕歌名相同、时长相近）
+// 重叠通常在 0.4 以下。它比逐行文本比对更耐受分行差异与标点差异。
+function textBagOverlap(a, b) {
+  const bag = (s) => {
+    const m = new Map()
+    for (const c of normForMatch(s)) m.set(c, (m.get(c) || 0) + 1)
+    return m
+  }
+  const A = bag(a), B = bag(b)
+  if (!A.size || !B.size) return 0
+  let totalA = 0, totalB = 0, inter = 0
+  for (const v of A.values()) totalA += v
+  for (const v of B.values()) totalB += v
+  for (const [c, v] of A) inter += Math.min(v, B.get(c) || 0)
+  return inter / Math.max(1, Math.min(totalA, totalB))
+}
+// 低于此重叠视为「不同歌」，不做任何按时间的硬配（宁可少配，不产假逐字）。
+const MIN_TEXT_OVERLAP = 0.5
+
 /**
  * 把远端逐字时间映射到本地行文本：显示内容永远来自本地 LRC 的字，
  * 远端只贡献时间轴。字数一致时按位替换；不一致时按比例取位，
@@ -243,9 +264,15 @@ function mergeSyllableLines(lines, syllables, debug = null) {
   const remoteSpan = span(syllables.filter(singable))
   const spanRatio = localSpan > 0 && remoteSpan > 0 ? Math.min(localSpan / remoteSpan, remoteSpan / localSpan) : 0
   const anchorRatio = singableLocal ? stats.matchedPass1 / singableLocal : 0
+  // 文本证据门控：本地与候选若是「同一首歌的不同版本」，字符构成高度相似；
+  // 若歌名相同但其实是完全不同的歌（翻唱改名 / 同名词曲），字符重叠会很低。
+  // 这种情况连时间跨度都可能接近，仅凭结构门控挡不住，必须额外看文本证据。
+  const localText = out.filter(singable).map((l) => l.text).join('')
+  const remoteText = syllables.filter(singable).map((l) => l.text).join('')
+  const textOverlap = textBagOverlap(localText, remoteText)
   // 行数太少时无法判断结构（跨度可能为 0），维持旧行为，避免误伤短片与单测。
-  const pass2 = singableLocal < 4 || spanRatio >= 0.8 || anchorRatio >= 0.25
-  stats.structure = { spanRatio: +spanRatio.toFixed(3), anchorRatio: +anchorRatio.toFixed(3), pass2 }
+  const pass2 = singableLocal < 4 || (textOverlap >= MIN_TEXT_OVERLAP && (spanRatio >= 0.8 || anchorRatio >= 0.25))
+  stats.structure = { spanRatio: +spanRatio.toFixed(3), anchorRatio: +anchorRatio.toFixed(3), textOverlap: +textOverlap.toFixed(3), pass2 }
 
   // Pass 2：剩余行做单调顺序配对（双指针，±5s），文本不一致也算命中——
   // 不同来源对同一句的分行/标点常有差异，时间对上的词级时间轴照样可用。
@@ -320,7 +347,7 @@ function karaokeFills(line, t) {
   return { fills, starts: spans.map((s) => s.start), spans: spans.map((s) => s.len), total, pos }
 }
 
-module.exports = {
+export {
   parseLrc,
   toLines,
   mergeTranslations,
@@ -330,4 +357,5 @@ module.exports = {
   mergeSyllableLines,
   pickSyllableCandidate,
   karaokeFills,
+  textBagOverlap,
 }

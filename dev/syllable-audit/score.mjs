@@ -1,8 +1,6 @@
 // 逐字歌词审计：单曲 × 单源 的评测指标。
-// 复用生产实现 electron/lyricsMerge.js（LRC 解析 / 合并 / 择优），保证指标与界面所见一致。
-'use strict'
-
-const L = require('../../electron/lyricsMerge.js')
+// 复用生产实现 electron/lyricsMerge.mjs（LRC 解析 / 合并 / 择优），保证指标与界面所见一致。
+import * as L from '../../electron/lyricsMerge.mjs'
 
 const singable = (l) => !!String(l?.text || '').trim()
 
@@ -94,4 +92,4 @@ function scoreSource(localLines, candidates = []) {
   return { totalSingable: total, localTexts, perCand, pickedIdx, picked: pickedIdx >= 0 ? perCand[pickedIdx] : null }
 }
 
-module.exports = { scoreSource, singable }
+export { scoreSource, singable }

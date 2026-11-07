@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toLines, mergeTranslations } from '../src/lyrics.js'
+import { toLines, mergeTranslations, mergeSyllableLines, textBagOverlap } from '../src/lyrics.js'
 
 const lrc = (...rows) => rows.join('\n')
 
@@ -81,5 +81,32 @@ describe('双语歌词合并：译文不丢', () => {
     const joined = out.map((l) => `${l.text}|${l.translation || ''}`).join(' ')
     expect(joined).toContain('Bonjour')
     expect(joined).toContain('Monde')
+  })
+})
+
+
+describe('逐字合并 · 文本证据门控（防把不同歌配上）', () => {
+  const remote = (text, t, parts) => ({ text, time: t, end: t + 2, words: parts.map((p, i) => ({ text: p, time: t + i, end: t + i + 0.9 })) })
+
+  it('字符串袋重叠能区分「同曲异版」与「不同歌」', () => {
+    // 同曲异版：字符构成高度相似
+    expect(textBagOverlap('乌云在我们心里搁下一块阴影', '乌云在我们心里搁下一块阴影（Live）')).toBeGreaterThan(0.8)
+    // 不同歌：即便歌名 / 时长相同，字符重合也很低
+    expect(textBagOverlap('信劄拆封誰為難不過寥寥數行', '我在人民广场吃炸鸡喝啤酒')).toBeLessThan(0.5)
+  })
+
+  it('字符构成完全不同时，即使行数与时间跨度接近也不做硬配', () => {
+    const local = Array.from({ length: 10 }, (_, i) => ({ time: i * 10, text: '信劄拆封誰為難不過寥寥數行' }))
+    // 候选行数、跨度都与本地一致，但文本是完全不同的歌
+    const other = Array.from({ length: 10 }, (_, i) => remote('我在人民广场吃炸鸡喝啤酒', i * 10, ['我在人民广场吃炸鸡喝啤酒']))
+    const merged = mergeSyllableLines(local, other)
+    expect(merged.filter((l) => l.words?.length).length).toBe(0)
+  })
+
+  it('同曲异版（含 Live 标记）仍照常配对', () => {
+    const local = Array.from({ length: 10 }, (_, i) => ({ time: i * 10, text: '乌云在我们心里搁下一块阴影' }))
+    const cand = Array.from({ length: 10 }, (_, i) => remote('乌云在我们心里搁下一块阴影', i * 10, ['乌云在我们心里搁下一块阴影']))
+    const merged = mergeSyllableLines(local, cand)
+    expect(merged.filter((l) => l.words?.length).length).toBe(10)
   })
 })

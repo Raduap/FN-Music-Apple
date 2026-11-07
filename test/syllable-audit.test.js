@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const { detectLang, lyricsTextOf, stratifiedSample } = require('../dev/syllable-audit/sample.js')
 const { parseName } = require('../dev/syllable-audit/library.js')
-const { scoreSource } = require('../dev/syllable-audit/score.js')
+const { scoreSource } = await import('../dev/syllable-audit/score.mjs')
 
 describe('审计 · 语言分层', () => {
   it('按假名 / 韩文 / 汉字占比判定语言', () => {
