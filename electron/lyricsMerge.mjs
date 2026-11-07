@@ -1,3 +1,5 @@
+import { T2S_FOLD_PAIRS } from './t2sFoldData.mjs'
+
 // 逐字歌词的纯逻辑：LRC 解析 -> 双语合并 -> 词级时间轴对齐 -> 候选择优 -> 卡拉OK进度。
 // ESM、零依赖，供渲染层（src/，Vite）与 dev 审计工具（Node/Electron）共用同一份实现。
 // 注意：这里只放纯函数，不引用 react / window / electron，也不要用 CJS 的 module.exports，
@@ -123,8 +125,23 @@ function mergeTranslations(lines) {
 
 
 // ---------- 字符时间轴对齐 ----------
-const CHAR_EQUIV = { '妳': '你', '麽': '么', '裏': '里', '著': '着', '為': '为', '於': '于', '後': '后', '發': '发', '颱': '台' }
-const normForMatch = (v) => String(v || '').replace(/\s+/g, '').replace(/[妳麽裏著為於後發颱]/g, (c) => CHAR_EQUIV[c] || c)
+// 繁→简折叠表：匹配比较时把两侧都折成简体，只用于「哪一行配哪一行」，不改显示文本。
+// 动机（实测《アイドル》）：本地 LRC 是日文/繁体原文，而逐字候选源已被 opencc 转成简体，
+// 逐行文本锚点因此大面积失配（实测 35/79），剩下的行被「按时间硬配」错位，
+// 于是有些行在自己的显示窗口内永远轮不到铺色。折叠后锚点命中 74/79，错位随之消失。
+const T2S_FOLD = (() => {
+  const m = new Map()
+  const chars = [...String(T2S_FOLD_PAIRS || '')]
+  for (let i = 0; i + 1 < chars.length; i += 2) m.set(chars[i], chars[i + 1])
+  return m
+})()
+// 把文本折成简体用于比较：先折繁简，再去空白，历史异体字（妳/麽/裏…）也在此统一。
+const foldForCompare = (v) => {
+  let out = ''
+  for (const c of String(v || '')) out += T2S_FOLD.get(c) ?? c
+  return out
+}
+const normForMatch = (v) => foldForCompare(v).replace(/\s+/g, '')
 
 // 全曲「字符袋」重叠：把两侧歌词各自拆成字符多重集，取交集 / 较小总量。
 // 用于快速判断「本地歌词与候选是不是同一首歌」——同曲异版（Live / DJ / 重制）
