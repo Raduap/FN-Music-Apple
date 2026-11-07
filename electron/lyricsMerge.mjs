@@ -142,6 +142,14 @@ const foldForCompare = (v) => {
   return out
 }
 const normForMatch = (v) => foldForCompare(v).replace(/\s+/g, '')
+// 更宽松的归一化：只看字母 / 数字，丢掉所有标点与空白。
+// 用于「远端一行 = 本地连续多句」的拼合判断——不同来源的逗号 / 撇号 / 连字符
+// 写法常有差异（"ye' shall" vs "ye shall"），严格归一化会漏掉这类合行。
+const looseForMatch = (v) => {
+  let out = ''
+  for (const ch of foldForCompare(v).toLowerCase()) if (/[\p{L}\p{N}]/u.test(ch)) out += ch
+  return out
+}
 
 // 全曲「字符袋」重叠：把两侧歌词各自拆成字符多重集，取交集 / 较小总量。
 // 用于快速判断「本地歌词与候选是不是同一首歌」——同曲异版（Live / DJ / 重制）
@@ -201,13 +209,18 @@ function localWhitespaceTokens(text) {
 function alignCharTimeline(localText, remoteWords) {
   const text = String(localText || '')
   const chars = [...text]
-  const n = remoteWords.length
+  // 丢掉「纯空白」的远端词：QQ QRC 会把空格作为 0ms 的独立 token 输出。
+  // 若把它留在索引空间里，按字符比例映射时真实字会被映射到空格槽、拿到 0ms 时间，
+  // 于是该字连同并入它的前导空格在 30ms 内瞬间铺满——视觉上就是「空格处一下跳几个字」。
+  // 丢掉它不影响文本：words[].text 始终由本地字符重新分桶拼成，拼接后逐字符等于原文。
+  const remote = (Array.isArray(remoteWords) ? remoteWords : []).filter((w) => String(w?.text ?? '').trim() !== '')
+  const n = remote.length
   const solid = chars.filter((c) => /\S/.test(c)).length
   if (!solid || !n) return null
   const tokens = localWhitespaceTokens(text)
   if (tokens.length === n) {
     return tokens.map((t, i) => {
-      const w = remoteWords[i] || {}
+      const w = remote[i] || {}
       return { text: t, time: w.time, end: w.end ?? w.time }
     })
   }
@@ -226,7 +239,7 @@ function alignCharTimeline(localText, remoteWords) {
     buckets[wi].push(c)
   })
   return buckets
-    .map((chars2, wi) => ({ text: chars2.join(''), w: remoteWords[wi] }))
+    .map((chars2, wi) => ({ text: chars2.join(''), w: remote[wi] }))
     .filter((s) => s.text)
     .map(({ text, w }) => ({ text, time: w.time, end: w.end ?? w.time }))
 }
@@ -261,7 +274,7 @@ function sanitizeWordTimeline(words, { start = null, end = null } = {}) {
   }
   // 末词越过行尾时收口（保留最小时长，避免二次清洗来回抖动）
   const last = out[out.length - 1]
-  if (lineEnd != null && last.end > lineEnd && lineEnd - last.time >= MIN_WORD_DUR) last.end = lineEnd
+  if (lineEnd != null && last.end > lineEnd && lineEnd > last.time) last.end = lineEnd
   sanitizedCache.set(words, { start, end, words: out })
   return out
 }
@@ -321,16 +334,22 @@ function mergeSyllableLines(lines, syllables, debug = null) {
   const out = lines.map((l) => ({ ...l }))
   const used = new Array(syllables.length).fill(false)
   const norm = normForMatch
+  const loose = looseForMatch
   // 空行（间奏 / 纯音乐段）没有可显示的文本，不参与逐字配对——
   // 把候选浪费在空行上会错位后续配对，还会拉低覆盖率。
   const singable = (l) => !!String(l?.text || '').trim()
-  const apply = (li, si) => {
+  // 某行之后「下一句真正有文本」的行起点：词时间轴收口的右边界。
+  const nextTimeAfter = (li) => {
+    for (let k = li + 1; k < out.length; k++) if (singable(out[k]) && Number.isFinite(out[k].time)) return out[k].time
+    return Infinity
+  }
+  const apply = (li, si, bucketWords = null) => {
     const s = syllables[si]
-    if (!s.words?.length) return false
-    const timeline = alignCharTimeline(out[li].text, s.words)
-    if (timeline) out[li].words = sanitizeWordTimeline(timeline, { start: out[li].time, end: s.end })
+    const words = bucketWords || s.words
+    if (!words?.length) return false
+    const timeline = alignCharTimeline(out[li].text, words)
+    if (timeline) out[li].words = sanitizeWordTimeline(timeline, { start: out[li].time, end: Number.isFinite(s.end) ? s.end : nextTimeAfter(li) })
     if (Number.isFinite(s.end) && !Number.isFinite(out[li].end)) out[li].end = s.end
-    used[si] = true
     stats.matched++
     return true
   }
@@ -342,7 +361,111 @@ function mergeSyllableLines(lines, syllables, debug = null) {
     while (j < syllables.length && syllables[j].time < out[li].time - 3) j++
     for (let k = j; k < syllables.length && syllables[k].time <= out[li].time + 3; k++) {
       if (used[k]) continue
-      if (norm(syllables[k].text) === t) { apply(li, k); break }
+      if (norm(syllables[k].text) === t) { apply(li, k); used[k] = true; break }
+    }
+  }
+
+  // Pass 1.5：处理「远端一行 = 本地连续多句」的分行差异。
+  // 酷狗 / QQ 常把相邻两句并成一行（如「I see this life like a swinging vine」）。
+  // Pass 1 的整行文本相等匹配不到第二句，它便落到 Pass 2 按时间硬配、吃掉下一行的
+  // 逐字数据，于是之后每句整体错位一行，表现为大段「永远不会铺色」。
+  // 这里在整行文本可逐字拼合时，按有效字符数把远端那行的词时间切给组成它的本地句。
+  for (let li = 0; li < out.length; li++) {
+    if (out[li].words || !singable(out[li])) continue
+    const head = loose(out[li].text)
+    if (!head) continue
+    for (let k = 0; k < syllables.length; k++) {
+      if (used[k]) continue
+      const rl = syllables[k]
+      if (!rl.words?.length) continue
+      if (!Number.isFinite(rl.time) || Math.abs(rl.time - out[li].time) > 5) continue
+      const rt = loose(rl.text)
+      if (rt.length <= head.length || !rt.startsWith(head)) continue
+      // 向后拼接本地连续句，直到与远端整行逐字相等；拼接不上就放弃
+      let acc = head
+      let lj = li
+      while (acc.length < rt.length && lj + 1 < out.length) {
+        lj++
+        if (!singable(out[lj])) continue
+        acc += loose(out[lj].text)
+      }
+      if (acc !== rt) continue
+      const segs = []
+      for (let m = li; m <= lj; m++) if (singable(out[m])) segs.push({ li: m, len: loose(out[m].text).length })
+      if (segs.length < 2) continue
+      // 远端词的有效字符累计长度：按「最接近目标字数」找切分点，
+      // 避免某个词跨在两句边界上时整词被并进前一句。
+      const cum = [0]
+      for (const w of rl.words) cum.push(cum[cum.length - 1] + loose(w.text).length)
+      const bounds = [0]
+      const lastWi = rl.words.length
+      for (let si = 0; si < segs.length - 1; si++) {
+        const target = cum[bounds[bounds.length - 1]] + segs[si].len
+        let bestWi = bounds[bounds.length - 1]
+        let bestD = Infinity
+        for (let wi = bounds[bounds.length - 1]; wi <= lastWi; wi++) {
+          const d = Math.abs(cum[wi] - target)
+          if (d < bestD) { bestD = d; bestWi = wi }
+        }
+        bounds.push(bestWi)
+      }
+      bounds.push(lastWi)
+      let appliedSplit = 0
+      for (let si = 0; si < segs.length; si++) {
+        const bucket = rl.words.slice(bounds[si], bounds[si + 1])
+        if (!bucket.length) continue
+        const li2 = segs[si].li
+        const timeline = alignCharTimeline(out[li2].text, bucket)
+        if (timeline) out[li2].words = sanitizeWordTimeline(timeline, { start: out[li2].time, end: nextTimeAfter(li2) })
+        stats.matched++
+        appliedSplit++
+      }
+      if (appliedSplit) { stats.matchedSplit = (stats.matchedSplit || 0) + appliedSplit; used[k] = true }
+      break
+    }
+  }
+  // Pass 1.4：处理「本地一行 = 远端连续多句」的分行差异（Pass 1.5 的反向）。
+  // 本地 LRC 常把相邻两个短句写在同一个时间戳里（例：水瀬いのり - アイマイモコ
+  // 「些細な出来事さえも 特別だって思うよ」），而远端逐字源把它们拆成两行。
+  // 若不合并，Pass 2 只会把第一段的词挂上去，第二段整块被压进最后一格，
+  // 表现为「铺完之后干等几秒」和「结尾瞬间跳完」。
+  for (let li = 0; li < out.length; li++) {
+    if (out[li].words || !singable(out[li])) continue
+    const head = loose(out[li].text)
+    if (!head) continue
+    const winEnd = nextTimeAfter(li)
+    for (let k = 0; k < syllables.length; k++) {
+      if (used[k]) continue
+      const first = syllables[k]
+      if (!first?.words?.length) continue
+      if (!Number.isFinite(first.time) || Math.abs(first.time - out[li].time) > 5) continue
+      // 从 k 起向后拼接远端连续行，直到与本地整行逐字相等；拼不上就放弃
+      let acc = ''
+      let picked = []
+      let last = -1
+      for (let m = k; m < syllables.length; m++) {
+        const rl = syllables[m]
+        if (used[m] || !rl?.words?.length || !Number.isFinite(rl.time)) break
+        if (m > k && Number(rl.time) - Number(syllables[m - 1].time) > 8) break
+        acc += loose(rl.text)
+        picked.push(m)
+        last = m
+        if (acc.length >= head.length) break
+      }
+      if (last < 0 || picked.length < 2 || acc !== head) continue
+      const words = []
+      for (const m of picked) for (const w of syllables[m].words) words.push(w)
+      const lastEnd = Number(words[words.length - 1].end ?? words[words.length - 1].time)
+      // 护栏：拼合后的时间轴若越出本行窗口，多半是误并下一句也要用的重复句 / 回声句，
+      // 直接跳过（宁可这一句不拆合，也不能连累后面的配对）。
+      if (Number.isFinite(winEnd) && lastEnd > winEnd + 0.05) continue
+      const timeline = alignCharTimeline(out[li].text, words)
+      if (!timeline) continue
+      out[li].words = sanitizeWordTimeline(timeline, { start: out[li].time, end: winEnd })
+      for (const m of picked) used[m] = true
+      stats.matched++
+      stats.matchedJoined = (stats.matchedJoined || 0) + 1
+      break
     }
   }
   stats.matchedPass1 = stats.matched
@@ -350,7 +473,7 @@ function mergeSyllableLines(lines, syllables, debug = null) {
   // 结构一致性门控：候选与本地若是「不同版本 / 只有片段」，绝对时间就不可信。
   // 典型症状是候选被截断（时间跨度远小于本地）或来自翻唱版本（整体漂移），
   // 此时 Pass 2 的「按时间就近硬配」会把毫不相干的句子配成逐字，产出整段错位。
-  // 门控不通过时只保留 Pass 1 的文本锚点匹配：宁可少配，也不产出假逐字。
+  // 门控不通过时只保留文本锚点匹配：宁可少配，也不产出假逐字。
   const span = (arr) => {
     const ts = arr.map((l) => Number(l?.time)).filter(Number.isFinite)
     return ts.length >= 2 ? Math.max(...ts) - Math.min(...ts) : 0
@@ -386,7 +509,7 @@ function mergeSyllableLines(lines, syllables, debug = null) {
       if (d < bestD) { bestD = d; best = k }
     }
     if (best >= 0 && bestD <= 5) {
-      apply(li, best)
+      apply(li, best); used[best] = true
       if (p <= best) p = best + 1
       if (norm(syllables[best].text) !== norm(out[li].text)) stats.skippedText++
     } else {
@@ -395,6 +518,71 @@ function mergeSyllableLines(lines, syllables, debug = null) {
     }
   }
   }
+
+  // Pass 3：时间轴收口。远端词时间偶尔整体偏后（版本差异约 1s 很常见），
+  // 会让本句在自己的显示窗口里永远轮不到铺色（首词起点 >= 下一句起点），
+  // 视觉上就是整句一直不亮。这里统计这类行，并把整条时间轴按本句窗口重铺，
+  // 保证窗口内一定有进度；正常行只收口越过窗口末尾的尾巴。
+  let broken = 0
+  for (let li = 0; li < out.length; li++) {
+    const l = out[li]
+    if (!l.words?.length || !singable(l)) continue
+    const t0 = Number(l.time)
+    let t1 = nextTimeAfter(li)
+    if (!Number.isFinite(t1)) t1 = Number.isFinite(l.end) ? l.end : t0 + 4
+    if (!Number.isFinite(t0) || !Number.isFinite(t1) || t1 <= t0) continue
+    const first = l.words[0]
+    const last = l.words[l.words.length - 1]
+    let w0 = Number(first.time)
+    let wEnd = Number(last.end ?? last.time)
+    if (!Number.isFinite(w0) || !Number.isFinite(wEnd)) continue
+    // 句首对齐：首词起点略早于本行起点时，整条时间轴等量后移，让本行一出现就从 0 开始铺色，
+    // 消除「句首已经跳掉一两个字」的观感。只修小幅偏移（<=0.6s）——更大的偏差不是取整误差，
+    // 而是另一句的时间轴，留给下面的错位分支 / 审计指标处理。
+    const lead = t0 - w0
+    if (lead > 0 && lead <= 0.6) {
+      for (const w of l.words) {
+        const wt = Number(w.time)
+        const we = Number(w.end ?? w.time)
+        if (Number.isFinite(wt)) w.time = wt + lead
+        if (Number.isFinite(we)) w.end = we + lead
+      }
+      w0 += lead
+      wEnd += lead
+      stats.rebasedStart = (stats.rebasedStart || 0) + 1
+    }
+    // 容差 0.3s：词时间整体偏后时，首词可能恰好落在下句起点前一点点
+    // （实测《夜曲》偏移约 2.7s，首词落在下句前 0.05s），窗口内几乎铺不到色，
+    // 也必须按「错位」重铺。
+    if (w0 >= t1 - 0.3 || wEnd <= t0 + 0.3) {
+      broken++
+      // 仅在「像版本漂移」时兜底重铺：整体偏离本句窗口，但幅度在 +-8s 内。
+      // 偏离过大的（如行在 1s、词在 40s）不是漂移，而是选错了候选，
+      // 必须原样保留，让审计指标 outOfRange 能把它抓出来。
+      const plausible = w0 <= t1 + 8 && wEnd >= t0 - 8
+      if (plausible) {
+        const src = Math.max(0.05, wEnd - w0)
+        const scale = (t1 - t0) / src
+        l.words = l.words.map((w) => ({
+          ...w,
+          time: t0 + (Number(w.time) - w0) * scale,
+          end: t0 + (Number(w.end ?? w.time) - w0) * scale,
+        }))
+        stats.rescaled = (stats.rescaled || 0) + 1
+      }
+      continue
+    }
+    if (wEnd > t1) {
+      stats.clamped = (stats.clamped || 0) + 1
+      const tail = l.words[l.words.length - 1]
+      // 只要末词起点还在本行窗口内，就把它收口到下一句起点。
+      // 不再额外要求「至少留 MIN_WORD_DUR」——否则末词起点贴边时收不了口，
+      // 切句那一刻进度还差一点点，就是「结尾未走完就直接跳变」。
+      if (Number(tail.time) < t1) tail.end = t1
+    }
+  }
+  stats.brokenBeforeClamp = broken
+
   if (debug) debug(stats)
   return out
 }
