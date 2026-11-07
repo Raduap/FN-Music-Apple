@@ -1183,16 +1183,7 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',
     },
   })
-  if (isDev) { // 开发模式下允许 F12 打开 DevTools 排查问题（生产构建不受影响）
-    // 等窗口真正显示后再弹 DevTools，避免在 ready-to-show 之前打开被吞掉
-    win.once('ready-to-show', () => {
-      win.webContents.openDevTools({ mode: 'detach' })
-      console.log('[dev] DevTools 已打开（F12 可随时开关）')
-      // 渲染进程 console → 终端：自动化调试时能直接看到前端的逐字调试输出
-      win.webContents.on('console-message', (_e, level, message) => {
-        if (String(message).includes('[syllables')) console.log(`[renderer] ${message}`)
-      })
-    })
+  if (isDev) { // 开发模式允许按 F12 手动打开 DevTools（生产构建不受影响）；不再自动弹出
     win.webContents.on('before-input-event', (_e, input) => {
       if (input.type === 'keyDown' && input.key === 'F12') {
         win.webContents.isDevToolsOpened() ? win.webContents.closeDevTools() : win.webContents.openDevTools({ mode: 'detach' })

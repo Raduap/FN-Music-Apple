@@ -87,6 +87,20 @@ export function useAsync(fn, deps) {
   return state
 }
 
+// 拖动排序：把 arr 中 from 位置的元素移动到 to 位置（to 为落点索引，允许等于末尾）。
+// 返回新数组，不改原数组；越界或原地移动时返回等价副本，便于调用方无脑 setState。
+export function moveItem(arr, from, to) {
+  const a = Array.isArray(arr) ? [...arr] : []
+  if (a.length < 2) return a
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return a
+  if (from < 0 || from >= a.length) return a
+  const dst = Math.max(0, Math.min(a.length - 1, to))
+  if (dst === from) return a
+  const [item] = a.splice(from, 1)
+  a.splice(dst, 0, item)
+  return a
+}
+
 export function shuffled(arr) {
   const a = [...arr]
   for (let i = a.length - 1; i > 0; i--) {

@@ -370,9 +370,35 @@
 }
 .lyrics.big .lt-main.karaoke .kw-fill { color: #fff; }
 
-/* ---------- 逐字歌词数据源：开关 + 排序行 ---------- */
-.exp-source-row { display: flex; align-items: center; gap: 6px; }
-.exp-source-row .fl-toggle { flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; gap: 2px; }
-.exp-source-row .fl-toggle small { font-size: 11px; color: var(--text2); font-weight: 400; }
-.exp-source-move { display: flex; gap: 2px; flex: none; }
-.exp-source-move .icon-btn:disabled { opacity: 0.3; cursor: default; }
+/* ---------- 逐字歌词数据源：Emby 式拖动排序列表 ---------- */
+.exp-feature-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.exp-feature-row .fl-toggle { margin-top: 0; }
+/* 依赖总开关的子项在总开关关闭时整体变灰，避免误以为可单独开启 */
+.fl-toggle:disabled,
+.exp-seg-btn:disabled { opacity: 0.42; cursor: not-allowed; }
+.fl-toggle:disabled:hover { background: var(--input); }
+.exp-source-hint { margin: 0 0 10px; }
+.exp-source-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.exp-source-item { position: relative; display: flex; align-items: center; gap: 10px; padding: 9px 12px 9px 8px; border: 1px solid transparent; border-radius: 12px; background: var(--input); cursor: grab; transition: background 0.15s, border-color 0.15s, opacity 0.15s; }
+.exp-source-item:hover { background: var(--hover); }
+.exp-source-item.dragging { opacity: 0.45; cursor: grabbing; }
+/* 拖动时的插入位置提示：悬停上半部出现上边线，下半部出现下边线 */
+.exp-source-item.over-before { box-shadow: inset 0 2px 0 0 var(--accent); }
+.exp-source-item.over-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
+.exp-drag-handle { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex: none; border-radius: 7px; color: var(--text3); cursor: grab; }
+.exp-drag-handle:hover, .exp-drag-handle:focus-visible { color: var(--text); background: var(--hover); }
+.exp-drag-handle:active { cursor: grabbing; }
+.exp-source-index { flex: none; width: 20px; text-align: center; font-size: 12px; font-weight: 700; color: var(--text3); font-variant-numeric: tabular-nums; }
+.exp-source-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.exp-source-info b { font-size: 13px; color: var(--text); }
+.exp-source-info small { font-size: 11px; color: var(--text2); font-weight: 400; }
+.exp-source-switch { flex: none; border: 0; padding: 0; cursor: pointer; }
+.exp-source-switch.off { background: var(--text3); }
+.exp-source-switch.off::after { left: 2px; }
+.exp-source-switch:not(.off) { background: var(--accent); }
+.exp-source-switch:not(.off)::after { transform: translateX(16px); }
+.exp-source-switch.locked { opacity: 0.45; cursor: not-allowed; }
+.exp-source-disabled { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.exp-source-disabled-title { font-size: 11.5px; font-weight: 650; color: var(--text3); }
+.exp-source-add { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; padding: 6px 12px; border: 1px dashed var(--sep); border-radius: 999px; background: transparent; color: var(--text2); font-size: 12px; cursor: pointer; transition: color 0.15s, border-color 0.15s; }
+.exp-source-add:hover { color: var(--accent); border-color: var(--accent); }

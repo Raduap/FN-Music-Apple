@@ -311,7 +311,6 @@ function useLyrics(song) {
         const merged = await loadSyllablesProgressive(song, lines, (next, info) => {
           if (dead) return
           meta = info
-          if (syllablesDebug) console.log('[syllables 流式]', { coverage: info.coverage, source: info.source, provider: info.provider })
           setState({ lines: predict(next), loading: false })
         })
         if (dead) return
@@ -409,7 +408,7 @@ export function LyricsView({ song, big = false }) {
   // 用连续进度边直接写当前句每个词的铺色宽度。切句 / 无词数据时清理为普通文本。
   // 这是 AMLL Player / Apple Music Web 的成熟做法：结构交给 React，逐帧样式走 DOM。
   const karaokeActive = syllablesEnabled && active >= 0 && !!lines[active]?.words?.length
-  // 手动调试钩子：DevTools 里 wait __syllablesProbe('歌名','歌手') 直接看原始返回
+  // 手动调试钩子：DevTools 里 await __syllablesProbe('歌名','歌手') 直接看原始返回
   useEffect(() => {
     if (!syllablesDebug) return
     window.__syllablesProbe = async (title, artist) => window.fn.lyricsSyllables({ title, artist: artist || '', duration: usePlayer.getState().duration || 0 })
@@ -417,18 +416,13 @@ export function LyricsView({ song, big = false }) {
     window.__syllablesCompare = async (localOverride) => {
       const s = usePlayer.getState()
       const song = s.queue[s.index]
-      if (!song) { console.log('[syllables 对照] 当前没有播放歌曲'); return null }
+      if (!song) return null
       const local = toLines(localOverride || await api.lyric(song.id))
       const r = await window.fn.lyricsSyllables({ title: song.title, artist: song.artist, duration: song.duration || 0 })
       let stats = null
       const merged = r?.lines ? mergeSyllableLines(local, r.lines, (x) => { stats = x }) : local
-      console.log(`[syllables 对照] ${song.title} / ${song.artist}`)
-      console.log(`本地 ${local.length} 行，远端 ${r?.lines?.length || 0} 行，命中 ${stats?.matched ?? 0}，文本不符 ${stats?.skippedText ?? 0}，时间不符 ${stats?.skippedTime ?? 0}`)
-      console.table(merged.map((l, i) => ({
-        行: i + 1, 时间: l.time.toFixed(2), 本地: l.text, 有逐字: !!l.words,
-        远端: r?.lines?.[i]?.text || '', 远端时间: r?.lines?.[i]?.time != null ? r.lines[i].time.toFixed(2) : '',
-      })))
-      return { local, remote: r?.lines, merged, stats }
+      // 不做 console 输出：返回值在 DevTools 里可直接展开查看（避免刷屏 / 终端噪声）
+      return { song, local, remote: r?.lines, merged, stats }
     }
   }, [syllablesDebug])
   useEffect(() => {

@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useUI } from '../store'
+import { moveItem } from '../lib'
 import * as Icon from '../icons'
 
 const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablePredict: false, syllablesDebug: false, syllableStrict: false, syllableSmooth: 'normal', syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
+// 逐字数据源元数据（id / 名称 / 说明）。列表渲染顺序即抓取顺序，
+// 用户可在设置里拖动调整；启用与否是另一维（开关），与顺序无关。
 const SYLLABLE_SOURCES = [
   { id: 'amll', name: 'AMLL TTML DB', desc: '社区人工校准逐字库，质量最高' },
   { id: 'liriqo', name: 'LiriQo 聚合', desc: 'Apple / 酷狗 / 网易 / 千千等平台聚合' },
@@ -10,6 +13,7 @@ const SYLLABLE_SOURCES = [
   { id: 'netease', name: '网易云音乐', desc: 'YRC 逐字直连，中日英覆盖均衡' },
   { id: 'qq', name: 'QQ 音乐', desc: 'QRC 逐字直连，中文流行覆盖好' },
 ]
+const SOURCE_BY_ID = Object.fromEntries(SYLLABLE_SOURCES.map((s) => [s.id, s]))
 const SMOOTH_MODES = [
   { id: 'mild', name: '宽松', desc: '只压缩最明显的过快字，最贴近源时间戳' },
   { id: 'normal', name: '适中', desc: '推荐，把异常快的字收到常见语速' },
@@ -31,6 +35,10 @@ export function ExperimentalSettings() {
   const [form, setForm] = useState({ ...DEFAULTS, ...saved, apiKey: '' })
   const [busy, setBusy] = useState('')
   const [status, setStatus] = useState(null)
+  // 数据源拖动状态：dragId 正在拖的源，overId 当前悬停落点，overAfter 表示落在其下方
+  const [dragId, setDragId] = useState('')
+  const [overId, setOverId] = useState('')
+  const [overAfter, setOverAfter] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -97,12 +105,9 @@ export function ExperimentalSettings() {
     setForm((f) => ({ ...f, syllableSources: next }))
     await save({ syllableSources: next })
   }
-  const moveSource = async (id, dir) => {
-    const list = [...form.syllableSources]
-    const i = list.indexOf(id)
-    const j = i + dir
-    if (i < 0 || j < 0 || j >= list.length) return
-    ;[list[i], list[j]] = [list[j], list[i]]
+  // 拖动 / 键盘重排数据源：把 id 从 from 移到 to，立即持久化。
+  const reorderSource = async (from, to) => {
+    const list = moveItem(form.syllableSources, from, to)
     setForm((f) => ({ ...f, syllableSources: list }))
     await save({ syllableSources: list })
   }
@@ -223,18 +228,21 @@ export function ExperimentalSettings() {
                       <p>优先使用 AMLL TTML DB 的社区人工逐字歌词，其次通过聚合接口获取各平台词级时间轴；当前句按真实播放进度逐字扫色。</p>
                     </div>
                   </div>
-                  <button className={`fl-toggle exp-toggle ${form.syllables ? 'on' : ''}`} role="switch" aria-checked={!!form.syllables} onClick={toggleSyllables}>
-                    <span>启用逐字歌词</span><span className="fl-switch" aria-hidden="true" />
-                  </button>
-                  <button
-                    className={`fl-toggle exp-toggle ${form.syllablePredict ? 'on' : ''}`}
-                    role="switch"
-                    aria-checked={!!form.syllablePredict}
-                    disabled={!form.syllables}
-                    onClick={toggleSyllablePredict}
-                  >
-                    <span>智能逐字补全</span><span className="fl-switch" aria-hidden="true" />
-                  </button>
+                  <div className="exp-feature-row">
+                    <button className={`fl-toggle exp-toggle ${form.syllables ? "on" : ""}`} role="switch" aria-checked={!!form.syllables} onClick={toggleSyllables}>
+                      <span>启用逐字歌词</span><span className="fl-switch" aria-hidden="true" />
+                    </button>
+                    <button
+                      className={`fl-toggle exp-toggle ${form.syllablePredict ? "on" : ""}`}
+                      role="switch"
+                      aria-checked={!!form.syllablePredict}
+                      disabled={!form.syllables}
+                      onClick={toggleSyllablePredict}
+                    >
+                      <span>智能逐字补全</span><span className="fl-switch" aria-hidden="true" />
+                    </button>
+                  </div>
+                  <p className="exp-hint">没有词级数据的行按字词长度与标点停顿估算逐字时间，让整首歌都有扫色动画。关闭「启用逐字歌词」时本项不可用。</p>
                 </section>
                 <section className="exp-section">
                   <div className="exp-section-title">扫色手感</div>
@@ -263,12 +271,9 @@ export function ExperimentalSettings() {
                       </button>
                     ))}
                   </div>
-                  <ul className="exp-list">
-                    <li>关闭「严格匹配」时，只把「过快」的字（外语语气词、日语半拍装饰假名等）压到常见语速，扫色不再「唰」一下闪过；默认关闭。</li>
-                    <li>拖长音 / 慢字是本来的演唱节奏，会保持缓慢扫过、不做加速，因此听感仍与真实演唱贴合。</li>
-                    <li>开启「严格匹配」则完全照抄数据源的词级时间戳，最精确，但很快的字会更跳。</li>
-                    <li>速度挡位只在非严格模式下生效：宽松只压最明显的过快字，更稳压得更多。</li>
-                  </ul>
+                  <p className="exp-hint">
+                    关闭「严格匹配」时只把过快的字（外语语气词、日语半拍假名等）收到常见语速，拖长音与慢字保持原速；开启后完全照抄源时间戳，最精确但快字更跳。
+                  </p>
                 </section>
                 <section className="exp-section">
                   <div className="exp-section-title">工作方式</div>
@@ -282,30 +287,89 @@ export function ExperimentalSettings() {
                 </section>
                 <section className="exp-section">
                   <div className="exp-section-title">数据源</div>
-                  <div className="exp-list">
-                    {SYLLABLE_SOURCES.map((src) => {
-                      const on = form.syllableSources.includes(src.id)
-                      const idx = form.syllableSources.indexOf(src.id)
+                  <p className="exp-paragraph exp-source-hint">从上到下即抓取顺序：先命中合格线就先用，命中优秀线就停止；拖动左侧手柄可调整顺序。</p>
+                  <ol className="exp-source-list">
+                    {form.syllableSources.map((id, i) => {
+                      const src = SOURCE_BY_ID[id]
+                      if (!src) return null
+                      const dragging = dragId === id
+                      const over = overId === id && !!dragId && dragId !== id
+                      const cls = `exp-source-item${dragging ? " dragging" : ""}${over ? (overAfter ? " over-after" : " over-before") : ""}`
                       return (
-                        <div key={src.id} className="exp-source-row">
-                          <button className={`fl-toggle exp-toggle ${on ? 'on' : ''}`} role="switch" aria-checked={on} onClick={() => toggleSource(src.id)}>
-                            <span>
-                              <b>{idx >= 0 ? `${idx + 1}. ` : ''}{src.name}</b>
-                              <small>{src.desc}</small>
-                            </span>
-                            <span className="fl-switch" aria-hidden="true" />
-                          </button>
-                          <span className="exp-source-move">
-                            <button className="icon-btn" title="上移" aria-label={`上移 ${src.name}`} disabled={idx <= 0} onClick={() => moveSource(src.id, -1)}>↑</button>
-                            <button className="icon-btn" title="下移" aria-label={`下移 ${src.name}`} disabled={idx < 0 || idx >= form.syllableSources.length - 1} onClick={() => moveSource(src.id, 1)}>↓</button>
+                        <li
+                          key={id}
+                          className={cls}
+                          draggable
+                          onDragStart={(e) => {
+                            setDragId(id)
+                            e.dataTransfer.effectAllowed = "move"
+                            e.dataTransfer.setData("text/plain", id)
+                          }}
+                          onDragOver={(e) => {
+                            if (!dragId || dragId === id) return
+                            e.preventDefault()
+                            e.dataTransfer.dropEffect = "move"
+                            const r = e.currentTarget.getBoundingClientRect()
+                            const after = e.clientY - r.top > r.height / 2
+                            if (overId !== id || overAfter !== after) { setOverId(id); setOverAfter(after) }
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault()
+                            const from = form.syllableSources.indexOf(dragId)
+                            let to = form.syllableSources.indexOf(id)
+                            setDragId("")
+                            setOverId("")
+                            if (from < 0 || to < 0 || from === to) return
+                            if (overAfter) to += 1
+                            if (from < to) to -= 1
+                            if (to !== from) reorderSource(from, to)
+                          }}
+                          onDragEnd={() => { setDragId(""); setOverId("") }}
+                        >
+                          <span
+                            className="exp-drag-handle"
+                            role="button"
+                            tabIndex={0}
+                            aria-label={`拖动排序 ${src.name}，当前第 ${i + 1} 位`}
+                            title="拖动调整顺序，或聚焦后用上下方向键"
+                            onKeyDown={(e) => {
+                              if (e.key === "ArrowUp" && i > 0) { e.preventDefault(); reorderSource(i, i - 1) }
+                              else if (e.key === "ArrowDown" && i < form.syllableSources.length - 1) { e.preventDefault(); reorderSource(i, i + 1) }
+                            }}
+                          >
+                            <Icon.ListIcon size={16} />
                           </span>
-                        </div>
+                          <span className="exp-source-index" aria-hidden="true">{i + 1}</span>
+                          <span className="exp-source-info">
+                            <b>{src.name}</b>
+                            <small>{src.desc}</small>
+                          </span>
+                          <button
+                            className={`fl-switch exp-source-switch${form.syllableSources.length <= 1 ? " locked" : ""}`}
+                            role="switch"
+                            aria-checked="true"
+                            aria-label={`关闭 ${src.name}`}
+                            title={form.syllableSources.length <= 1 ? "至少保留一个数据源" : `关闭 ${src.name}`}
+                            disabled={form.syllableSources.length <= 1}
+                            onClick={() => toggleSource(id)}
+                          />
+                        </li>
                       )
                     })}
-                  </div>
+                  </ol>
                   <ul className="exp-list">
-                    <li>开关控制是否使用该源，箭头调整尝试顺序；至少保留一个数据源。</li>
+                    <li>列表顺序就是尝试顺序；开关控制是否启用，至少保留一个数据源。关闭的源会移到下方「未启用」区。</li>
                   </ul>
+                  {SYLLABLE_SOURCES.some((x) => !form.syllableSources.includes(x.id)) && (
+                    <div className="exp-source-disabled">
+                      <div className="exp-source-disabled-title">未启用</div>
+                      {SYLLABLE_SOURCES.filter((x) => !form.syllableSources.includes(x.id)).map((x) => (
+                        <button key={x.id} className="exp-source-add" onClick={() => toggleSource(x.id)}>
+                          <Icon.Plus size={14} /><span>{x.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </section>
                 <section className="exp-section">
                   <div className="exp-section-title">调试</div>
