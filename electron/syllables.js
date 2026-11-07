@@ -1,7 +1,8 @@
 // 逐字歌词抓取（实验性）：纯逻辑模块，便于单测与主进程复用。
-// 数据源：AMLL TTML DB（社区人工逐字库）→ LiriQo 聚合 → 酷狗 KRC / 网易云 YRC 直连。
+// 数据源：AMLL TTML DB（社区人工逐字库）→ LiriQo 聚合 → 酷狗 KRC / 网易云 YRC / QQ 音乐 QRC 直连。
 const { net } = require('electron')
 const opencc = require('opencc-js')
+const { decryptQrc, parseQrc } = require('./qrc')
 
 const INDEX_URL = 'https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/metadata/raw-lyrics-index.jsonl'
 const RAW_URL = (file) => 'https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/raw-lyrics/' + encodeURIComponent(file)
@@ -15,13 +16,17 @@ const NETEASE_SEARCH = 'https://music.163.com/api/cloudsearch/pc'
 const NETEASE_EAPI = 'https://interface3.music.163.com/eapi/song/lyric/v1'
 const NETEASE_EAPI_PATH = '/api/song/lyric/v1'
 const NETEASE_EAPI_KEY = 'e82ckenh8dichen8'
+// QQ 音乐：soso 搜索拿 songid，lyric_download.fcg 取加密 QRC（自定义 DES，见 qrc.js）。
+const QQ_SEARCH = 'https://c.y.qq.com/soso/fcgi-bin/client_search_cp'
+const QQ_LYRIC = 'https://c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg'
 
 // 逐字数据源清单（顺序即默认优先级，设置面板可调整 / 开关）。
 // - amll：AMLL TTML DB，社区人工校准，质量最高
 // - liriqo：聚合接口（Apple / 酷狗 / 网易 / 千千等）
 // - kugou：酷狗 KRC 直连（两步搜索 + 解密），中文逐字覆盖最好
 // - netease：网易云 YRC 直连（EAPI），中日英覆盖均衡
-const SYLLABLE_SOURCES = ['amll', 'liriqo', 'kugou', 'netease']
+// - qq：QQ 音乐 QRC 直连（自定义 DES 解密），中文流行覆盖好
+const SYLLABLE_SOURCES = ['amll', 'liriqo', 'kugou', 'netease', 'qq']
 
 const SYLLABLE_UA = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36',
@@ -37,7 +42,7 @@ async function throttled() {
 const allowed = (url) => {
   try {
     const u = new URL(url)
-    return u.protocol === 'https:' && /^(raw\.githubusercontent\.com|api\.liriqo-alfarrizi\.my\.id|songsearch\.kugou\.com|lyrics\.kugou\.com|music\.163\.com|interface3\.music\.163\.com)$/.test(u.hostname)
+    return u.protocol === 'https:' && /^(raw\.githubusercontent\.com|api\.liriqo-alfarrizi\.my\.id|songsearch\.kugou\.com|lyrics\.kugou\.com|music\.163\.com|interface3\.music\.163\.com|c\.y\.qq\.com)$/.test(u.hostname)
   } catch { return false }
 }
 async function fetchRaw(url, init = {}) {
@@ -241,7 +246,7 @@ async function fetchNeteaseLines(title, artist) {
     const name = norm(s.name)
     const nameEq = name === q
     if (!(nameEq || name.includes(q) || q.includes(name))) continue
-    const artistHit = qa && (s.ar || []).some((a) => { const n = norm(a.name); return n === qa || n.includes(qa) || qa.includes(n) })
+    const artistHit = qa && (s.ar || []).some((a) => artistMatches(qa, norm(a.name)))
     // 已知艺人却对不上：多半是翻唱 / 改编，直接跳过
     if (qa && !artistHit) continue
     let score = (nameEq ? 4 : 2) + (artistHit ? 3 : 0)
@@ -337,10 +342,104 @@ async function fetchKugouCandidates(title, artist, debug) {
   return tracks.map((t) => ({ source: 'kugou', provider: 'kugou-krc', lines: t.lines }))
 }
 
+async function fetchQqCandidates(title, artist, debug) {
+  const tracks = await fetchQqLines(title, artist)
+  if (debug) debug.qq = { tracks: tracks.length }
+  return tracks.map((t) => ({ source: 'qq', provider: 'qq-qrc', lines: t.lines }))
+}
+
 async function fetchNeteaseCandidates(title, artist, debug) {
   const tracks = await fetchNeteaseLines(title, artist)
   if (debug) debug.netease = { tracks: tracks.length }
   return tracks.map((t) => ({ source: 'netease', provider: 'netease-yrc', lines: t.lines }))
+}
+
+// QQ 音乐：soso 搜索 -> lyric_download.fcg 取加密 QRC -> 自定义 DES 解密 -> 解析。
+// 歌名命中、且已知艺人时必须艺人命中才采用，避免抓到翻唱 / 伴奏。
+// 判断一批词级行是否像「真歌词」：真歌词会铺开在整首歌上；
+// 只有开头几秒的都只是制作人 / credit 名单，应丢弃并回退下一个候选。
+function looksLikeLyricLines(lines) {
+  if (!Array.isArray(lines) || lines.length < 2) return false
+  let max = 0
+  for (const l of lines) {
+    const t = Number(l?.time)
+    if (Number.isFinite(t) && t > max) max = t
+  }
+  return max >= 5
+}
+
+// 拉取指定 QQ songid 的加密 QRC 并解密解析；失败返回 null。
+async function downloadQqQrc(songid) {
+  const body = new URLSearchParams({ version: '15', miniversion: '100', lrctype: '4', musicid: String(songid) })
+  const xml = await fetchRaw(QQ_LYRIC, {
+    method: 'POST',
+    headers: { ...SYLLABLE_UA, Referer: 'https://c.y.qq.com/', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: String(body),
+  })
+  const m = /<content[^>]*>\s*<!\[CDATA\[([\s\S]*?)\]\]>/.exec(xml || '')
+  if (!m) return null
+  const decrypted = decryptQrc(m[1])
+  if (!decrypted) return null
+  // 与其他源保持一致：QRC 里的繁体直接转简体，词时间轴不受影响。
+  const lines = parseQrc(decrypted).map((l) => ({
+    ...l,
+    text: toSimplified(l.text),
+    words: l.words.map((w) => ({ ...w, text: toSimplified(w.text) })),
+  }))
+  return lines.length >= 2 ? lines : null
+}
+
+// 两个艺人名是否算同一人：完全包含即通过；再退一步，共享 >=2 个汉字前缀
+// 也算通过（应对「宇多田ヒカル」vs「宇多田光」这类同一歌手的异名写法）。
+function artistMatches(local, candidate) {
+  if (!local || !candidate) return false
+  if (local === candidate || candidate.includes(local) || local.includes(candidate)) return true
+  let n = 0
+  while (n < local.length && n < candidate.length && local[n] === candidate[n] && /[\u4e00-\u9fff]/.test(local[n])) n++
+  return n >= 2
+}
+
+// QQ 音乐：soso 搜索 -> 按分数逐条尝试 lyric_download.fcg，取第一条「真歌词」。
+// 有些版本（如仅 credit 信息的单曲页）解密出来只有制作人名单、时间轴全挤在开头，
+// 需要靠时间跨度识别并回退到下一个候选。
+async function fetchQqLines(title, artist) {
+  const su = new URL(QQ_SEARCH)
+  su.searchParams.set('w', [title, artist].filter(Boolean).join(' '))
+  su.searchParams.set('p', '1')
+  su.searchParams.set('n', '10')
+  su.searchParams.set('format', 'json')
+  su.searchParams.set('new_json', '1')
+  const sRaw = await fetchRaw(String(su), { headers: { ...SYLLABLE_UA, Referer: 'https://y.qq.com/' } })
+  const songs = (sRaw ? JSON.parse(sRaw) : null)?.data?.song?.list || []
+  const q = norm(title)
+  const qa = norm(artist)
+  const BAD = /(cover|翻唱|伴奏|钢琴|纯音乐|童声|dj|remix|beat|karaoke|instrumental|live|demo|片段|铃声)/i
+  const ranked = []
+  for (const s of songs) {
+    // new_json=1 时字段是 id/name，旧格式是 songid/songname，两种都兼容
+    const sid = s.songid ?? s.id
+    const sname = String(s.songname ?? s.name ?? '')
+    if (!sid || !sname) continue
+    const name = norm(sname)
+    const nameEq = name === q
+    if (!(nameEq || name.includes(q) || q.includes(name))) continue
+    const singers = (s.singer || []).map((x) => norm(x.name))
+    const artistHit = qa && singers.some((n) => artistMatches(qa, n))
+    // 已知艺人却对不上：多半是翻唱 / 改编，直接跳过
+    if (qa && !artistHit) continue
+    let score = (nameEq ? 4 : 2) + (artistHit ? 3 : 0)
+    if (BAD.test(sname)) score -= 3
+    if (score < 2) continue
+    ranked.push({ id: sid, name: sname, artists: (s.singer || []).map((x) => x.name).join(','), score })
+  }
+  ranked.sort((a, b) => b.score - a.score)
+  for (const cand of ranked.slice(0, 4)) {
+    const lines = await downloadQqQrc(cand.id)
+    if (!lines) continue
+    if (!looksLikeLyricLines(lines)) continue
+    return [{ source: 'qq', provider: 'qq-qrc', lines, track: cand.name, artist: cand.artists }]
+  }
+  return []
 }
 
 const SOURCE_FETCHERS = {
@@ -348,6 +447,7 @@ const SOURCE_FETCHERS = {
   liriqo: fetchLiriqoCandidates,
   kugou: fetchKugouCandidates,
   netease: fetchNeteaseCandidates,
+  qq: fetchQqCandidates,
 }
 
 async function fetchSyllables({ title, artist, sources, debug: wantDebug = false } = {}) {
@@ -372,4 +472,4 @@ async function fetchSyllables({ title, artist, sources, debug: wantDebug = false
   return { ok: true, lines: first?.lines || null, source: first?.source || '', candidates, debug }
 }
 
-module.exports = { fetchSyllables, parseTtml, parseKrc, parseYrc, toSimplified, norm, parseTime, SYLLABLE_SOURCES }
+module.exports = { fetchSyllables, parseTtml, parseKrc, parseYrc, toSimplified, norm, parseTime, artistMatches, looksLikeLyricLines, SYLLABLE_SOURCES }

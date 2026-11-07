@@ -56,7 +56,7 @@ export const useUI = create((set, get) => ({
   appearanceOpen: false,
   lyricsSettingsOpen: false,
   experimentalOpen: false,
-  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease'] },
+  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] },
   syllables: false, // 实验性逐字歌词（AMLL TTML DB / LiriQo），关闭时退回逐行歌词
   syllablesDebug: LS.get('sylDebug', false), // 逐字歌词调试 toast：切歌时报告命中情况
   floatingLyrics: false, // 悬浮歌词窗口是否开启（真实状态以主进程 prefs 为准）
