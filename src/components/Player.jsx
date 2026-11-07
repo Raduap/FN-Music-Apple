@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { api } from '../api'
 import { getAudio, usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
-import { hasTranslation, karaokeFills, lineAt, loadLyrics, loadSyllablesProgressive, mergeSyllableLines, predictKaraokeLines, toLines } from '../lyrics'
+import { hasTranslation, karaokeFills, karaokeWindowEnd, lineAt, loadLyrics, loadSyllablesProgressive, mergeSyllableLines, predictKaraokeLines, toLines } from '../lyrics'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
 import { smoothFills } from '../karaoke'
 import { closeFullPlayer, openFullPlayer } from '../motion'
@@ -353,6 +353,9 @@ export function LyricsView({ song, big = false }) {
 
   const active = useMemo(() => lineAt(lines, time + 0.25), [time, lines])
   const syllablesEnabled = useUI((s) => s.syllables)
+  const syllableStrict = useUI((s) => s.syllableStrict)
+  const syllableSmooth = useUI((s) => s.syllableSmooth)
+  const smoothMode = syllableStrict ? 'strict' : (syllableSmooth || 'normal')
   // 逐字扫色的丝滑关键：store 的 currentTime 只有 50~200ms 粒度，这里用
   // requestAnimationFrame 本地插值——以上次已知时间和 audio 实际流逝速度推进
   // 进度边，每帧重算 karaokeFills。暂停 / seek / 切歌时直接贴齐真实时间。
@@ -434,6 +437,7 @@ export function LyricsView({ song, big = false }) {
     if (!el) return
     let raf = 0
     const line = lines[active]
+    const limit = karaokeWindowEnd(lines, active)
     let shown = null
     let lastT = null
     const step = () => {
@@ -441,7 +445,7 @@ export function LyricsView({ song, big = false }) {
       // 拖动 / seek 导致时间回退时丢弃已显示宽度，让下一帧贴齐目标（允许回退）。
       if (lastT != null && now < lastT - 0.05) shown = null
       lastT = now
-      const k = karaokeFills(line, now)
+      const k = karaokeFills(line, now, { smooth: smoothMode, limit })
       // 只增不减 + 缓动：正常播放宽度绝不倒着褪色。
       shown = smoothFills(shown, k?.fills || null)
       const fills = el.querySelectorAll(`[data-i="${active}"] .kw-fill`)
@@ -457,7 +461,7 @@ export function LyricsView({ song, big = false }) {
       cancelAnimationFrame(raf)
       el.querySelectorAll(`[data-i="${active}"] .kw-fill`).forEach((node) => { node.style.setProperty('--fill', '0') })
     }
-  }, [karaokeActive, active, lines])
+  }, [karaokeActive, active, lines, smoothMode])
   // 译文补入（lines 引用变化）或翻译显隐时，译文行高度会连续变化，其余歌词随之平移。
   // 这里用变化前记录的位置做基准，在动画全程逐帧补偿滚动，把关注句锚定在原位置。
   // 注意：不能按“位移稳定”提前退出——动画启动的头一两帧高度尚未变化，

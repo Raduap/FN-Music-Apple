@@ -60,6 +60,8 @@ export const useUI = create((set, get) => ({
   syllables: false, // 实验性逐字歌词（AMLL TTML DB / LiriQo），关闭时退回逐行歌词
   syllablePredict: LS.get('sylPredict', false), // 智能逐字补全：没有词级数据的行也按字长 / 停顿预测逐字动画
   syllablesDebug: LS.get('sylDebug', false), // 逐字歌词调试 toast：切歌时报告命中情况
+  syllableStrict: LS.get('sylStrict', false), // 严格匹配：逐字严格照抄源时间戳（默认关闭，关闭时做速度带平滑）
+  syllableSmooth: LS.get('sylSmooth', 'normal'), // 速度带挡位：mild / normal / strong（仅非严格时生效）
   floatingLyrics: false, // 悬浮歌词窗口是否开启（真实状态以主进程 prefs 为准）
   lyricsStyle: {}, // 悬浮歌词样式（主进程 prefs.lyricsStyle）
   lyricsStyleSeq: 0, // 丢弃过期样式写入响应，避免快速拖动滑块时旧值覆盖新值
@@ -148,6 +150,9 @@ export const useUI = create((set, get) => ({
       set({ syllables: hasPref ? r.syllables : LS.get('syllables', false) })
       // 智能逐字补全同样跟随主进程配置；缺失时回退 localStorage
       set({ syllablePredict: typeof r.syllablePredict === 'boolean' ? r.syllablePredict : LS.get('sylPredict', false) })
+      // 严格匹配 / 速度带挡位跟随主进程配置
+      set({ syllableStrict: typeof r.syllableStrict === 'boolean' ? r.syllableStrict : LS.get('sylStrict', false) })
+      set({ syllableSmooth: ['mild', 'normal', 'strong'].includes(r.syllableSmooth) ? r.syllableSmooth : LS.get('sylSmooth', 'normal') })
     }
     return r
   },
@@ -166,6 +171,17 @@ export const useUI = create((set, get) => ({
     LS.set('sylPredict', !!on)
     set({ syllablePredict: !!on })
     await window.fn.experimentalSet?.({ syllablePredict: !!on }).catch(() => {})
+  },
+  async setSyllableStrict(on) {
+    LS.set('sylStrict', !!on)
+    set({ syllableStrict: !!on })
+    await window.fn.experimentalSet?.({ syllableStrict: !!on }).catch(() => {})
+  },
+  async setSyllableSmooth(mode) {
+    const m = ['mild', 'normal', 'strong'].includes(mode) ? mode : 'normal'
+    LS.set('sylSmooth', m)
+    set({ syllableSmooth: m })
+    await window.fn.experimentalSet?.({ syllableSmooth: m }).catch(() => {})
   },
   toggleSyllablesDebug() {
     const on = !get().syllablesDebug
@@ -664,6 +680,10 @@ function broadcast() {
     // 关闭或该句没有 words 时为 null，payload 不会因此变大。
     lyricWords: ui.syllables ? frame.lyricWords || null : null,
     nextLyricWords: ui.syllables ? frame.nextLyricWords || null : null,
+    // 扫色平滑模式：严格匹配时 'strict'，否则取速度带挡位。悬浮窗据此与主窗口保持一致。
+    syllableSmooth: ui.syllables && !ui.syllableStrict ? (ui.syllableSmooth || 'normal') : 'strict',
+    // 当前句窗口右界（下一句起点）：悬浮窗做扫色平滑时限制不越过下一句。
+    lyricEnd: ui.syllables ? frame.lyricEnd ?? null : null,
     motion: ui.motion,
     palette: ui.palette,
   }
@@ -682,8 +702,10 @@ useUI.subscribe((s, prev) => {
   const srcListChanged = s.experimental?.syllableSources?.join(',') !== prev.experimental?.syllableSources?.join(',')
   const sylChanged = s.syllables !== prev.syllables
   const predictChanged = s.syllablePredict !== prev.syllablePredict
+  // 严格匹配 / 速度带挡位只影响扫色观感，不必重抓数据；但要立刻广播给悬浮窗。
+  const smoothChanged = s.syllableStrict !== prev.syllableStrict || s.syllableSmooth !== prev.syllableSmooth
   if (expChanged || sylChanged || srcListChanged || predictChanged) lyricFor = ''
-  if (s.motion !== prev.motion || s.palette !== prev.palette || expChanged || sylChanged || srcListChanged || predictChanged) broadcast()
+  if (s.motion !== prev.motion || s.palette !== prev.palette || expChanged || sylChanged || srcListChanged || predictChanged || smoothChanged) broadcast()
 })
 
 window.fn?.onPlayerCommand?.((cmd, arg) => {

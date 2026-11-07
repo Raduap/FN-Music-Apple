@@ -4,7 +4,7 @@ import { api } from './api'
 // electron/lyricsMerge.mjs，供渲染层与 dev 评测工具复用同一份实现。
 import { toLines, hasTranslation, pickSyllableCandidate } from '../electron/lyricsMerge.mjs'
 // 保持既有导出面：其它模块历史上从 ./lyrics 引入这些纯函数。
-export { toLines, hasTranslation, mergeTranslations, mergeSyllableLines, pickSyllableCandidate, karaokeFills, textBagOverlap, sanitizeWordTimeline, predictWordTimings, predictKaraokeLines, normForMatch, SYLLABLE_QUALIFIED, SYLLABLE_EXCELLENT, syllableTierFor } from '../electron/lyricsMerge.mjs'
+export { toLines, hasTranslation, mergeTranslations, mergeSyllableLines, pickSyllableCandidate, karaokeFills, smoothWordTimeline, textBagOverlap, sanitizeWordTimeline, predictWordTimings, predictKaraokeLines, normForMatch, SYLLABLE_QUALIFIED, SYLLABLE_EXCELLENT, syllableTierFor } from '../electron/lyricsMerge.mjs'
 
 const MAX = 200
 const raw = new Map() // id -> 原始歌词（始终保留，关闭翻译时返回这一份）
@@ -210,6 +210,15 @@ export function loadLyrics(id, song = null, { translate = false } = {}) {
   return pending.get(id)
 }
 
+/** 当前句的窗口右界：下一句真正有文本的行起点；没有下一句时用本行 end。 */
+export function karaokeWindowEnd(lines, i) {
+  if (!Array.isArray(lines) || i < 0) return null
+  for (let k = i + 1; k < lines.length; k++) {
+    if (String(lines[k]?.text || '').trim() && Number.isFinite(lines[k].time)) return lines[k].time
+  }
+  return Number.isFinite(lines[i]?.end) ? lines[i].end : null
+}
+
 /** 时间 t（秒）对应的歌词行下标；没有同步歌词时返回 -1 */
 export function lineAt(lines, t) {
   if (!lines.length || lines[0].time < 0) return -1
@@ -262,5 +271,7 @@ export function lyricFrame(lines, t) {
     // 只带当前句与下一句，避免整首歌的词级数据随每次广播序列化。
     lyricWords: cur?.words?.length ? cur.words : null,
     nextLyricWords: next.line?.words?.length ? next.line.words : null,
+    // 当前句的窗口右界（下一句起点）：扫色平滑据此限制「过慢化」不越过下一句。
+    lyricEnd: Number.isFinite(next.line?.time) ? next.line.time : (Number.isFinite(cur?.end) ? cur.end : null),
   }
 }

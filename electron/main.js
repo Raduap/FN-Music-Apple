@@ -150,6 +150,10 @@ const cleanSyllableSources = (list) => {
   return out.length ? out : [...SYLLABLE_SOURCE_IDS]
 }
 
+// 速度带挡位白名单：与 electron/lyricsMerge.mjs 的 SMOOTH_SPREAD 保持一致。
+const SYLLABLE_SMOOTH_IDS = ['mild', 'normal', 'strong']
+const cleanSyllableSmooth = (v) => (SYLLABLE_SMOOTH_IDS.includes(v) ? v : 'normal')
+
 const experimentalDefaults = () => ({
   enabled: false,
   sourceEnabled: true,
@@ -160,6 +164,10 @@ const experimentalDefaults = () => ({
   syllables: false,
   syllablePredict: false,
   syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'],
+  // 严格匹配：默认关闭。关闭时对逐字时间轴做速度带平滑（视觉匀速），开启时逐字严格照抄源时间戳。
+  syllableStrict: false,
+  // 速度带挡位（仅在非严格时生效）：mild 宽松 / normal 适中 / strong 更匀。
+  syllableSmooth: 'normal',
 })
 
 function experimentalRead() {
@@ -175,6 +183,8 @@ function experimentalRead() {
     syllables: !!e.syllables,
     syllablePredict: !!e.syllablePredict,
     syllableSources: cleanSyllableSources(e.syllableSources),
+    syllableStrict: !!e.syllableStrict,
+    syllableSmooth: cleanSyllableSmooth(e.syllableSmooth),
   }
 }
 
@@ -189,6 +199,8 @@ function experimentalWrite(patch) {
     syllables: patch.syllables === undefined ? cur.syllables : !!patch.syllables,
     syllablePredict: patch.syllablePredict === undefined ? cur.syllablePredict : !!patch.syllablePredict,
     syllableSources: patch.syllableSources === undefined ? cur.syllableSources : cleanSyllableSources(patch.syllableSources),
+    syllableStrict: patch.syllableStrict === undefined ? cur.syllableStrict : !!patch.syllableStrict,
+    syllableSmooth: patch.syllableSmooth === undefined ? cur.syllableSmooth : cleanSyllableSmooth(patch.syllableSmooth),
   }
   if (patch.apiKey !== undefined) writeExperimentalKey(String(patch.apiKey || '').trim())
   writePrefs({ ...readPrefs(), experimental: next })

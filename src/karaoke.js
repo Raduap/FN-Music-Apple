@@ -77,9 +77,10 @@ export function karaokeClock({ currentTime = 0, at = 0, playing = false } = {}, 
   return (Number(currentTime) || 0) + Math.max(0, drift)
 }
 
-/** 把 karaokeFills 的连续进度边折算成每个词的铺色宽度（0..1） */
-export function karaokeProgress(line, t) {
-  return karaokeFills(line, t)?.fills || null
+/** 把 karaokeFills 的连续进度边折算成每个词的铺色宽度（0..1）。
+ *  smooth：'strict' | 'mild' | 'normal' | 'strong'，与主窗口 / 全屏页保持一致。 */
+export function karaokeProgress(line, t, { smooth = 'strict', limit = null } = {}) {
+  return karaokeFills(line, t, { smooth, limit })?.fills || null
 }
 
 /**

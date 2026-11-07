@@ -331,6 +331,12 @@
 .exp-field > span { font-size: 12px; font-weight: 650; color: var(--text2); }
 .exp-field em { margin-left: 6px; font-style: normal; font-weight: 500; color: var(--text3); }
 .exp-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+/* 分段选择（速度带挡位等）：一排等宽按钮，选中项填充主色 */
+.exp-seg { display: flex; gap: 4px; margin-top: 12px; padding: 3px; border-radius: 10px; background: var(--input); }
+.exp-seg-btn { flex: 1; min-width: 0; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text2); font-size: 12.5px; font-weight: 600; cursor: pointer; transition: background 0.15s, color 0.15s; }
+.exp-seg-btn:hover:not(:disabled) { color: var(--text); }
+.exp-seg-btn.on { background: var(--accent); color: #fff; }
+.exp-seg-btn:disabled { opacity: 0.4; cursor: default; }
 .exp-status { margin-top: 12px; padding: 9px 11px; border-radius: 8px; font-size: 12.5px; line-height: 1.45; }
 .exp-status.good { color: #1f8f4d; background: rgba(40, 167, 69, 0.1); }
 .exp-status.bad { color: #ff3b30; background: rgba(255, 59, 48, 0.1); }

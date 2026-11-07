@@ -742,10 +742,83 @@ function predictKaraokeLines(lines, { duration = 0 } = {}) {
   })
 }
 
+// ---------- 扫色平滑（速度上限） ----------
+// 词级数据里「过快」的字（外语语气词 / 日语半拍装饰假名，可达 20+ 字/s）扫一下就过去，
+// 大脑预期的匀速被打断，观感最不舒服；而「过慢」的字是真实长音 / 拖音（如 1.6 字/s），
+// 慢慢扫反而贴合演唱，不该被人为催快。
+// 所以这里只压「过快」的一端（给每个词一个速度上限），慢字一律保持原样；
+// 词起唱点（onset）也完全不动——起唱点与音乐对齐最重要，只让过快字的铺色时长变长，
+// 吃掉它后面的空隙。整句跨度不会因此超过原始歌词窗口（越界由后续收口兜底）。
+// mode: 'strict'(不平滑) | 'mild' | 'normal' | 'strong'；默认 strict 以保持库的既有语义。
+const SPEED_CAP = { mild: 3.2, normal: 2.4, strong: 1.7 }
+const smoothedCache = new WeakMap() // words 数组 -> Map(mode -> 平滑后数组)
+const charCount = (v) => [...String(v ?? '')].length
+function median(xs) {
+  if (!xs.length) return 0
+  const a = [...xs].sort((p, q) => p - q)
+  const m = a.length >> 1
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2
+}
+function smoothWordTimeline(words, mode = 'strict', limit = null) {
+  const K = SPEED_CAP[mode]
+  if (!K || !Array.isArray(words) || words.length < 2) return words
+  const key = limit == null ? mode : mode + '@' + Math.round(Number(limit) * 1000)
+  let byMode = smoothedCache.get(words)
+  if (byMode?.has(key)) return byMode.get(key)
+  const remember = (out) => {
+    if (!byMode) { byMode = new Map(); smoothedCache.set(words, byMode) }
+    byMode.set(key, out)
+    return out
+  }
+  // 参与整形的词：有文本、时间有效且时长 > 0
+  const solid = []
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]
+    const c = charCount(w?.text)
+    const t = Number(w?.time)
+    const e = Number(w?.end ?? w?.time)
+    if (c > 0 && Number.isFinite(t) && Number.isFinite(e) && e > t) solid.push({ i, c, t, e })
+  }
+  if (solid.length < 2) return remember(words)
+  // 「正常语速」锚点用逐词速度的中位数，避免被少数装饰音拉高，
+  // 使上限 = 中位速度 * K，只压真正异常的过快字。
+  const speeds = solid.map((w) => w.c / (w.e - w.t))
+  const cap = median(speeds) * K
+  if (!(cap > 0)) return remember(words)
+  // 只把超过上限的词放宽时长；慢字按原时长。起唱点保持，词间空隙按原样保留，
+  // 被拉长的部分自然向右占用空隙；若因此与下一个词重叠，则下一个词顺延。
+  // 每个词的目标时长（只增不减）：rawDur 与「速度上限对应的时长」取大
+  const want = solid.map((w) => Math.max(w.e - w.t, w.c / cap))
+  // 延长预算 = 窗口右界 - 原始末词结束；没有 limit 时视为不受限。
+  // 若原始就已越过窗口，则完全不延长（返回原始时长），避免把结尾扫过下一句。
+  const rawLast = solid[solid.length - 1].e
+  let budget = Infinity
+  if (limit != null && Number.isFinite(Number(limit))) budget = Math.max(0, Number(limit) - rawLast)
+  const totalExt = want.reduce((sum, d, k) => sum + Math.max(0, d - (solid[k].e - solid[k].t)), 0)
+  const gain = totalExt > 0 ? Math.min(1, budget / totalExt) : 0
+  const out = words.map((w) => ({ ...w }))
+  let cursor = solid[0].t
+  for (let k = 0; k < solid.length; k++) {
+    const w = solid[k]
+    const prev = k > 0 ? solid[k - 1] : null
+    const gap = prev ? Math.max(0, w.t - prev.e) : 0
+    const startAt = Math.max(w.t, cursor + gap)
+    const rawDur = w.e - w.t
+    const ext = Math.max(0, want[k] - rawDur) * gain // 只加不增，慢字 ext=0
+    const dur = rawDur + ext
+    out[w.i].time = startAt
+    out[w.i].end = startAt + dur
+    cursor = startAt + dur
+  }
+  return remember(out)
+}
+
 // ---------- 卡拉OK进度 ----------
-function karaokeFills(line, t) {
+function karaokeFills(line, t, { smooth = 'strict' } = {}) {
   // 防御性清洗：兼容历史 / 外部传入的脏时间轴，保证进度只随时间单调前进
-  const words = sanitizeWordTimeline(line?.words || [], { start: line?.time, end: line?.end })
+  const base = sanitizeWordTimeline(line?.words || [], { start: line?.time, end: line?.end })
+  // 非严格模式：把词速收进合理带内，抹平源数据的忽快忽慢（保留整句窗口与停顿）
+  const words = smoothWordTimeline(base, smooth)
   const text = String(line?.text || '')
   const n = words.length
   if (!n) return null
@@ -801,6 +874,7 @@ export {
   mergeSyllableLines,
   pickSyllableCandidate,
   karaokeFills,
+  smoothWordTimeline,
   predictWordTimings,
   predictKaraokeLines,
   textBagOverlap,

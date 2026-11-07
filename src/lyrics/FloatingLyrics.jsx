@@ -220,7 +220,9 @@ export default function FloatingLyrics() {
       // 与全屏页同款：时间回退（拖动 / seek / 广播校正）时丢弃已显示宽度。
       if (lastT != null && t < lastT - 0.05) shown = null
       lastT = t
-      const fills = karaokeProgress(karaokeRef.current, t)
+      const mode = stateRef.current.syllableSmooth || 'strict'
+      const limit = Number.isFinite(stateRef.current.lyricEnd) ? stateRef.current.lyricEnd : null
+      const fills = karaokeProgress(karaokeRef.current, t, { smooth: mode, limit })
       // 正常播放只增不减；回退已在上面的时间检测里处理。
       shown = smoothFills(shown, fills)
       el.querySelectorAll('.kw-fill').forEach((node, wi) => {
@@ -235,7 +237,7 @@ export default function FloatingLyrics() {
       cancelAnimationFrame(raf)
       el.querySelectorAll('.kw-fill').forEach((node) => { node.style.setProperty('--fill', '0') })
     }
-  }, [karaokeOn, state.lyricIndex]) // 只在这句开始扫色 / 换句时重建；播放时钟与词级数据都走 ref
+  }, [karaokeOn, state.lyricIndex, state.syllableSmooth]) // 只在扫色开关 / 换句 / 平滑模式变化时重建；时钟与词级数据走 ref
 
   const startResize = (dir) => (e) => {
     if (e.button !== 0) return

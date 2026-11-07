@@ -2,13 +2,18 @@ import { useEffect, useRef, useState } from 'react'
 import { useUI } from '../store'
 import * as Icon from '../icons'
 
-const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablePredict: false, syllablesDebug: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
+const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablePredict: false, syllablesDebug: false, syllableStrict: false, syllableSmooth: 'normal', syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
 const SYLLABLE_SOURCES = [
   { id: 'amll', name: 'AMLL TTML DB', desc: '社区人工校准逐字库，质量最高' },
   { id: 'liriqo', name: 'LiriQo 聚合', desc: 'Apple / 酷狗 / 网易 / 千千等平台聚合' },
   { id: 'kugou', name: '酷狗音乐', desc: 'KRC 逐字直连，中文歌曲覆盖最好' },
   { id: 'netease', name: '网易云音乐', desc: 'YRC 逐字直连，中日英覆盖均衡' },
   { id: 'qq', name: 'QQ 音乐', desc: 'QRC 逐字直连，中文流行覆盖好' },
+]
+const SMOOTH_MODES = [
+  { id: 'mild', name: '宽松', desc: '只压缩最明显的过快字，最贴近源时间戳' },
+  { id: 'normal', name: '适中', desc: '推荐，把异常快的字收到常见语速' },
+  { id: 'strong', name: '更稳', desc: '过快字压得更多，长音仍然保持缓慢' },
 ]
 const SECTIONS = [
   { id: 'translate', label: '歌词翻译', icon: Icon.Translate },
@@ -32,7 +37,7 @@ export function ExperimentalSettings() {
     setTab('translate')
     ui().loadExperimental().then((r) => {
       const s = useUI.getState()
-      setForm({ ...DEFAULTS, ...r, apiKey: '', syllables: s.syllables, syllablePredict: s.syllablePredict, syllablesDebug: s.syllablesDebug })
+      setForm({ ...DEFAULTS, ...r, apiKey: '', syllables: s.syllables, syllablePredict: s.syllablePredict, syllablesDebug: s.syllablesDebug, syllableStrict: s.syllableStrict, syllableSmooth: s.syllableSmooth })
       setStatus(null)
     })
     lastFocus.current = document.activeElement
@@ -74,6 +79,15 @@ export function ExperimentalSettings() {
     const syllablePredict = !form.syllablePredict
     setForm((f) => ({ ...f, syllablePredict }))
     await ui().setSyllablePredict(syllablePredict)
+  }
+  const toggleStrict = async () => {
+    const syllableStrict = !form.syllableStrict
+    setForm((f) => ({ ...f, syllableStrict }))
+    await ui().setSyllableStrict(syllableStrict)
+  }
+  const pickSmooth = async (mode) => {
+    setForm((f) => ({ ...f, syllableSmooth: mode }))
+    await ui().setSyllableSmooth(mode)
   }
   const toggleSource = async (id) => {
     const next = form.syllableSources.includes(id)
@@ -221,6 +235,40 @@ export function ExperimentalSettings() {
                   >
                     <span>智能逐字补全</span><span className="fl-switch" aria-hidden="true" />
                   </button>
+                </section>
+                <section className="exp-section">
+                  <div className="exp-section-title">扫色手感</div>
+                  <button
+                    className={`fl-toggle exp-toggle ${form.syllableStrict ? 'on' : ''}`}
+                    role="switch"
+                    aria-checked={!!form.syllableStrict}
+                    disabled={!form.syllables}
+                    onClick={toggleStrict}
+                  >
+                    <span>严格匹配</span><span className="fl-switch" aria-hidden="true" />
+                  </button>
+                  <div className="exp-seg" role="radiogroup" aria-label="扫色速度挡位">
+                    {SMOOTH_MODES.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={form.syllableSmooth === m.id}
+                        className={`exp-seg-btn ${form.syllableSmooth === m.id && !form.syllableStrict ? 'on' : ''}`}
+                        disabled={!form.syllables || form.syllableStrict}
+                        title={m.desc}
+                        onClick={() => pickSmooth(m.id)}
+                      >
+                        {m.name}
+                      </button>
+                    ))}
+                  </div>
+                  <ul className="exp-list">
+                    <li>关闭「严格匹配」时，只把「过快」的字（外语语气词、日语半拍装饰假名等）压到常见语速，扫色不再「唰」一下闪过；默认关闭。</li>
+                    <li>拖长音 / 慢字是本来的演唱节奏，会保持缓慢扫过、不做加速，因此听感仍与真实演唱贴合。</li>
+                    <li>开启「严格匹配」则完全照抄数据源的词级时间戳，最精确，但很快的字会更跳。</li>
+                    <li>速度挡位只在非严格模式下生效：宽松只压最明显的过快字，更稳压得更多。</li>
+                  </ul>
                 </section>
                 <section className="exp-section">
                   <div className="exp-section-title">工作方式</div>
