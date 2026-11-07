@@ -45,16 +45,37 @@ const allowed = (url) => {
     return u.protocol === 'https:' && /^(raw\.githubusercontent\.com|api\.liriqo-alfarrizi\.my\.id|songsearch\.kugou\.com|lyrics\.kugou\.com|music\.163\.com|interface3\.music\.163\.com|c\.y\.qq\.com)$/.test(u.hostname)
   } catch { return false }
 }
+// 限流 / 瞬时故障的退避重试：优先尊重 Retry-After，否则指数退避（800ms 起，封顶 8s）。
+// 单个源连续失败不该拖垮整首歌，重试仍有上限。
+const RETRY_LIMIT = 3
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+function retryDelay(res, attempt) {
+  const ra = res && res.headers && res.headers.get ? res.headers.get('retry-after') : null
+  if (ra) {
+    const sec = Number(ra)
+    if (Number.isFinite(sec)) return Math.min(8000, Math.max(0, sec) * 1000)
+    const when = Date.parse(ra)
+    if (Number.isFinite(when)) return Math.min(8000, Math.max(0, when - Date.now()))
+  }
+  return Math.min(8000, 800 * 2 ** attempt)
+}
 async function fetchRaw(url, init = {}) {
   if (!allowed(url)) throw new Error('不允许的来源')
-  await throttled()
-  const ctl = new AbortController()
-  const timer = setTimeout(() => ctl.abort(), SYLLABLE_TIMEOUT)
-  try {
-    const res = await net.fetch(url, { ...init, signal: ctl.signal, bypassCustomProtocolHandlers: true })
-    if (!res.ok) return ''
-    return await res.text()
-  } finally { clearTimeout(timer) }
+  for (let attempt = 0; ; attempt++) {
+    await throttled()
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), SYLLABLE_TIMEOUT)
+    try {
+      const res = await net.fetch(url, { ...init, signal: ctl.signal, bypassCustomProtocolHandlers: true })
+      // 429 限流（LiriQo 常见）与 5xx 瞬时故障：等待后重试
+      if ((res.status === 429 || res.status >= 500) && attempt < RETRY_LIMIT) {
+        await sleep(retryDelay(res, attempt))
+        continue
+      }
+      if (!res.ok) return ''
+      return await res.text()
+    } finally { clearTimeout(timer) }
+  }
 }
 async function fetchText(url) {
   return fetchRaw(url, { headers: SYLLABLE_UA })
@@ -149,30 +170,19 @@ function parseKrc(text) {
 
 // 酷狗：两步搜索（song_search_v2 拿 FileHash -> lyrics.kugou.com 查 KRC -> 下载解密）。
 // 命中后返回单个候选；失败静默返回 []。
-async function fetchKugouLines(title, artist) {
-  const kw = [title, artist].filter(Boolean).join(' ')
-  const su = new URL(KUGOU_SEARCH)
-  su.searchParams.set('keyword', kw)
-  su.searchParams.set('page', '1')
-  su.searchParams.set('pagesize', '5')
-  const sRaw = await fetchText(String(su))
-  const sJson = sRaw ? JSON.parse(sRaw) : null
-  const lists = sJson?.data?.lists || []
-  if (!lists.length) return []
-  // 挑最像的：歌名归一化后完全匹配优先，其次第一条
-  const q = norm(title)
-  const best = lists.find((x) => norm(x.SongName) === q) || lists[0]
-  if (!best?.FileHash) return []
+// 下载并解密单个酷狗 KRC，失败返回 null（供多候选循环复用）。
+async function downloadKugouKrc(track) {
+  if (!track?.FileHash) return null
   const lu = new URL(KUGOU_LYRICS + '/search')
   lu.searchParams.set('ver', '1')
   lu.searchParams.set('man', 'yes')
   lu.searchParams.set('client', 'pc')
-  lu.searchParams.set('hash', best.FileHash)
-  if (best.Duration) lu.searchParams.set('duration', String(best.Duration * 1000))
+  lu.searchParams.set('hash', track.FileHash)
+  if (track.Duration) lu.searchParams.set('duration', String(track.Duration * 1000))
   const lRaw = await fetchText(String(lu))
   const lJson = lRaw ? JSON.parse(lRaw) : null
   const cand = (lJson?.candidates || [])[0]
-  if (!cand?.id || !cand?.accesskey) return []
+  if (!cand?.id || !cand?.accesskey) return null
   const du = new URL(KUGOU_LYRICS + '/download')
   du.searchParams.set('ver', '1')
   du.searchParams.set('client', 'pc')
@@ -182,14 +192,51 @@ async function fetchKugouLines(title, artist) {
   du.searchParams.set('charset', 'utf8')
   const dRaw = await fetchText(String(du))
   const dJson = dRaw ? JSON.parse(dRaw) : null
-  if (!dJson?.content) return []
+  if (!dJson?.content) return null
   const buf = Buffer.from(String(dJson.content), 'base64').subarray(4)
   for (let i = 0; i < buf.length; i++) buf[i] ^= KRC_KEY[i % KRC_KEY.length]
   let krc
-  try { krc = require('zlib').inflateSync(buf).toString('utf8') } catch { return [] }
+  try { krc = require('zlib').inflateSync(buf).toString('utf8') } catch { return null }
   const lines = parseKrc(krc)
-  if (lines.length < 2) return []
-  return [{ source: 'kugou', provider: 'kugou-krc', lines, track: best.SongName || '', artist: best.SingerName || '' }]
+  return lines.length >= 2 ? lines : null
+}
+
+// 酷狗：搜索 -> 按「歌名 / 艺人 / 时长 / 版本标记」排序 -> 取前几个版本各出一个候选。
+// 同名歌曲常有现场版、DJ 版、裁剪版，只取第一条会把逐字配到错误版本上；
+// 多返回几个候选，交给渲染层的覆盖率和行数结构择优挑选。
+async function fetchKugouLines(title, artist, duration) {
+  const kw = [title, artist].filter(Boolean).join(' ')
+  const su = new URL(KUGOU_SEARCH)
+  su.searchParams.set('keyword', kw)
+  su.searchParams.set('page', '1')
+  su.searchParams.set('pagesize', '10')
+  const sRaw = await fetchText(String(su))
+  const sJson = sRaw ? JSON.parse(sRaw) : null
+  const lists = sJson?.data?.lists || []
+  if (!lists.length) return []
+  const ranked = []
+  for (const x of lists) {
+    const score = scoreVersion({
+      name: x.SongName, candArtist: x.SingerName, candDuration: x.Duration,
+      title, artist, duration,
+    })
+    if (score < 0 || !x.FileHash) continue
+    ranked.push({ track: x, score })
+  }
+  ranked.sort((a, b) => b.score - a.score)
+  // 取前若干「同名」候选各下一份 KRC：名次只代表元数据相似度，真正取舍
+  // 交给合并层按文本覆盖率决定（版本标记只是排序信号，不再淘汰候选）。
+  const out = []
+  const seen = new Set()
+  for (const { track } of ranked.slice(0, 5)) {
+    const key = track.FileHash || track.SongName
+    if (seen.has(key)) continue
+    const lines = await downloadKugouKrc(track)
+    if (!lines) continue
+    seen.add(key)
+    out.push({ source: 'kugou', provider: 'kugou-krc', lines, track: track.SongName || '', artist: track.SingerName || '' })
+  }
+  return out
 }
 
 // 网易云 YRC：每行两种形态——
@@ -229,7 +276,7 @@ function parseYrc(text) {
 
 // 网易云：cloudsearch/pc 搜歌 -> EAPI 取 YRC（params 走 AES-128-ECB + md5 摘要）。
 // 歌名命中、且已知艺人时必须艺人命中才采用，避免抓到无版权歌曲的翻唱。
-async function fetchNeteaseLines(title, artist) {
+async function fetchNeteaseLines(title, artist, duration) {
   const crypto = require('crypto')
   const body = new URLSearchParams({ s: [title, artist].filter(Boolean).join(' '), type: '1', limit: '10', offset: '0' })
   const sRaw = await fetchRaw(NETEASE_SEARCH, {
@@ -238,36 +285,38 @@ async function fetchNeteaseLines(title, artist) {
     body: String(body),
   })
   const songs = (sRaw ? JSON.parse(sRaw) : null)?.result?.songs || []
-  const q = norm(title)
-  const qa = norm(artist)
-  const BAD = /(cover|翻唱|伴奏|钢琴|纯音乐|童声|dj|remix|beat|karaoke|instrumental|live|demo)/i
-  let best = null
+  const ranked = []
   for (const s of songs) {
-    const name = norm(s.name)
-    const nameEq = name === q
-    if (!(nameEq || name.includes(q) || q.includes(name))) continue
-    const artistHit = qa && (s.ar || []).some((a) => artistMatches(qa, norm(a.name)))
-    // 已知艺人却对不上：多半是翻唱 / 改编，直接跳过
-    if (qa && !artistHit) continue
-    let score = (nameEq ? 4 : 2) + (artistHit ? 3 : 0)
-    if (BAD.test(s.name)) score -= 3
-    if (!best || score > best.score) best = { id: s.id, name: s.name, artists: (s.ar || []).map((a) => a.name).join(','), score }
+    const artists = (s.ar || []).map((a) => a.name)
+    // 与酷狗 / QQ 共用同一套版本打分，避免三处各自维护正则而漏筛。
+    const score = scoreVersion({
+      name: s.name, candArtist: artists.join(','), candDuration: Number(s.dt) / 1000,
+      title, artist, duration,
+    })
+    if (score < 0 || !s.id) continue
+    ranked.push({ id: s.id, name: s.name, artists: artists.join(','), score })
   }
-  if (!best || best.score < 2) return []
-  const data = { id: String(best.id), cp: false, lv: 0, tv: 0, rv: 0, kv: 1, yv: 1, ytv: 0, yrv: 0 }
-  const text = JSON.stringify(data)
-  const digest = crypto.createHash('md5').update('nobody' + NETEASE_EAPI_PATH + 'use' + text + 'md5forencrypt').digest('hex')
-  const cipher = crypto.createCipheriv('aes-128-ecb', NETEASE_EAPI_KEY, null)
-  const params = Buffer.concat([cipher.update(Buffer.from(NETEASE_EAPI_PATH + '-36cd479b6b5-' + text + '-36cd479b6b5-' + digest, 'utf8')), cipher.final()]).toString('hex').toUpperCase()
-  const lRaw = await fetchRaw(NETEASE_EAPI, {
-    method: 'POST',
-    headers: { ...SYLLABLE_UA, 'Content-Type': 'application/x-www-form-urlencoded', Referer: 'https://music.163.com/', Origin: 'https://music.163.com' },
-    body: 'params=' + params,
-  })
-  const json = lRaw ? JSON.parse(lRaw) : null
-  const lines = parseYrc(json?.yrc?.lyric || json?.klyric?.lyric || '')
-  if (lines.length < 2) return []
-  return [{ source: 'netease', provider: 'netease-yrc', lines, track: best.name, artist: best.artists }]
+  ranked.sort((a, b) => b.score - a.score)
+  // 逐个尝试前几个同名版本：同名歌曲常有现场版 / 重制版，时间轴对不上，
+  // 交给渲染层按本地 LRC 覆盖率择优，避免在抓取层武断锁定第一条。
+  const out = []
+  for (const best of ranked.slice(0, 2)) {
+    const data = { id: String(best.id), cp: false, lv: 0, tv: 0, rv: 0, kv: 1, yv: 1, ytv: 0, yrv: 0 }
+    const text = JSON.stringify(data)
+    const digest = crypto.createHash('md5').update('nobody' + NETEASE_EAPI_PATH + 'use' + text + 'md5forencrypt').digest('hex')
+    const cipher = crypto.createCipheriv('aes-128-ecb', NETEASE_EAPI_KEY, null)
+    const params = Buffer.concat([cipher.update(Buffer.from(NETEASE_EAPI_PATH + '-36cd479b6b5-' + text + '-36cd479b6b5-' + digest, 'utf8')), cipher.final()]).toString('hex').toUpperCase()
+    const lRaw = await fetchRaw(NETEASE_EAPI, {
+      method: 'POST',
+      headers: { ...SYLLABLE_UA, 'Content-Type': 'application/x-www-form-urlencoded', Referer: 'https://music.163.com/', Origin: 'https://music.163.com' },
+      body: 'params=' + params,
+    })
+    const json = lRaw ? JSON.parse(lRaw) : null
+    const lines = parseYrc(json?.yrc?.lyric || json?.klyric?.lyric || '')
+    if (lines.length < 2) continue
+    out.push({ source: 'netease', provider: 'netease-yrc', lines, track: best.name, artist: best.artists })
+  }
+  return out
 }
 
 // AMLL TTML DB：本地索引匹配后再拉取 TTML。
@@ -336,22 +385,22 @@ async function fetchLiriqoCandidates(title, artist, debug) {
   return out
 }
 
-async function fetchKugouCandidates(title, artist, debug) {
-  const tracks = await fetchKugouLines(title, artist)
+async function fetchKugouCandidates(title, artist, debug, duration) {
+  const tracks = await fetchKugouLines(title, artist, duration)
   if (debug) debug.kugou = { tracks: tracks.length }
-  return tracks.map((t) => ({ source: 'kugou', provider: 'kugou-krc', lines: t.lines }))
+  return tracks
 }
 
-async function fetchQqCandidates(title, artist, debug) {
-  const tracks = await fetchQqLines(title, artist)
+async function fetchQqCandidates(title, artist, debug, duration) {
+  const tracks = await fetchQqLines(title, artist, duration)
   if (debug) debug.qq = { tracks: tracks.length }
-  return tracks.map((t) => ({ source: 'qq', provider: 'qq-qrc', lines: t.lines }))
+  return tracks
 }
 
-async function fetchNeteaseCandidates(title, artist, debug) {
-  const tracks = await fetchNeteaseLines(title, artist)
+async function fetchNeteaseCandidates(title, artist, debug, duration) {
+  const tracks = await fetchNeteaseLines(title, artist, duration)
   if (debug) debug.netease = { tracks: tracks.length }
-  return tracks.map((t) => ({ source: 'netease', provider: 'netease-yrc', lines: t.lines }))
+  return tracks
 }
 
 // QQ 音乐：soso 搜索 -> lyric_download.fcg 取加密 QRC -> 自定义 DES 解密 -> 解析。
@@ -389,6 +438,49 @@ async function downloadQqQrc(songid) {
   return lines.length >= 2 ? lines : null
 }
 
+// 版本标记（翻唱 / 伴奏 / 现场 / 环绕 / DJ 等）只参与「同名候选之间」的轻量排序。
+// 经验：第三方上传的「3D环绕版 / DJ版 / 现场版」经常直接复用原版的歌词与时间轴，
+// 罚分过重会把唯一携带正确逐字的候选打负分淘汰（曾导致《无人之岛》《告白气球》整首丢失）。
+// 因此这里只做最多 2 分的排序罚分，真正的取舍交给合并层的文本覆盖率。
+const BAD_VERSION = /(cover|翻唱|伴奏|钢琴|纯音乐|童声|dj|remix|beat|karaoke|instrumental|demo|片段|铃声|女声|男声|改编|抖音|8d|环绕|加速|慢速|降调|升调)/i
+// 现场类标记单独一组：本地曲目本身就是现场版时不该被罚。
+const LIVE_VERSION = /(live|现场|演唱会|音乐汇|巡演|音乐会)/i
+
+// 版本罚分：本地标题已带同类标记时豁免（如本地就是 (Live) 版，候选也是 Live 版）。
+function versionPenalty(name, title) {
+  const n = String(name || ''), t = String(title || '')
+  let p = 0
+  if (LIVE_VERSION.test(n) && !LIVE_VERSION.test(t)) p++
+  if (BAD_VERSION.test(n) && !BAD_VERSION.test(t)) p++
+  return Math.min(p, 2)
+}
+
+// 时长接近度（秒）：完全一致返 1，差 >=45s 返 0，缺失返 0.5（不奖不罚）。
+// 逐字时间轴与音频时长强相关，用它区分同名的电台版 / 片段 / 现场版。
+function durationScore(localSec, candSec) {
+  const a = Number(localSec), b = Number(candSec)
+  if (!Number.isFinite(a) || a <= 0 || !Number.isFinite(b) || b <= 0) return 0.5
+  const d = Math.abs(a - b)
+  if (d <= 3) return 1
+  if (d >= 45) return 0
+  return 1 - (d - 3) / 42
+}
+
+// 同名候选打分：歌名命中 + 艺人命中 + 时长接近 − 轻量版本罚分。
+// 返回值语义：-1 表示「歌名都匹配不上」，由调用方淘汰；其余一律 >= 0.5，
+// 保证同名候选不会被罚分打到负分而遭硬过滤（淘汰只由合并层覆盖率决定）。
+function scoreVersion({ name, candArtist, candDuration, title, artist, duration }) {
+  const nm = norm(name), q = norm(title)
+  if (!nm || !q) return -1
+  if (!(nm === q || nm.includes(q) || q.includes(nm))) return -1
+  let score = nm === q ? 4 : 2
+  const qa = norm(artist)
+  if (qa && artistMatches(qa, norm(candArtist))) score += 3
+  score += durationScore(duration, candDuration) * 2
+  score -= versionPenalty(name, title)
+  return Math.max(0.5, score)
+}
+
 // 两个艺人名是否算同一人：完全包含即通过；再退一步，共享 >=2 个汉字前缀
 // 也算通过（应对「宇多田ヒカル」vs「宇多田光」这类同一歌手的异名写法）。
 function artistMatches(local, candidate) {
@@ -402,7 +494,7 @@ function artistMatches(local, candidate) {
 // QQ 音乐：soso 搜索 -> 按分数逐条尝试 lyric_download.fcg，取第一条「真歌词」。
 // 有些版本（如仅 credit 信息的单曲页）解密出来只有制作人名单、时间轴全挤在开头，
 // 需要靠时间跨度识别并回退到下一个候选。
-async function fetchQqLines(title, artist) {
+async function fetchQqLines(title, artist, duration) {
   const su = new URL(QQ_SEARCH)
   su.searchParams.set('w', [title, artist].filter(Boolean).join(' '))
   su.searchParams.set('p', '1')
@@ -411,35 +503,33 @@ async function fetchQqLines(title, artist) {
   su.searchParams.set('new_json', '1')
   const sRaw = await fetchRaw(String(su), { headers: { ...SYLLABLE_UA, Referer: 'https://y.qq.com/' } })
   const songs = (sRaw ? JSON.parse(sRaw) : null)?.data?.song?.list || []
-  const q = norm(title)
-  const qa = norm(artist)
-  const BAD = /(cover|翻唱|伴奏|钢琴|纯音乐|童声|dj|remix|beat|karaoke|instrumental|live|demo|片段|铃声)/i
   const ranked = []
   for (const s of songs) {
     // new_json=1 时字段是 id/name，旧格式是 songid/songname，两种都兼容
     const sid = s.songid ?? s.id
     const sname = String(s.songname ?? s.name ?? '')
     if (!sid || !sname) continue
-    const name = norm(sname)
-    const nameEq = name === q
-    if (!(nameEq || name.includes(q) || q.includes(name))) continue
-    const singers = (s.singer || []).map((x) => norm(x.name))
-    const artistHit = qa && singers.some((n) => artistMatches(qa, n))
-    // 已知艺人却对不上：多半是翻唱 / 改编，直接跳过
-    if (qa && !artistHit) continue
-    let score = (nameEq ? 4 : 2) + (artistHit ? 3 : 0)
-    if (BAD.test(sname)) score -= 3
-    if (score < 2) continue
-    ranked.push({ id: sid, name: sname, artists: (s.singer || []).map((x) => x.name).join(','), score })
+    const singers = (s.singer || []).map((x) => x.name)
+    // 与酷狗 / 网易云共用同一套版本打分（QQ 的 interval 字段是秒级时长）
+    const score = scoreVersion({
+      name: sname, candArtist: singers.join(','), candDuration: s.interval,
+      title, artist, duration,
+    })
+    if (score < 0) continue
+    ranked.push({ id: sid, name: sname, artists: singers.join(','), score })
   }
   ranked.sort((a, b) => b.score - a.score)
+  // 多返回几个候选：同名歌曲的电台版 / 现场版时间轴对不上，
+  // 由渲染层按本地 LRC 覆盖率和行数结构择优，不在抓取层武断锁定第一条。
+  const out = []
   for (const cand of ranked.slice(0, 4)) {
     const lines = await downloadQqQrc(cand.id)
     if (!lines) continue
     if (!looksLikeLyricLines(lines)) continue
-    return [{ source: 'qq', provider: 'qq-qrc', lines, track: cand.name, artist: cand.artists }]
+    out.push({ source: 'qq', provider: 'qq-qrc', lines, track: cand.name, artist: cand.artists })
+    if (out.length >= 2) break
   }
-  return []
+  return out
 }
 
 const SOURCE_FETCHERS = {
@@ -450,26 +540,62 @@ const SOURCE_FETCHERS = {
   qq: fetchQqCandidates,
 }
 
-async function fetchSyllables({ title, artist, sources, debug: wantDebug = false } = {}) {
+// 进程内短期缓存：同一首歌常被两条链路分别请求（播放页逐字 + 悬浮窗逐字），
+// 切歌来回也会重复请求。缓存能显著减少总请求数，降低 LiriQo 被限流（429）的概率。
+// TTL 与条目上限避免无限增长；不同数据源顺序 / 开关组合视为不同缓存项，互不干扰。
+const SYLLABLE_CACHE_TTL = 10 * 60 * 1000
+const SYLLABLE_CACHE_MAX = 120
+const syllableCache = new Map()
+
+function syllableCacheKey(title, artist, duration, order) {
+  // 时长按 5s 分桶：同一首歌在播放前 / 播放中拿到的 duration 可能略有差异，
+  // 分桶避免因几秒误差重复抓取；同时仍能区分时长差别很大的同名版本。
+  const bucket = Math.round((Number(duration) || 0) / 5) * 5
+  return title + '\u0000' + artist + '\u0000' + bucket + '\u0000' + order.join(',')
+}
+function syllableCacheGet(key) {
+  const hit = syllableCache.get(key)
+  if (!hit) return null
+  if (Date.now() - hit.at > SYLLABLE_CACHE_TTL) { syllableCache.delete(key); return null }
+  // LRU：命中后移到末尾
+  syllableCache.delete(key)
+  syllableCache.set(key, hit)
+  return hit.value
+}
+function syllableCacheSet(key, value) {
+  syllableCache.set(key, { at: Date.now(), value })
+  while (syllableCache.size > SYLLABLE_CACHE_MAX) {
+    syllableCache.delete(syllableCache.keys().next().value)
+  }
+}
+// 供测试与「强制刷新」场景清空缓存。
+function clearSyllableCache() { syllableCache.clear() }
+
+async function fetchSyllables({ title, artist, duration, sources, debug: wantDebug = false } = {}) {
   title = String(title || '').trim()
   if (!title) return { ok: false, error: '缺少歌曲名' }
   const debug = wantDebug ? { providers: [] } : null
   // sources：有序数据源（设置面板可开关 / 排序）；未列出 = 关闭该源，缺省或空数组 = 全开。
   const order = (Array.isArray(sources) && sources.length ? sources : SYLLABLE_SOURCES)
     .filter((id, i, arr) => SYLLABLE_SOURCES.includes(id) && arr.indexOf(id) === i)
+  const cacheKey = syllableCacheKey(title, String(artist || ''), duration, order)
+  const cached = syllableCacheGet(cacheKey)
+  if (cached) return cached
   const candidates = []
   // 严格按用户排序串行抓取：渲染层按候选择优时会优先看到排在前面的源。
   for (const id of order) {
     const fetcher = SOURCE_FETCHERS[id]
     if (!fetcher) continue
     try {
-      candidates.push(...(await fetcher(title, artist, debug)))
+      candidates.push(...(await fetcher(title, artist, debug, duration)))
     } catch {}
   }
   if (debug) debug.candidateCount = candidates.length
   // 兼容旧字段：lines/source 取第一个候选；完整候选列表交给渲染层按本地 LRC 命中率择优
   const first = candidates[0] || null
-  return { ok: true, lines: first?.lines || null, source: first?.source || '', candidates, debug }
+  const result = { ok: true, lines: first?.lines || null, source: first?.source || '', candidates, debug }
+  syllableCacheSet(cacheKey, result)
+  return result
 }
 
-module.exports = { fetchSyllables, parseTtml, parseKrc, parseYrc, toSimplified, norm, parseTime, artistMatches, looksLikeLyricLines, SYLLABLE_SOURCES }
+module.exports = { fetchSyllables, clearSyllableCache, parseTtml, parseKrc, parseYrc, toSimplified, norm, parseTime, artistMatches, looksLikeLyricLines, durationScore, scoreVersion, SYLLABLE_SOURCES }

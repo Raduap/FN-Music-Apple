@@ -573,7 +573,9 @@ async function enrichSyllableLines(id, song, lines) {
   if (!song) return lines
   let pending = syllableRemote.get(id)
   if (!pending) {
-    pending = window.fn?.lyricsSyllables?.({ title: song.title, artist: song.artist }).catch(() => null)
+    // duration 让抓取层按「时长接近度」区分同名版本（现场版 / 剪辑版 / 翻唱），
+    // 时长差太大的候选会被降权，避免逐字时间轴整体错位。
+    pending = window.fn?.lyricsSyllables?.({ title: song.title, artist: song.artist, duration: song.duration || 0 }).catch(() => null)
     syllableRemote.set(id, pending)
     if (syllableRemote.size > 30) {
       const oldest = syllableRemote.keys().next().value

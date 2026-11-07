@@ -286,7 +286,7 @@ function useLyrics(song) {
       let merged = lines
       let reason = ''
       try {
-        const r = await window.fn?.lyricsSyllables?.({ title: song?.title, artist: song?.artist })
+        const r = await window.fn?.lyricsSyllables?.({ title: song?.title, artist: song?.artist, duration: song?.duration || 0 })
         // console.debug 在 DevTools 默认 Info 级别下不可见，必须用 console.log；且只在调试开关开启时输出
         if (r?.ok && syllablesDebug) console.log('[syllables 数据]', { source: r.source, lines: r.lines, candidates: r.candidates, debug: r.debug })
         if (r?.ok && r.candidates?.length) {
@@ -395,14 +395,14 @@ export function LyricsView({ song, big = false }) {
   // 手动调试钩子：DevTools 里 wait __syllablesProbe('歌名','歌手') 直接看原始返回
   useEffect(() => {
     if (!syllablesDebug) return
-    window.__syllablesProbe = async (title, artist) => window.fn.lyricsSyllables({ title, artist: artist || '' })
+    window.__syllablesProbe = async (title, artist) => window.fn.lyricsSyllables({ title, artist: artist || '', duration: usePlayer.getState().duration || 0 })
     // 逐行对照：本地 LRC vs 远端逐字，Console.table 直接看哪些行没对上
     window.__syllablesCompare = async (localOverride) => {
       const s = usePlayer.getState()
       const song = s.queue[s.index]
       if (!song) { console.log('[syllables 对照] 当前没有播放歌曲'); return null }
       const local = toLines(localOverride || await api.lyric(song.id))
-      const r = await window.fn.lyricsSyllables({ title: song.title, artist: song.artist })
+      const r = await window.fn.lyricsSyllables({ title: song.title, artist: song.artist, duration: song.duration || 0 })
       let stats = null
       const merged = r?.lines ? mergeSyllableLines(local, r.lines, (x) => { stats = x }) : local
       console.log(`[syllables 对照] ${song.title} / ${song.artist}`)
