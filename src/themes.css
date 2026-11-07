@@ -362,3 +362,10 @@
   pointer-events: none;
 }
 .lyrics.big .lt-main.karaoke .kw-fill { color: #fff; }
+
+/* ---------- 逐字歌词数据源：开关 + 排序行 ---------- */
+.exp-source-row { display: flex; align-items: center; gap: 6px; }
+.exp-source-row .fl-toggle { flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; gap: 2px; }
+.exp-source-row .fl-toggle small { font-size: 11px; color: var(--text2); font-weight: 400; }
+.exp-source-move { display: flex; gap: 2px; flex: none; }
+.exp-source-move .icon-btn:disabled { opacity: 0.3; cursor: default; }

@@ -56,7 +56,7 @@ export const useUI = create((set, get) => ({
   appearanceOpen: false,
   lyricsSettingsOpen: false,
   experimentalOpen: false,
-  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: false },
+  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: false, syllableSources: ['amll', 'liriqo', 'kugou'] },
   syllables: false, // 实验性逐字歌词（AMLL TTML DB / LiriQo），关闭时退回逐行歌词
   syllablesDebug: LS.get('sylDebug', false), // 逐字歌词调试 toast：切歌时报告命中情况
   floatingLyrics: false, // 悬浮歌词窗口是否开启（真实状态以主进程 prefs 为准）
@@ -663,9 +663,10 @@ function broadcast() {
 usePlayer.subscribe(broadcast)
 useUI.subscribe((s, prev) => {
   const expChanged = s.experimental?.enabled !== prev.experimental?.enabled || s.experimental?.sourceEnabled !== prev.experimental?.sourceEnabled || s.experimental?.aiFallback !== prev.experimental?.aiFallback
+  const srcListChanged = s.experimental?.syllableSources?.join(',') !== prev.experimental?.syllableSources?.join(',')
   const sylChanged = s.syllables !== prev.syllables
-  if (expChanged || sylChanged) lyricFor = ''
-  if (s.motion !== prev.motion || s.palette !== prev.palette || expChanged || sylChanged) broadcast()
+  if (expChanged || sylChanged || srcListChanged) lyricFor = ''
+  if (s.motion !== prev.motion || s.palette !== prev.palette || expChanged || sylChanged || srcListChanged) broadcast()
 })
 
 window.fn?.onPlayerCommand?.((cmd, arg) => {

@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { useUI } from '../store'
 import * as Icon from '../icons'
 
-const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablesDebug: false }
+const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablesDebug: false, syllableSources: ['amll', 'liriqo', 'kugou'] }
+const SYLLABLE_SOURCES = [
+  { id: 'amll', name: 'AMLL TTML DB', desc: '社区人工校准逐字库，质量最高' },
+  { id: 'liriqo', name: 'LiriQo 聚合', desc: 'Apple / 酷狗 / 网易 / 千千等平台聚合' },
+  { id: 'kugou', name: '酷狗音乐', desc: 'KRC 逐字直连，中文歌曲覆盖最好' },
+]
 const SECTIONS = [
   { id: 'translate', label: '歌词翻译', icon: Icon.Translate },
   { id: 'syllables', label: '逐字歌词', icon: Icon.Lyrics },
@@ -62,6 +67,23 @@ export function ExperimentalSettings() {
     const syllables = !form.syllables
     setForm((f) => ({ ...f, syllables }))
     await ui().setSyllables(syllables)
+  }
+  const toggleSource = async (id) => {
+    const next = form.syllableSources.includes(id)
+      ? form.syllableSources.filter((s) => s !== id)
+      : [...form.syllableSources, id]
+    if (!next.length) return // 至少保留一个源
+    setForm((f) => ({ ...f, syllableSources: next }))
+    await save({ syllableSources: next })
+  }
+  const moveSource = async (id, dir) => {
+    const list = [...form.syllableSources]
+    const i = list.indexOf(id)
+    const j = i + dir
+    if (i < 0 || j < 0 || j >= list.length) return
+    ;[list[i], list[j]] = [list[j], list[i]]
+    setForm((f) => ({ ...f, syllableSources: list }))
+    await save({ syllableSources: list })
   }
   const toggle = async () => {
     const next = !form.enabled
@@ -188,9 +210,33 @@ export function ExperimentalSettings() {
                   <div className="exp-section-title">工作方式</div>
                   <ul className="exp-list">
                     <li>只在当前句显示逐字扫色；没有逐字数据的歌自动退回逐行歌词，不影响显示。</li>
-                    <li>数据来源：AMLL TTML DB（社区人工校准）→ LiriQo 聚合接口（Apple / QQ / 酷狗 / 网易等），均带节流与超时。</li>
-                    <li>抓取在后台异步进行，失败静默退回，不弹错误提示。</li>
-                    <li>侧栏歌词与全屏播放页都生效；悬浮歌词暂不支持。</li>
+                  </ul>
+                </section>
+                <section className="exp-section">
+                  <div className="exp-section-title">数据源</div>
+                  <div className="exp-list">
+                    {SYLLABLE_SOURCES.map((src) => {
+                      const on = form.syllableSources.includes(src.id)
+                      const idx = form.syllableSources.indexOf(src.id)
+                      return (
+                        <div key={src.id} className="exp-source-row">
+                          <button className={`fl-toggle exp-toggle ${on ? 'on' : ''}`} role="switch" aria-checked={on} onClick={() => toggleSource(src.id)}>
+                            <span>
+                              <b>{idx >= 0 ? `${idx + 1}. ` : ''}{src.name}</b>
+                              <small>{src.desc}</small>
+                            </span>
+                            <span className="fl-switch" aria-hidden="true" />
+                          </button>
+                          <span className="exp-source-move">
+                            <button className="icon-btn" title="上移" aria-label={`上移 ${src.name}`} disabled={idx <= 0} onClick={() => moveSource(src.id, -1)}>↑</button>
+                            <button className="icon-btn" title="下移" aria-label={`下移 ${src.name}`} disabled={idx < 0 || idx >= form.syllableSources.length - 1} onClick={() => moveSource(src.id, 1)}>↓</button>
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <ul className="exp-list">
+                    <li>开关控制是否使用该源，箭头调整尝试顺序；至少保留一个数据源。</li>
                   </ul>
                 </section>
                 <section className="exp-section">

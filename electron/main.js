@@ -141,6 +141,14 @@ function writeExperimentalKey(key) {
   } catch {}
 }
 
+// 逐字数据源白名单：删除某个源后（如历史版本的 lrclib），
+// 老用户 prefs 里的残留 id 不能带进设置面板，否则序号错乱 / 出现幽灵源。
+const SYLLABLE_SOURCE_IDS = ['amll', 'liriqo', 'kugou']
+const cleanSyllableSources = (list) => {
+  const out = Array.isArray(list) ? list.filter((s) => SYLLABLE_SOURCE_IDS.includes(s)) : []
+  return out.length ? out : [...SYLLABLE_SOURCE_IDS]
+}
+
 const experimentalDefaults = () => ({
   enabled: false,
   sourceEnabled: true,
@@ -149,6 +157,7 @@ const experimentalDefaults = () => ({
   model: 'deepseek-chat',
   hasKey: false,
   syllables: false,
+  syllableSources: ['amll', 'liriqo', 'kugou'],
 })
 
 function experimentalRead() {
@@ -162,6 +171,7 @@ function experimentalRead() {
     model: e.model || 'deepseek-chat',
     hasKey: !!readExperimentalKey(),
     syllables: !!e.syllables,
+    syllableSources: cleanSyllableSources(e.syllableSources),
   }
 }
 
@@ -174,6 +184,7 @@ function experimentalWrite(patch) {
     baseUrl: String(patch.baseUrl ?? cur.baseUrl ?? '').trim(),
     model: String(patch.model ?? cur.model ?? '').trim(),
     syllables: patch.syllables === undefined ? cur.syllables : !!patch.syllables,
+    syllableSources: patch.syllableSources === undefined ? cur.syllableSources : cleanSyllableSources(patch.syllableSources),
   }
   if (patch.apiKey !== undefined) writeExperimentalKey(String(patch.apiKey || '').trim())
   writePrefs({ ...readPrefs(), experimental: next })
@@ -1093,7 +1104,7 @@ function registerIpc() {
       }
     } catch (e) { return { ok: false, error: e.message } }
   })
-    ipcMain.handle('lyrics:syllables', (_e, payload = {}) => fetchSyllables({ ...payload, debug: true }))
+    ipcMain.handle('lyrics:syllables', (_e, payload = {}) => fetchSyllables({ ...payload, sources: readPrefs().experimental?.syllableSources, debug: true }))
   if (isDev) ipcMain.handle('dev:set-session', (_e, { base, token } = {}) => { Object.assign(state, { base, token, mode: 'dev', username: 'dev' }); return { ok: true } })
   ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); syncBall(); syncLyrics(); if (p && p.lyricsStyle) lyricsWin?.setStyle(readPrefs().lyricsStyle); tray?.refresh(); return true })
   ipcMain.handle('tray:info', () => ({ available: !!tray, closeToTray: closeToTray(), ballMode: ballMode(), lyricsOn: lyricsOn() }))
