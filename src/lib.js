@@ -16,24 +16,9 @@ export function fmtTotal(sec) {
 }
 
 // ---------- LRC 解析 ----------
-export function parseLrc(text) {
-  if (!text) return []
-  const lines = []
-  let offset = 0
-  for (const raw of text.split(/\r?\n/)) {
-    const off = /^\[offset:\s*(-?\d+)\]/i.exec(raw.trim())
-    if (off) { offset = +off[1] / 1000; continue }
-    const stamps = [...raw.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)]
-    if (!stamps.length) continue
-    const content = raw.replace(/\[[^\]]*\]/g, '').trim()
-    for (const m of stamps) {
-      const frac = m[3] ? +m[3] / Math.pow(10, m[3].length) : 0
-      lines.push({ time: +m[1] * 60 + +m[2] + frac - offset, text: content })
-    }
-  }
-  lines.sort((a, b) => a.time - b.time)
-  return lines
-}
+// 实现统一在 electron/lyricsMerge.js（纯逻辑零依赖），这里仅做再导出，
+// 保证既有 import 路径与测试不变。
+export { parseLrc } from '../electron/lyricsMerge.js'
 
 // ---------- 封面主色（用于全屏播放页背景） ----------
 const colorCache = new Map()
