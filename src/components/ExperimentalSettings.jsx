@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { useUI } from '../store'
 import * as Icon from '../icons'
 
-const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablesDebug: false, syllableSources: ['amll', 'liriqo', 'kugou'] }
+const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablesDebug: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease'] }
 const SYLLABLE_SOURCES = [
   { id: 'amll', name: 'AMLL TTML DB', desc: '社区人工校准逐字库，质量最高' },
   { id: 'liriqo', name: 'LiriQo 聚合', desc: 'Apple / 酷狗 / 网易 / 千千等平台聚合' },
   { id: 'kugou', name: '酷狗音乐', desc: 'KRC 逐字直连，中文歌曲覆盖最好' },
+  { id: 'netease', name: '网易云音乐', desc: 'YRC 逐字直连，中日英覆盖均衡' },
 ]
 const SECTIONS = [
   { id: 'translate', label: '歌词翻译', icon: Icon.Translate },

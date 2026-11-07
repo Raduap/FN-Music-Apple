@@ -300,7 +300,9 @@ function useLyrics(song) {
         } else if (syllablesDebug) {
           const cands = r?.debug?.amll?.candidates?.length ? `AMLL 候选 ${r.debug.amll.candidates.length} 个都不够格（分数最高 ${r.debug.amll.candidates[0]?.score ?? 0}）` : ''
           const provs = r?.debug?.liriqo?.providers?.length ? ` LiriQo 有 ${r.debug.liriqo.providers.join(' / ')} 但未达词级` : ''
-          reason = (cands + provs + '，退回逐行歌词').trim() || (r?.error ? `没有逐字数据（${r.error}）` : '所有来源都没有逐字数据，退回逐行歌词')
+          const kugouN = r?.debug?.kugou?.tracks ? ` 酷狗 ${r.debug.kugou.tracks} 首无逐字` : ''
+          const neteaseN = r?.debug?.netease?.tracks ? ` 网易云 ${r.debug.netease.tracks} 首无逐字` : ''
+          reason = (cands + provs + kugouN + neteaseN + '，退回逐行歌词').trim() || (r?.error ? `没有逐字数据（${r.error}）` : '所有来源都没有逐字数据，退回逐行歌词')
           console.log('[syllables debug]', r?.debug)
         }
       } catch (e) {

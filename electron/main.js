@@ -143,7 +143,7 @@ function writeExperimentalKey(key) {
 
 // 逐字数据源白名单：删除某个源后（如历史版本的 lrclib），
 // 老用户 prefs 里的残留 id 不能带进设置面板，否则序号错乱 / 出现幽灵源。
-const SYLLABLE_SOURCE_IDS = ['amll', 'liriqo', 'kugou']
+const SYLLABLE_SOURCE_IDS = ['amll', 'liriqo', 'kugou', 'netease']
 const cleanSyllableSources = (list) => {
   const out = Array.isArray(list) ? list.filter((s) => SYLLABLE_SOURCE_IDS.includes(s)) : []
   return out.length ? out : [...SYLLABLE_SOURCE_IDS]
@@ -157,7 +157,7 @@ const experimentalDefaults = () => ({
   model: 'deepseek-chat',
   hasKey: false,
   syllables: false,
-  syllableSources: ['amll', 'liriqo', 'kugou'],
+  syllableSources: ['amll', 'liriqo', 'kugou', 'netease'],
 })
 
 function experimentalRead() {
