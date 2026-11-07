@@ -5,3 +5,4 @@ release*/
 test-results/
 promo-build/
 .vscode/
+dev/syllable-audit/out/

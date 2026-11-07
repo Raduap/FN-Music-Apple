@@ -30,6 +30,11 @@ export default [
     languageOptions: { ecmaVersion: 'latest', sourceType: 'commonjs', globals: globals.node },
   },
   {
+    // dev 下的工具脚本有 ESM（.mjs，如逐字审计），单独给 node ESM 环境
+    files: ['dev/**/*.mjs'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'module', globals: globals.node },
+  },
+  {
     files: ['test/**/*.js', '*.config.{js,mjs}'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', globals: globals.node },
   },
