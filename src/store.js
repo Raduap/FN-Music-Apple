@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { api, streamUrl, invalidate } from './api'
 import { acquireCover, prefetchCover } from './covers'
-import { hasNextLyric, hasTranslation, lyricFrame, loadLyrics, pickSyllableCandidate, predictKaraokeLines } from './lyrics'
+import { hasNextLyric, hasTranslation, lyricFrame, loadLyrics, loadSyllablesProgressive, predictKaraokeLines } from './lyrics'
 import { shuffled } from './lib'
 import { applyMotion } from './motion'
 import { DEFAULT_WALLPAPER, applyPalette, isPalette } from './appearance'
@@ -574,9 +574,9 @@ let lyricsReady = true
 let lastKey = ''
 let lastSync = { at: 0, time: 0, playing: false }
 
-// 悬浮歌词的逐字数据：远端候选按歌曲缓存（只抓一次网络），合并每次现场做——
-// 缓存合并结果会把「原词版」的行覆盖到译文版上，丢掉翻译。
-const syllableRemote = new Map()
+// 悬浮歌词的逐字数据：主进程按用户排序串行抓取，达到合格线（90%）就先把结果
+// 通过 broadcast 推给悬浮窗显示，达到优秀线（98%）停止后续来源；期间出现更好结果
+// 再次 broadcast（静默替换）。抓取与命中判定都在主进程完成，这里不重复请求。
 async function enrichSyllableLines(id, song, lines) {
   if (!song) return lines
   // 「智能逐字补全」：有真实词级时间的行原样保留，缺的行按字长 / 停顿预测，
@@ -584,20 +584,17 @@ async function enrichSyllableLines(id, song, lines) {
   const finish = (out) => (useUI.getState().syllablePredict
     ? predictKaraokeLines(out, { duration: song.duration || 0 })
     : out)
-  let pending = syllableRemote.get(id)
-  if (!pending) {
-    // duration 让抓取层按「时长接近度」区分同名版本（现场版 / 剪辑版 / 翻唱），
-    // 时长差太大的候选会被降权，避免逐字时间轴整体错位。
-    pending = window.fn?.lyricsSyllables?.({ title: song.title, artist: song.artist, duration: song.duration || 0 }).catch(() => null)
-    syllableRemote.set(id, pending)
-    if (syllableRemote.size > 30) {
-      const oldest = syllableRemote.keys().next().value
-      syllableRemote.delete(oldest)
-    }
-  }
-  const r = await pending
-  if (!r?.ok || !r.candidates?.length) return finish(lines)
-  return finish(pickSyllableCandidate(lines, r.candidates)?.merged || lines)
+  // 记录最近一次推送出去的最终数组：外层用引用比较决定要不要再 broadcast，
+  // 返回同一个引用可以避免「同一个结果广播两次」。
+  let last = null
+  const merged = await loadSyllablesProgressive(song, lines, (next) => {
+    // 流式结果：立即替换悬浮窗当前显示，让合格数据先出来，不再干等。
+    if (lyricFor !== id) return
+    last = finish(next)
+    lyricLines = last
+    broadcast()
+  })
+  return last || finish(merged)
 }
 
 function broadcast() {
@@ -614,7 +611,11 @@ function broadcast() {
       const run = async () => {
         const original = await loadLyrics(id, song, { translate: false })
         if (lyricFor !== id) return
-        lyricLines = original
+        // 0. 先广播未处理的本地歌词，切歌不再卡加载；若开了「智能逐字补全」，
+        //    直接叠加预测，保证「有开关就先按智能逐字走」的要求。
+        lyricLines = useUI.getState().syllables && useUI.getState().syllablePredict
+          ? predictKaraokeLines(original, { duration: song.duration || 0 })
+          : original
         lyricsReady = true
         broadcast()
         if (useUI.getState().experimental?.enabled) {

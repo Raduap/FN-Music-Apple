@@ -2,9 +2,9 @@
 import { api } from './api'
 // 纯逻辑（LRC 解析 / 双语合并 / 字符对齐 / 候选择优 / 卡拉OK进度）统一放在
 // electron/lyricsMerge.mjs，供渲染层与 dev 评测工具复用同一份实现。
-import { toLines, hasTranslation } from '../electron/lyricsMerge.mjs'
+import { toLines, hasTranslation, pickSyllableCandidate } from '../electron/lyricsMerge.mjs'
 // 保持既有导出面：其它模块历史上从 ./lyrics 引入这些纯函数。
-export { toLines, hasTranslation, mergeTranslations, mergeSyllableLines, pickSyllableCandidate, karaokeFills, textBagOverlap, sanitizeWordTimeline, predictWordTimings, predictKaraokeLines, normForMatch } from '../electron/lyricsMerge.mjs'
+export { toLines, hasTranslation, mergeTranslations, mergeSyllableLines, pickSyllableCandidate, karaokeFills, textBagOverlap, sanitizeWordTimeline, predictWordTimings, predictKaraokeLines, normForMatch, SYLLABLE_QUALIFIED, SYLLABLE_EXCELLENT, syllableTierFor } from '../electron/lyricsMerge.mjs'
 
 const MAX = 200
 const raw = new Map() // id -> 原始歌词（始终保留，关闭翻译时返回这一份）
@@ -42,6 +42,54 @@ export const peekLyrics = (id) => done.get(id)
 // 数据源偶尔会漏掉个别异体字（妳 / 麽 / 著），逐字层面做等价映射，
 // 避免整行因一两个字对不上而被丢弃。
 export const peekTranslationMeta = (id) => translationMeta.get(id)
+
+/**
+ * 逐字歌词「流式 + 提前返回」：主进程按用户排序逐源抓取，达到合格线（90%）
+ * 就先把当前最好的结果推回来让界面显示，达到优秀线（98%）停止后续来源；
+ * 期间出现更好的结果会继续推送（静默替换）。这里只负责订阅与择优，
+ * 阈值判定在主进程，覆盖率计算复用同一份 pickSyllableCandidate。
+ *
+ * @param {object} song
+ * @param {Array} lines 本地 LRC 行（覆盖率的分母 / 合并基准）
+ * @param {(merged: Array, meta: object) => void} onUpdate 每次拿到更好结果时回调
+ * @returns {Promise<Array>} 最终合并结果（无候选时原样返回 lines）
+ */
+export async function loadSyllablesProgressive(song, lines, onUpdate) {
+  const bridge = globalThis.window?.fn
+  if (!bridge?.lyricsSyllables) return lines
+  // requestId 必须按歌曲确定：播放页与悬浮窗可能并发请求同一首歌，
+  // 主进程会合并成同一条抓取流并把进度广播给所有订阅者；
+  // 若各用各的随机 id，后订阅的一方会把自己的进度事件过滤掉。
+  const requestId = [
+    'syl',
+    song?.title || '',
+    song?.artist || '',
+    Math.round((Number(song?.duration) || 0) / 5) * 5,
+  ].join('|')
+  let best = lines
+  let bestCoverage = -1
+  const apply = (candidates) => {
+    if (!Array.isArray(candidates) || !candidates.length) return
+    const pick = pickSyllableCandidate(lines, candidates, { earlyBreak: false })
+    if (!pick || pick.coverage <= bestCoverage + 1e-9) return
+    best = pick.merged
+    bestCoverage = pick.coverage
+    try { onUpdate?.(best, { coverage: pick.coverage, source: pick.source, provider: pick.provider }) } catch {}
+  }
+  const off = bridge.onLyricsSyllablesProgress?.((d) => { if (d?.requestId === requestId) apply(d.candidates) })
+  try {
+    const r = await bridge.lyricsSyllables({
+      title: song?.title, artist: song?.artist, duration: song?.duration || 0,
+      localLines: lines.map((l) => ({ time: l.time, text: l.text })),
+      requestId,
+    })
+    if (r?.ok) apply(r.candidates)
+    return best
+  } finally {
+    off?.()
+  }
+}
+
 export function clearLyricsTranslation(id) {
   if (!id) return
   raw.delete(id)

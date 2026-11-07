@@ -266,15 +266,30 @@ function sanitizeWordTimeline(words, { start = null, end = null } = {}) {
   return out
 }
 
+// 逐字候选的覆盖率阈值（合格 / 优秀）与缓存分档，全项目唯一事实来源。
+// - 合格 90%：够用了，先交给界面显示（不阻塞后续来源）
+// - 优秀 98%：直接停止后续来源，并写入永久磁盘缓存
+const SYLLABLE_QUALIFIED = 0.90
+const SYLLABLE_EXCELLENT = 0.98
+// 覆盖率 -> 磁盘缓存分档：优秀=永久；合格=7 天；偏弱(70%+)=24 小时；其余只进内存。
+function syllableTierFor(coverage) {
+  const c = Number(coverage)
+  if (!Number.isFinite(c)) return 'memory'
+  if (c >= SYLLABLE_EXCELLENT) return 'permanent'
+  if (c >= SYLLABLE_QUALIFIED) return 'qualified'
+  if (c >= 0.70) return 'weak'
+  return 'memory'
+}
+
 /**
- * 从多个来源候选中挑选与本地 LRC 最匹配的逐字数据：
- * 逐个试合并，覆盖率（命中行 / 本地行）≥ 0.85 即采纳（先到先得，AMLL 优先级最高）；
- * 都达不到 85% 时选覆盖率最高的那个。candidates 顺序即来源优先级。
+ * 从多个来源候选中挑选与本地 LRC 最匹配的逐字数据。
+ * 逐个试合并，覆盖率（命中行 / 本地行）高的胜出；覆盖率相近（±2%）时，
+ * 行数比例更接近 1 的胜出。candidates 顺序即来源优先级。
+ * earlyBreak=true（默认，聚合模式）：覆盖率 ≥85% 且行数比例 ≥0.9 就锁定。
+ * earlyBreak=false（串行流式模式）：评估完全部候选，让每个源都报出真实最优，
+ * 交由上层按 90%/98% 阈值决定「先显示」还是「停止抓取」。
  */
-
-
-// ---------- 候选择优 / 行合并 ----------
-function pickSyllableCandidate(localLines, candidates = []) {
+function pickSyllableCandidate(localLines, candidates = [], { earlyBreak = true } = {}) {
   let best = null
   const singableLines = localLines.filter((l) => String(l?.text || '').trim()).length
   for (const cand of candidates) {
@@ -290,10 +305,13 @@ function pickSyllableCandidate(localLines, candidates = []) {
     }
     // 早退：覆盖率达标且行数比例健康（>=0.9）才锁定；
     // 碎行候选（比例 <0.9，分行结构差异大）即使覆盖率高也继续比较后续候选。
-    if (coverage >= 0.85 && ratio >= 0.9) break
+    if (earlyBreak && coverage >= 0.85 && ratio >= 0.9) break
   }
   return best
 }
+
+
+// ---------- 候选择优 / 行合并 ----------
 function mergeSyllableLines(lines, syllables, debug = null) {
   const stats = { matched: 0, skippedText: 0, skippedTime: 0, textMismatches: [], timeMismatches: [] }
   if (!lines.length || !syllables?.length) {
@@ -598,6 +616,9 @@ export {
   predictWordTimings,
   predictKaraokeLines,
   textBagOverlap,
+  SYLLABLE_QUALIFIED,
+  SYLLABLE_EXCELLENT,
+  syllableTierFor,
 }
 
 

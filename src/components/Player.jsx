@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { api } from '../api'
 import { getAudio, usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
-import { hasTranslation, karaokeFills, lineAt, loadLyrics, mergeSyllableLines, pickSyllableCandidate, predictKaraokeLines, toLines } from '../lyrics'
+import { hasTranslation, karaokeFills, lineAt, loadLyrics, loadSyllablesProgressive, mergeSyllableLines, predictKaraokeLines, toLines } from '../lyrics'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
 import { smoothFills } from '../karaoke'
 import { closeFullPlayer, openFullPlayer } from '../motion'
@@ -285,36 +285,33 @@ function useLyrics(song) {
       const lines = await base
       if (dead) return lines
       if (!syllablesEnabled) return lines
+      // 0. 网络逐字结果拿到之前先显示未处理的本地歌词；开了「智能逐字补全」
+      //    就先上预测结果，保证切歌不卡加载、歌词立刻就位。
+      const predict = (src) => (syllablePredict ? predictKaraokeLines(src, { duration: song?.duration || 0 }) : src)
+      if (syllablePredict) setState({ lines: predict(lines), loading: false })
       let merged = lines
       let reason = ''
+      let meta = null
       try {
-        const r = await window.fn?.lyricsSyllables?.({ title: song?.title, artist: song?.artist, duration: song?.duration || 0 })
-        // console.debug 在 DevTools 默认 Info 级别下不可见，必须用 console.log；且只在调试开关开启时输出
-        if (r?.ok && syllablesDebug) console.log('[syllables 数据]', { source: r.source, lines: r.lines, candidates: r.candidates, debug: r.debug })
-        if (r?.ok && r.candidates?.length) {
-          const pick = pickSyllableCandidate(lines, r.candidates)
-          if (pick) merged = pick.merged
-          if (syllablesDebug) {
-            const cov = pick ? `${(pick.coverage * 100).toFixed(0)}%（${pick.source}/${pick.provider}）` : '0%'
-            reason = `选中 ${cov}${pick && pick.coverage < 0.85 ? '（无候选达 85%，取最高）' : ''}`
-            console.log('[syllables 选择]', { coverage: pick?.coverage, source: pick?.source, provider: pick?.provider })
-          }
-        } else if (syllablesDebug) {
-          const cands = r?.debug?.amll?.candidates?.length ? `AMLL 候选 ${r.debug.amll.candidates.length} 个都不够格（分数最高 ${r.debug.amll.candidates[0]?.score ?? 0}）` : ''
-          const provs = r?.debug?.liriqo?.providers?.length ? ` LiriQo 有 ${r.debug.liriqo.providers.join(' / ')} 但未达词级` : ''
-          const kugouN = r?.debug?.kugou?.tracks ? ` 酷狗 ${r.debug.kugou.tracks} 首无逐字` : ''
-          const neteaseN = r?.debug?.netease?.tracks ? ` 网易云 ${r.debug.netease.tracks} 首无逐字` : ''
-          const qqN = r?.debug?.qq?.tracks ? ` QQ 音乐 ${r.debug.qq.tracks} 首无逐字` : ''
-          reason = (cands + provs + kugouN + neteaseN + qqN + '，退回逐行歌词').trim() || (r?.error ? `没有逐字数据（${r.error}）` : '所有来源都没有逐字数据，退回逐行歌词')
-          console.log('[syllables debug]', r?.debug)
+        // 主进程按用户排序逐源抓取；到 90% 先把结果推回来显示，
+        // 到 98% 停止后续来源，期间出现更好结果再次推送（静默替换）。
+        merged = await loadSyllablesProgressive(song, lines, (next, info) => {
+          if (dead) return
+          meta = info
+          if (syllablesDebug) console.log('[syllables 流式]', { coverage: info.coverage, source: info.source, provider: info.provider })
+          setState({ lines: predict(next), loading: false })
+        })
+        if (syllablesDebug) {
+          reason = meta
+            ? `选中 ${(meta.coverage * 100).toFixed(0)}%（${meta.source}/${meta.provider}）${meta.coverage < 0.9 ? '（低于合格线，取最高）' : ''}`
+            : '所有来源都没有逐字数据，退回逐行歌词'
         }
       } catch (e) {
         if (syllablesDebug) reason = '逐字抓取失败：' + (e?.message || '未知错误') + '，退回逐行歌词'
       }
-      // 「智能逐字补全」：有真实词级时间的行原样保留，缺的行按字长 / 停顿预测。
-      if (syllablePredict) merged = predictKaraokeLines(merged, { duration: song?.duration || 0 })
+      const out = predict(merged)
       if (syllablesDebug && reason) useUI.getState().showToast(`逐字调试 · ${song?.title || ''}：${reason}`)
-      return merged
+      return out
     }
     enrich().then((lines) => { if (!dead) setState({ lines, loading: false }) })
     return () => { dead = true }

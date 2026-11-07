@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('fn', {
   devSetSession: (payload) => ipcRenderer.invoke('dev:set-session', payload || {}),
   lyricsTranslate: (payload) => ipcRenderer.invoke('lyrics:translate', payload || {}),
   lyricsSyllables: (payload) => ipcRenderer.invoke('lyrics:syllables', payload || {}),
+  onLyricsSyllablesProgress: (cb) => { const h = (_e, d) => cb(d); ipcRenderer.on('lyrics:syllables-progress', h); return () => ipcRenderer.removeListener('lyrics:syllables-progress', h) },
   setTheme: (mode) => ipcRenderer.send('theme:set', mode),
   setOverlay: (o) => ipcRenderer.send('overlay:set', o),
   trayInfo: () => ipcRenderer.invoke('tray:info'),

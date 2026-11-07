@@ -6,7 +6,8 @@ const { createTray, BALL_MODES } = require('./tray')
 const { createBall } = require('./ball')
 const { createLyrics } = require('./lyricsWindow')
 const { createCoverCache, coverKey } = require('./coverCache')
-const { fetchSyllables } = require('./syllables')
+const { fetchSyllables, setSyllableCache } = require('./syllables')
+const { createSyllableCache } = require('./syllableCache')
 
 const isDev = process.env.NODE_ENV === 'development'
 // 自定义数据目录（自动化测试用，让每次测试都从干净的状态开始）
@@ -864,6 +865,7 @@ const chooseLyricsBackground = (win) => chooseImage(win, { title: '选择悬浮�
 
 // ---------- 封面磁盘缓存 ----------
 let covers = null
+let syllableCache = null
 const signedGet = async (url) => {
   const headers = { authx: authx('GET', url) }
   if (state.token) headers.Cookie = `music-token=${state.token}`
@@ -1107,7 +1109,17 @@ function registerIpc() {
       }
     } catch (e) { return { ok: false, error: e.message } }
   })
-    ipcMain.handle('lyrics:syllables', (_e, payload = {}) => fetchSyllables({ ...payload, sources: readPrefs().experimental?.syllableSources, debug: true }))
+    ipcMain.handle('lyrics:syllables', (e, payload = {}) => {
+      // 流式：主进程按用户排序逐源抓取，覆盖率用渲染层传来的本地 LRC 计算。
+      // 达到合格线先推一版给界面显示，达到优秀线停止后续来源；期间出现更好结果继续推。
+      const sender = e.sender
+      return fetchSyllables({
+        ...payload,
+        sources: readPrefs().experimental?.syllableSources,
+        debug: true,
+        onProgress: (data) => { if (sender && !sender.isDestroyed()) sender.send('lyrics:syllables-progress', data) },
+      })
+    })
   if (isDev) ipcMain.handle('dev:set-session', (_e, { base, token } = {}) => { Object.assign(state, { base, token, mode: 'dev', username: 'dev' }); return { ok: true } })
   ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); syncBall(); syncLyrics(); if (p && p.lyricsStyle) lyricsWin?.setStyle(readPrefs().lyricsStyle); tray?.refresh(); return true })
   ipcMain.handle('tray:info', () => ({ available: !!tray, closeToTray: closeToTray(), ballMode: ballMode(), lyricsOn: lyricsOn() }))
@@ -1243,6 +1255,9 @@ if (!gotLock) {
     session.defaultSession.setUserAgent(app.userAgentFallback)
     session.fromPartition(OAUTH_PARTITION).setUserAgent(app.userAgentFallback)
     covers = createCoverCache({ dir: path.join(app.getPath('userData'), 'covers'), fetchUpstream: signedGet })
+    syllableCache = createSyllableCache({ dir: path.join(app.getPath('userData'), 'syllables') })
+    setSyllableCache(syllableCache)
+    syllableCache.init()
     covers.init()
     registerProxy()
     registerIpc()

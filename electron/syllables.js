@@ -540,62 +540,156 @@ const SOURCE_FETCHERS = {
   qq: fetchQqCandidates,
 }
 
-// 进程内短期缓存：同一首歌常被两条链路分别请求（播放页逐字 + 悬浮窗逐字），
-// 切歌来回也会重复请求。缓存能显著减少总请求数，降低 LiriQo 被限流（429）的概率。
-// TTL 与条目上限避免无限增长；不同数据源顺序 / 开关组合视为不同缓存项，互不干扰。
-const SYLLABLE_CACHE_TTL = 10 * 60 * 1000
-const SYLLABLE_CACHE_MAX = 120
-const syllableCache = new Map()
+// ---------- 抓取：按用户顺序串行，90% 先显示 / 98% 提前停止 ----------
+// 阈值与缓存分档的唯一事实来源在 electron/lyricsMerge.mjs（渲染层与主进程共用）。
+// 这里动态 import：syllables.js 是 CJS，而合并逻辑是浏览器原生 ESM（历史 bug 6f9144a）。
+let mergeModPromise = null
+function loadMerge() {
+  mergeModPromise ||= import('./lyricsMerge.mjs')
+  return mergeModPromise
+}
 
-function syllableCacheKey(title, artist, duration, order) {
-  // 时长按 5s 分桶：同一首歌在播放前 / 播放中拿到的 duration 可能略有差异，
-  // 分桶避免因几秒误差重复抓取；同时仍能区分时长差别很大的同名版本。
-  const bucket = Math.round((Number(duration) || 0) / 5) * 5
-  return title + '\u0000' + artist + '\u0000' + bucket + '\u0000' + order.join(',')
-}
-function syllableCacheGet(key) {
-  const hit = syllableCache.get(key)
-  if (!hit) return null
-  if (Date.now() - hit.at > SYLLABLE_CACHE_TTL) { syllableCache.delete(key); return null }
-  // LRU：命中后移到末尾
-  syllableCache.delete(key)
-  syllableCache.set(key, hit)
-  return hit.value
-}
-function syllableCacheSet(key, value) {
-  syllableCache.set(key, { at: Date.now(), value })
-  while (syllableCache.size > SYLLABLE_CACHE_MAX) {
-    syllableCache.delete(syllableCache.keys().next().value)
+// 分级磁盘缓存由 main.js 注入（userData/syllables）；单测 / 审计工具没注入时
+// 退化为「内存 only」，不落盘、不污染开发机。
+let syllableCachePort = null
+function setSyllableCache(port) { syllableCachePort = port || null }
+
+function hashLines(lines) {
+  let h = 5381
+  for (const l of lines) {
+    const t = String(l?.text || '')
+    for (let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0
+    h = (h ^ Math.round((Number(l?.time) || 0) * 10)) >>> 0
   }
+  return h.toString(36)
 }
-// 供测试与「强制刷新」场景清空缓存。
-function clearSyllableCache() { syllableCache.clear() }
 
-async function fetchSyllables({ title, artist, duration, sources, debug: wantDebug = false } = {}) {
+// 同一首歌（同一份本地 LRC、同一数据源顺序）的并发请求只抓一次：
+// 播放页与悬浮窗会同时来取，不合并就会把每个源各打两遍，LiriQo 很容易 429。
+const inflightStreams = new Map()
+function shareStream(key, factory) {
+  const existing = inflightStreams.get(key)
+  if (existing) return existing
+  const entry = { emitters: new Set(), promise: null }
+  entry.promise = Promise.resolve()
+    .then(() => factory((data) => { for (const fn of entry.emitters) { try { fn(data) } catch {} } }))
+    .finally(() => inflightStreams.delete(key))
+  inflightStreams.set(key, entry)
+  return entry
+}
+
+function normalizeOrder(sources) {
+  return (Array.isArray(sources) && sources.length ? sources : SYLLABLE_SOURCES)
+    .filter((id, i, arr) => SYLLABLE_SOURCES.includes(id) && arr.indexOf(id) === i)
+}
+
+/**
+ * 逐源串行抓取 + 阈值判定的核心循环（与网络解耦，便于单测）。
+ * - 每个源先查缓存，未命中再调 fetchSource(id)
+ * - 抓完一个源就用本地 LRC 重算覆盖率
+ * - ≥90%（合格）先把当前最好结果 emit 给界面显示，不阻塞后续源
+ * - ≥98%（优秀）直接停止后续源
+ * - 期间出现更好结果继续 emit，由界面静默替换
+ */
+async function runStreamSources({ order, localLines, debug = null, requestId = '', emit, fetchSource, cacheKeyFor = null, cache = null, title = '', artist = '', duration = 0 }) {
+  const merge = await loadMerge()
+  const collected = []
+  let picked = null
+  let bestCoverage = -1
+  let stoppedAt = ''
+  const streamDebug = debug ? { order, sources: [], cacheHits: 0, bestCoverage: 0, stoppedAt: '', emitted: 0 } : null
+  const fire = typeof emit === 'function' ? emit : () => {}
+
+  for (const id of order) {
+    let candidates = []
+    let fromCache = false
+    const key = cache && cacheKeyFor ? cacheKeyFor(id) : ''
+    if (key) {
+      const hit = await cache.get(key)
+      if (hit?.candidates?.length) { candidates = hit.candidates; fromCache = true; if (streamDebug) streamDebug.cacheHits++ }
+    }
+    if (!candidates.length) {
+      try { candidates = await fetchSource(id) } catch { candidates = [] }
+      if (candidates.length && key) {
+        // 覆盖率只用本地 LRC 算，是缓存分档的依据。
+        const cov = merge.pickSyllableCandidate(localLines, candidates, { earlyBreak: false })?.coverage ?? 0
+        await cache.set(key, { source: id, coverage: cov, tier: merge.syllableTierFor(cov), candidates })
+      }
+    }
+    if (streamDebug) streamDebug.sources.push({ id, candidates: candidates.length, cached: fromCache })
+    if (!candidates.length) continue
+    collected.push(...candidates)
+
+    const next = merge.pickSyllableCandidate(localLines, collected, { earlyBreak: false })
+    const improved = next && next.coverage > bestCoverage + 1e-9
+    if (improved) { picked = next; bestCoverage = next.coverage }
+    // 合格（≥90%）：先把这份结果交给界面显示，不阻塞后面的源。
+    // 后续源出现更好结果时再次推送，由界面静默替换。
+    if (improved && bestCoverage >= merge.SYLLABLE_QUALIFIED) {
+      if (streamDebug) streamDebug.emitted++
+      fire({ requestId, candidates: collected, coverage: bestCoverage, source: next.source, provider: next.provider, done: false })
+    }
+    // 优秀（≥98%）：够可靠了，直接停掉后面的源。
+    if (bestCoverage >= merge.SYLLABLE_EXCELLENT) { stoppedAt = id; break }
+  }
+
+  if (streamDebug) {
+    streamDebug.bestCoverage = +Math.max(0, bestCoverage).toFixed(4)
+    streamDebug.stoppedAt = stoppedAt
+    debug.stream = streamDebug
+  }
+  if (debug) debug.candidateCount = collected.length
+  const bestLines = picked?.lines || collected[0]?.lines || null
+  const bestSource = picked?.source || collected[0]?.source || ''
+  fire({ requestId, candidates: collected, coverage: Math.max(0, bestCoverage), source: bestSource, provider: picked?.provider || '', done: true })
+  return { ok: true, lines: bestLines, source: bestSource, candidates: collected, debug }
+}
+
+// 抓取阶段只管「按顺序拿候选」；覆盖率由 runStreamSources 用本地 LRC 计算。
+// localLines 缺失（审计工具 / 单源直取）时保持旧行为：全量抓完再返回。
+async function fetchSyllables({ title, artist, duration, sources, debug: wantDebug = false, localLines = null, onProgress = null, requestId = '' } = {}) {
   title = String(title || '').trim()
   if (!title) return { ok: false, error: '缺少歌曲名' }
   const debug = wantDebug ? { providers: [] } : null
   // sources：有序数据源（设置面板可开关 / 排序）；未列出 = 关闭该源，缺省或空数组 = 全开。
-  const order = (Array.isArray(sources) && sources.length ? sources : SYLLABLE_SOURCES)
-    .filter((id, i, arr) => SYLLABLE_SOURCES.includes(id) && arr.indexOf(id) === i)
-  const cacheKey = syllableCacheKey(title, String(artist || ''), duration, order)
-  const cached = syllableCacheGet(cacheKey)
-  if (cached) return cached
-  const candidates = []
-  // 严格按用户排序串行抓取：渲染层按候选择优时会优先看到排在前面的源。
-  for (const id of order) {
-    const fetcher = SOURCE_FETCHERS[id]
-    if (!fetcher) continue
-    try {
-      candidates.push(...(await fetcher(title, artist, debug, duration)))
-    } catch {}
+  const order = normalizeOrder(sources)
+  const hasLocal = Array.isArray(localLines) && localLines.length > 0
+
+  // 没有本地歌词可对照时，退化为旧的全量抓取（审计工具依赖这个确定性行为）。
+  if (!hasLocal) {
+    const candidates = []
+    for (const id of order) {
+      const fetcher = SOURCE_FETCHERS[id]
+      if (!fetcher) continue
+      try { candidates.push(...(await fetcher(title, artist, debug, duration))) } catch {}
+    }
+    if (debug) debug.candidateCount = candidates.length
+    const first = candidates[0] || null
+    return { ok: true, lines: first?.lines || null, source: first?.source || '', candidates, debug }
   }
-  if (debug) debug.candidateCount = candidates.length
-  // 兼容旧字段：lines/source 取第一个候选；完整候选列表交给渲染层按本地 LRC 命中率择优
-  const first = candidates[0] || null
-  const result = { ok: true, lines: first?.lines || null, source: first?.source || '', candidates, debug }
-  syllableCacheSet(cacheKey, result)
-  return result
+
+  const streamKey = [title, artist, Math.round((Number(duration) || 0) / 5) * 5, order.join(','), hashLines(localLines)].join('\u0000')
+  const entry = shareStream(streamKey, (emit) => runStreamSources({
+    order,
+    localLines,
+    debug,
+    requestId,
+    emit,
+    fetchSource: (id) => SOURCE_FETCHERS[id](title, artist, debug, duration),
+    cache: syllableCachePort,
+    cacheKeyFor: syllableCachePort ? (id) => syllableCachePort.key(title, artist, duration, id) : null,
+  }))
+  if (typeof onProgress === 'function') entry.emitters.add(onProgress)
+  try {
+    return await entry.promise
+  } finally {
+    if (typeof onProgress === 'function') entry.emitters.delete(onProgress)
+  }
 }
 
-module.exports = { fetchSyllables, clearSyllableCache, parseTtml, parseKrc, parseYrc, toSimplified, norm, parseTime, artistMatches, looksLikeLyricLines, durationScore, scoreVersion, SYLLABLE_SOURCES }
+function clearSyllableCache() {
+  inflightStreams.clear()
+  return syllableCachePort?.clear?.()
+}
+
+module.exports = { fetchSyllables, clearSyllableCache, setSyllableCache, runStreamSources, parseTtml, parseKrc, parseYrc, toSimplified, norm, parseTime, artistMatches, looksLikeLyricLines, durationScore, scoreVersion, SYLLABLE_SOURCES }
