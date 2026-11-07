@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { api, streamUrl, invalidate } from './api'
 import { acquireCover, prefetchCover } from './covers'
-import { hasNextLyric, hasTranslation, lyricFrame, loadLyrics, pickSyllableCandidate } from './lyrics'
+import { hasNextLyric, hasTranslation, lyricFrame, loadLyrics, pickSyllableCandidate, predictKaraokeLines } from './lyrics'
 import { shuffled } from './lib'
 import { applyMotion } from './motion'
 import { DEFAULT_WALLPAPER, applyPalette, isPalette } from './appearance'
@@ -56,8 +56,9 @@ export const useUI = create((set, get) => ({
   appearanceOpen: false,
   lyricsSettingsOpen: false,
   experimentalOpen: false,
-  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] },
+  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: false, syllablePredict: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] },
   syllables: false, // 实验性逐字歌词（AMLL TTML DB / LiriQo），关闭时退回逐行歌词
+  syllablePredict: LS.get('sylPredict', false), // 智能逐字补全：没有词级数据的行也按字长 / 停顿预测逐字动画
   syllablesDebug: LS.get('sylDebug', false), // 逐字歌词调试 toast：切歌时报告命中情况
   floatingLyrics: false, // 悬浮歌词窗口是否开启（真实状态以主进程 prefs 为准）
   lyricsStyle: {}, // 悬浮歌词样式（主进程 prefs.lyricsStyle）
@@ -145,6 +146,8 @@ export const useUI = create((set, get) => ({
       // 逐字歌词开关跟随主进程配置；首次使用时回退 localStorage
       const hasPref = typeof r.syllables === 'boolean'
       set({ syllables: hasPref ? r.syllables : LS.get('syllables', false) })
+      // 智能逐字补全同样跟随主进程配置；缺失时回退 localStorage
+      set({ syllablePredict: typeof r.syllablePredict === 'boolean' ? r.syllablePredict : LS.get('sylPredict', false) })
     }
     return r
   },
@@ -158,6 +161,11 @@ export const useUI = create((set, get) => ({
     set({ syllables: !!on })
     // 同时写进主进程 prefs（experimental 配置），重启后 loadExperimental 会恢复
     await window.fn.experimentalSet?.({ syllables: !!on }).catch(() => {})
+  },
+  async setSyllablePredict(on) {
+    LS.set('sylPredict', !!on)
+    set({ syllablePredict: !!on })
+    await window.fn.experimentalSet?.({ syllablePredict: !!on }).catch(() => {})
   },
   toggleSyllablesDebug() {
     const on = !get().syllablesDebug
@@ -571,6 +579,11 @@ let lastSync = { at: 0, time: 0, playing: false }
 const syllableRemote = new Map()
 async function enrichSyllableLines(id, song, lines) {
   if (!song) return lines
+  // 「智能逐字补全」：有真实词级时间的行原样保留，缺的行按字长 / 停顿预测，
+  // 让整首歌都有逐字动画。没开这个开关时保持旧行为（只显示真实命中的行）。
+  const finish = (out) => (useUI.getState().syllablePredict
+    ? predictKaraokeLines(out, { duration: song.duration || 0 })
+    : out)
   let pending = syllableRemote.get(id)
   if (!pending) {
     // duration 让抓取层按「时长接近度」区分同名版本（现场版 / 剪辑版 / 翻唱），
@@ -583,8 +596,8 @@ async function enrichSyllableLines(id, song, lines) {
     }
   }
   const r = await pending
-  if (!r?.ok || !r.candidates?.length) return lines
-  return pickSyllableCandidate(lines, r.candidates)?.merged || lines
+  if (!r?.ok || !r.candidates?.length) return finish(lines)
+  return finish(pickSyllableCandidate(lines, r.candidates)?.merged || lines)
 }
 
 function broadcast() {
@@ -667,8 +680,9 @@ useUI.subscribe((s, prev) => {
   const expChanged = s.experimental?.enabled !== prev.experimental?.enabled || s.experimental?.sourceEnabled !== prev.experimental?.sourceEnabled || s.experimental?.aiFallback !== prev.experimental?.aiFallback
   const srcListChanged = s.experimental?.syllableSources?.join(',') !== prev.experimental?.syllableSources?.join(',')
   const sylChanged = s.syllables !== prev.syllables
-  if (expChanged || sylChanged || srcListChanged) lyricFor = ''
-  if (s.motion !== prev.motion || s.palette !== prev.palette || expChanged || sylChanged || srcListChanged) broadcast()
+  const predictChanged = s.syllablePredict !== prev.syllablePredict
+  if (expChanged || sylChanged || srcListChanged || predictChanged) lyricFor = ''
+  if (s.motion !== prev.motion || s.palette !== prev.palette || expChanged || sylChanged || srcListChanged || predictChanged) broadcast()
 })
 
 window.fn?.onPlayerCommand?.((cmd, arg) => {

@@ -4,7 +4,7 @@ import { api } from './api'
 // electron/lyricsMerge.mjs，供渲染层与 dev 评测工具复用同一份实现。
 import { toLines, hasTranslation } from '../electron/lyricsMerge.mjs'
 // 保持既有导出面：其它模块历史上从 ./lyrics 引入这些纯函数。
-export { toLines, hasTranslation, mergeTranslations, mergeSyllableLines, pickSyllableCandidate, karaokeFills, textBagOverlap } from '../electron/lyricsMerge.mjs'
+export { toLines, hasTranslation, mergeTranslations, mergeSyllableLines, pickSyllableCandidate, karaokeFills, textBagOverlap, sanitizeWordTimeline, predictWordTimings, predictKaraokeLines } from '../electron/lyricsMerge.mjs'
 
 const MAX = 200
 const raw = new Map() // id -> 原始歌词（始终保留，关闭翻译时返回这一份）

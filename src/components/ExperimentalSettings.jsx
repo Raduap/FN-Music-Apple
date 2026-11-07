@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useUI } from '../store'
 import * as Icon from '../icons'
 
-const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablesDebug: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
+const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablePredict: false, syllablesDebug: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
 const SYLLABLE_SOURCES = [
   { id: 'amll', name: 'AMLL TTML DB', desc: '社区人工校准逐字库，质量最高' },
   { id: 'liriqo', name: 'LiriQo 聚合', desc: 'Apple / 酷狗 / 网易 / 千千等平台聚合' },
@@ -32,7 +32,7 @@ export function ExperimentalSettings() {
     setTab('translate')
     ui().loadExperimental().then((r) => {
       const s = useUI.getState()
-      setForm({ ...DEFAULTS, ...r, apiKey: '', syllables: s.syllables, syllablesDebug: s.syllablesDebug })
+      setForm({ ...DEFAULTS, ...r, apiKey: '', syllables: s.syllables, syllablePredict: s.syllablePredict, syllablesDebug: s.syllablesDebug })
       setStatus(null)
     })
     lastFocus.current = document.activeElement
@@ -69,6 +69,11 @@ export function ExperimentalSettings() {
     const syllables = !form.syllables
     setForm((f) => ({ ...f, syllables }))
     await ui().setSyllables(syllables)
+  }
+  const toggleSyllablePredict = async () => {
+    const syllablePredict = !form.syllablePredict
+    setForm((f) => ({ ...f, syllablePredict }))
+    await ui().setSyllablePredict(syllablePredict)
   }
   const toggleSource = async (id) => {
     const next = form.syllableSources.includes(id)
@@ -122,7 +127,7 @@ export function ExperimentalSettings() {
           </nav>
           <div className={`exp-nav-state ${form.enabled || form.syllables ? 'on' : ''}`}>
             <i aria-hidden="true" />
-            <span>{[form.enabled && 'AI 补译', form.syllables && '逐字歌词'].filter(Boolean).join(' · ') || '未开启任何实验功能'}</span>
+            <span>{[form.enabled && 'AI 补译', form.syllables && '逐字歌词', form.syllablePredict && '智能逐字补全'].filter(Boolean).join(' · ') || '未开启任何实验功能'}</span>
           </div>
         </aside>
 
@@ -207,11 +212,22 @@ export function ExperimentalSettings() {
                   <button className={`fl-toggle exp-toggle ${form.syllables ? 'on' : ''}`} role="switch" aria-checked={!!form.syllables} onClick={toggleSyllables}>
                     <span>启用逐字歌词</span><span className="fl-switch" aria-hidden="true" />
                   </button>
+                  <button
+                    className={`fl-toggle exp-toggle ${form.syllablePredict ? 'on' : ''}`}
+                    role="switch"
+                    aria-checked={!!form.syllablePredict}
+                    disabled={!form.syllables}
+                    onClick={toggleSyllablePredict}
+                  >
+                    <span>智能逐字补全</span><span className="fl-switch" aria-hidden="true" />
+                  </button>
                 </section>
                 <section className="exp-section">
                   <div className="exp-section-title">工作方式</div>
                   <ul className="exp-list">
-                    <li>只在当前句显示逐字扫色；没有逐字数据的歌自动退回逐行歌词，不影响显示。</li>
+                    <li>真实词级数据优先：有逐字数据的行按原时间轴扫色，缺数据的行保持整句显示。</li>
+                    <li>开启「智能逐字补全」后，缺数据的行会按字词长度和标点停顿估算逐字时间，整首歌都有扫色动画；这只是预测，节奏可能与真实演唱有偏差。</li>
+                    <li>只在当前句显示逐字扫色，不会影响歌词文本本身。</li>
                   </ul>
                 </section>
                 <section className="exp-section">
