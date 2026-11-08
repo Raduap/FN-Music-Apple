@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('fn', {
   experimentalTest: (patch) => ipcRenderer.invoke('experimental:test', patch || {}),
   devSetSession: (payload) => ipcRenderer.invoke('dev:set-session', payload || {}),
   lyricsTranslate: (payload) => ipcRenderer.invoke('lyrics:translate', payload || {}),
+  lyricsEnhancementCacheClear: () => ipcRenderer.invoke('lyrics:enhancement-cache-clear'),
   lyricsSyllables: (payload) => ipcRenderer.invoke('lyrics:syllables', payload || {}),
   onLyricsSyllablesProgress: (cb) => { const h = (_e, d) => cb(d); ipcRenderer.on('lyrics:syllables-progress', h); return () => ipcRenderer.removeListener('lyrics:syllables-progress', h) },
   setTheme: (mode) => ipcRenderer.send('theme:set', mode),

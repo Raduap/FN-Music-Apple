@@ -8,6 +8,7 @@ const { createLyrics } = require('./lyricsWindow')
 const { createCoverCache, coverKey } = require('./coverCache')
 const { fetchSyllables, setSyllableCache } = require('./syllables')
 const { createSyllableCache } = require('./syllableCache')
+const { createLyricsEnhancementCache } = require('./lyricsEnhancementCache')
 
 const isDev = process.env.NODE_ENV === 'development'
 // 自定义数据目录（自动化测试用，让每次测试都从干净的状态开始）
@@ -882,6 +883,7 @@ const chooseLyricsBackground = (win) => chooseImage(win, { title: '选择悬浮�
 // ---------- 封面磁盘缓存 ----------
 let covers = null
 let syllableCache = null
+let lyricsEnhancementCache = null
 const signedGet = async (url) => {
   const headers = { authx: authx('GET', url) }
   if (state.token) headers.Cookie = `music-token=${state.token}`
@@ -1032,6 +1034,7 @@ function registerIpc() {
 
   ipcMain.handle('covers:stats', () => covers?.init().then(() => covers.stats()) ?? { count: 0, bytes: 0 })
   ipcMain.handle('covers:clear', async () => { await covers?.clear(); return true })
+  ipcMain.handle('lyrics:enhancement-cache-clear', async () => { await lyricsEnhancementCache?.clear(); return true })
   ipcMain.handle('wallpaper:choose', (e) => chooseWallpaper(BrowserWindow.fromWebContents(e.sender)).catch((err) => ({ ok: false, error: err.message })))
   ipcMain.handle('wallpaper:get', () => readImage('wallpaper', 'wallpaper'))
   ipcMain.handle('wallpaper:clear', () => { fs.rmSync(wallpaperDir(), { recursive: true, force: true }); return true })
@@ -1062,10 +1065,19 @@ function registerIpc() {
       const song = payload?.song || {}
       // 渲染层会明确告知本次是否需要译文；只开音译时不要触发译文/AI 补译。
       const wantTranslation = payload?.translate !== false
-      const source = settings.sourceEnabled ? await fetchNeteaseTranslation(song) : { ok: false, error: '源站译词未开启' }
-      const sourceLines = source.ok && Array.isArray(source.lines) ? source.lines : []
       const local = Array.isArray(payload?.localLines) ? payload.localLines : []
       const lines = local.map((x) => String(x?.text || '')).filter(Boolean)
+      const cacheMode = wantTranslation ? (settings.aiFallback ? 'translate-ai' : 'translate') : 'roman'
+      const cacheKey = lyricsEnhancementCache?.key(song, local, cacheMode) || ''
+      // 先查缓存，命中时不能再访问网易云或 AI。
+      if (cacheKey) {
+        const hit = await lyricsEnhancementCache.get(cacheKey)
+        if (hit?.ok && Array.isArray(hit.translations) && Array.isArray(hit.romans)) {
+          return { ...hit, cached: true }
+        }
+      }
+      const source = settings.sourceEnabled ? await fetchNeteaseTranslation(song) : { ok: false, error: '源站译词未开启' }
+      const sourceLines = source.ok && Array.isArray(source.lines) ? source.lines : []
       const findSourceLine = (localMs, text) => {
         if (localMs) {
           let exactTranslated = null
@@ -1116,7 +1128,7 @@ function registerIpc() {
       let ai = { ok: false, translations: [], error: '' }
       if (!wantTranslation) {
         // 只取音译：跳过 AI 补译，避免无谓的模型调用与费用。
-        return {
+        const result = {
           ok: true,
           translations: [],
           romans,
@@ -1126,13 +1138,15 @@ function registerIpc() {
           aiCount: 0,
           warning: '',
         }
+        if (cacheKey && romans.some(Boolean)) await lyricsEnhancementCache?.set(cacheKey, result)
+        return result
       }
       if (missing.length && settings.aiFallback) {
         ai = await remoteTranslate(missing.map((x) => x.text), { ...settings, title: song.title || '', artist: song.artist || '', context: payload?.context || '' })
         if (ai.ok) missing.forEach((x, j) => { translations[x.i] = ai.translations[j] || '' })
       }
       const sourceCount = translations.filter(Boolean).length - (ai.ok ? ai.translations.filter(Boolean).length : 0)
-      return {
+      const result = {
         ok: true,
         translations,
         romans,
@@ -1142,6 +1156,8 @@ function registerIpc() {
         aiCount: ai.ok ? ai.translations.filter(Boolean).length : 0,
         warning: !source.ok ? source.error : (missing.length && !settings.aiFallback ? '源站没有译文的行未补译（AI 补译已关闭）' : (missing.length && !ai.ok ? ai.error : '')),
       }
+      if (cacheKey && (translations.some(Boolean) || romans.some(Boolean))) await lyricsEnhancementCache?.set(cacheKey, result)
+      return result
     } catch (e) { return { ok: false, error: e.message } }
   })
     ipcMain.handle('lyrics:syllables', (e, payload = {}) => {
@@ -1284,6 +1300,8 @@ if (!gotLock) {
     syllableCache = createSyllableCache({ dir: path.join(app.getPath('userData'), 'syllables') })
     setSyllableCache(syllableCache)
     syllableCache.init()
+    lyricsEnhancementCache = createLyricsEnhancementCache({ dir: path.join(app.getPath('userData'), 'lyrics-enhancement') })
+    lyricsEnhancementCache.init()
     covers.init()
     registerProxy()
     registerIpc()
