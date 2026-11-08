@@ -3,7 +3,7 @@ import { useUI } from '../store'
 import { moveItem } from '../lib'
 import * as Icon from '../icons'
 
-const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, romanization: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablePredict: false, syllablesDebug: false, translationDebug: false, syllableStrict: false, syllableSmooth: 'normal', syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
+const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, romanization: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablePredict: false, syllablesDebug: false, translationDebug: false, syllableOverwrite: false, syllableStrict: false, syllableSmooth: 'normal', syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
 // 逐字数据源元数据（id / 名称 / 说明）。列表渲染顺序即抓取顺序，
 // 用户可在设置里拖动调整；启用与否是另一维（开关），与顺序无关。
 const SYLLABLE_SOURCES = [
@@ -45,7 +45,7 @@ export function ExperimentalSettings() {
     setTab('translate')
     ui().loadExperimental().then((r) => {
       const s = useUI.getState()
-      setForm({ ...DEFAULTS, ...r, apiKey: '', syllables: s.syllables, syllablePredict: s.syllablePredict, syllablesDebug: s.syllablesDebug, translationDebug: s.translationDebug, syllableStrict: s.syllableStrict, syllableSmooth: s.syllableSmooth })
+      setForm({ ...DEFAULTS, ...r, apiKey: '', syllables: s.syllables, syllablePredict: s.syllablePredict, syllablesDebug: s.syllablesDebug, translationDebug: s.translationDebug, syllableOverwrite: s.syllableOverwrite, syllableStrict: s.syllableStrict, syllableSmooth: s.syllableSmooth })
       setStatus(null)
     })
     lastFocus.current = document.activeElement
@@ -267,8 +267,23 @@ export function ExperimentalSettings() {
                     >
                       <span>智能逐字补全</span><span className="fl-switch" aria-hidden="true" />
                     </button>
+                    <button
+                      className={`fl-toggle exp-toggle ${form.syllableOverwrite ? "on" : ""}`}
+                      role="switch"
+                      aria-label="覆盖歌词"
+                      aria-checked={!!form.syllableOverwrite}
+                      disabled={!form.syllables}
+                      onClick={async () => {
+                        const syllableOverwrite = !form.syllableOverwrite
+                        setForm((f) => ({ ...f, syllableOverwrite }))
+                        await ui().setSyllableOverwrite(syllableOverwrite)
+                      }}
+                    >
+                      <span>覆盖歌词</span><span className="fl-switch" aria-hidden="true" />
+                    </button>
                   </div>
                   <p className="exp-hint">没有词级数据的行按字词长度与标点停顿估算逐字时间，让整首歌都有扫色动画。关闭「启用逐字歌词」时本项不可用。</p>
+                  <p className="exp-hint">「覆盖歌词」仅在逐字源通过文本、时长与结构可信校验后，用同一来源的完整歌词替换本地正文；未可信命中时继续显示本地 LRC。译文/音译会按时间尽量重映射，可能轻微错位。</p>
                 </section>
                 <section className="exp-section">
                   <div className="exp-section-title">扫色手感</div>

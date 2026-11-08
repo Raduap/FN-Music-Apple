@@ -2,9 +2,9 @@
 import { api } from './api'
 // 纯逻辑（LRC 解析 / 双语合并 / 字符对齐 / 候选择优 / 卡拉OK进度）统一放在
 // electron/lyricsMerge.mjs，供渲染层与 dev 评测工具复用同一份实现。
-import { toLines, hasTranslation, pickSyllableCandidate } from '../electron/lyricsMerge.mjs'
+import { toLines, hasTranslation, pickSyllableCandidate, overrideSyllableLines } from '../electron/lyricsMerge.mjs'
 // 保持既有导出面：其它模块历史上从 ./lyrics 引入这些纯函数。
-export { toLines, hasTranslation, mergeTranslations, mergeSyllableLines, pickSyllableCandidate, karaokeFills, smoothWordTimeline, textBagOverlap, sanitizeWordTimeline, predictWordTimings, predictKaraokeLines, normForMatch, SYLLABLE_QUALIFIED, SYLLABLE_EXCELLENT, syllableTierFor } from '../electron/lyricsMerge.mjs'
+export { toLines, hasTranslation, mergeTranslations, mergeSyllableLines, pickSyllableCandidate, overrideSyllableLines, candidateStructureScore, isTrustedOverride, remapEnhancementsByTime, karaokeFills, smoothWordTimeline, textBagOverlap, sanitizeWordTimeline, predictWordTimings, predictKaraokeLines, normForMatch, SYLLABLE_QUALIFIED, SYLLABLE_EXCELLENT, syllableTierFor } from '../electron/lyricsMerge.mjs'
 
 const MAX = 200
 const raw = new Map() // id -> 原始歌词（始终保留，关闭翻译时返回这一份）
@@ -54,7 +54,7 @@ export const peekTranslationMeta = (id) => translationMeta.get(id)
  * @param {(merged: Array, meta: object) => void} onUpdate 每次拿到更好结果时回调
  * @returns {Promise<Array>} 最终合并结果（无候选时原样返回 lines）
  */
-export async function loadSyllablesProgressive(song, lines, onUpdate) {
+export async function loadSyllablesProgressive(song, lines, onUpdate, { overwriteLyrics = false } = {}) {
   const bridge = globalThis.window?.fn
   if (!bridge?.lyricsSyllables) return lines
   // requestId 必须按歌曲确定：播放页与悬浮窗可能并发请求同一首歌，
@@ -72,6 +72,17 @@ export async function loadSyllablesProgressive(song, lines, onUpdate) {
     if (!Array.isArray(candidates) || !candidates.length) return
     const pick = pickSyllableCandidate(lines, candidates, { earlyBreak: false })
     if (!pick || pick.coverage <= bestCoverage + 1e-9) return
+    if (overwriteLyrics) {
+      for (const candidate of candidates) {
+        const override = overrideSyllableLines(lines, candidate)
+        if (override) {
+          best = override.lines
+          bestCoverage = override.coverage
+          try { onUpdate?.(best, { coverage: override.coverage, source: override.source, provider: override.provider, overwritten: true }) } catch {}
+          return
+        }
+      }
+    }
     best = pick.merged
     bestCoverage = pick.coverage
     try { onUpdate?.(best, { coverage: pick.coverage, source: pick.source, provider: pick.provider }) } catch {}

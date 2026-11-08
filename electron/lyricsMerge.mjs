@@ -339,6 +339,81 @@ function syllableTierFor(coverage) {
  * earlyBreak=false（串行流式模式）：评估完全部候选，让每个源都报出真实最优，
  * 交由上层按 90%/98% 阈值决定「先显示」还是「停止抓取」。
  */
+// “覆盖歌词”：仅当候选通过可信门控后，用同一候选的完整正文和词级时间轴替换本地行。
+// 评分仍以本地 LRC 为基准，避免同名翻唱/片段因为“直接覆盖”绕过质量判断。
+function candidateStructureScore(localLines, cand) {
+  const local = (localLines || []).filter((l) => String(l?.text || '').trim())
+  const remote = (cand?.lines || []).filter((l) => String(l?.text || '').trim())
+  if (!local.length || !remote.length) return { coverage: 0, ratio: 0, textOverlap: 0 }
+  const merged = mergeSyllableLines(localLines, cand.lines)
+  const hit = merged.filter((l) => l.words?.length).length
+  return {
+    coverage: hit / local.length,
+    ratio: Math.min(remote.length / local.length, local.length / remote.length),
+    textOverlap: textBagOverlap(local.map((l) => l.text).join(''), remote.map((l) => l.text).join('')),
+  }
+}
+
+function isTrustedOverride(localLines, cand, score = null) {
+  const s = score || candidateStructureScore(localLines, cand)
+  const singable = (localLines || []).filter((l) => String(l?.text || '').trim()).length
+  const remote = (cand?.lines || []).filter((l) => String(l?.text || '').trim() && l?.words?.length)
+  if (!singable || !remote.length) return false
+  if (singable < 4) return s.coverage >= 0.5
+  return s.coverage >= 0.75 && s.ratio >= 0.8 && s.textOverlap >= 0.72
+}
+
+function remapEnhancementsByTime(targetLines, sourceLines) {
+  const source = (sourceLines || [])
+    .map((l) => ({
+      time: Number(l?.time),
+      translation: String(l?.translation || '').trim(),
+      roman: String(l?.roman || '').trim(),
+    }))
+    .filter((l) => Number.isFinite(l.time))
+  return (targetLines || []).map((l) => {
+    const t = Number(l?.time)
+    let best = null
+    for (const s of source) {
+      const d = Math.abs(s.time - t)
+      if (!best || d < best.d) best = { d, source: s }
+    }
+    // 轻微错位可接受；超过 3.5 秒说明不是同一句，宁可留空也不贴错。
+    if (!best || best.d > 3.5) return { ...l }
+    return {
+      ...l,
+      ...(best.source.translation ? { translation: best.source.translation } : {}),
+      ...(best.source.roman ? { roman: best.source.roman } : {}),
+    }
+  })
+}
+
+function overrideSyllableLines(localLines, cand) {
+  const score = candidateStructureScore(localLines, cand)
+  if (!isTrustedOverride(localLines, cand, score)) return null
+  const remote = (cand?.lines || [])
+    .filter((l) => String(l?.text || '').trim() && l?.words?.length)
+    .map((l) => ({
+      time: Number(l.time),
+      ...(Number.isFinite(Number(l.end)) ? { end: Number(l.end) } : {}),
+      text: String(l.text),
+      words: sanitizeWordTimeline(l.words, { start: Number(l.time), end: Number.isFinite(Number(l.end)) ? Number(l.end) : undefined }),
+      ...(l.translation ? { translation: l.translation } : {}),
+      ...(l.roman ? { roman: l.roman } : {}),
+    }))
+    .filter((l) => Number.isFinite(l.time) && l.words.length)
+    .sort((a, b) => a.time - b.time)
+  if (!remote.length) return null
+  return {
+    lines: remapEnhancementsByTime(remote, localLines),
+    coverage: score.coverage,
+    ratio: score.ratio,
+    textOverlap: score.textOverlap,
+    source: cand.source,
+    provider: cand.provider,
+  }
+}
+
 function pickSyllableCandidate(localLines, candidates = [], { earlyBreak = true } = {}) {
   let best = null
   const singableLines = localLines.filter((l) => String(l?.text || '').trim()).length
@@ -979,6 +1054,10 @@ export {
   normForMatch,
   mergeSyllableLines,
   pickSyllableCandidate,
+  candidateStructureScore,
+  isTrustedOverride,
+  remapEnhancementsByTime,
+  overrideSyllableLines,
   karaokeFills,
   smoothWordTimeline,
   predictWordTimings,

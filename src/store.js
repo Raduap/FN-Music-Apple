@@ -60,6 +60,7 @@ export const useUI = create((set, get) => ({
   experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, romanization: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: false, syllablePredict: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] },
   syllables: false, // 实验性逐字歌词（AMLL TTML DB / LiriQo），关闭时退回逐行歌词
   syllablePredict: LS.get('sylPredict', false), // 智能逐字补全：没有词级数据的行也按字长 / 停顿预测逐字动画
+  syllableOverwrite: LS.get('sylOverwrite', false), // 覆盖歌词：可信逐字命中时用源歌词替换本地正文
   syllablesDebug: LS.get('sylDebug', false), // 逐字歌词调试 toast：切歌时报告命中情况
   translationDebug: LS.get('translationDebug', false), // 翻译 / 音译调试 toast：报告来源与命中情况
   syllableStrict: LS.get('sylStrict', false), // 严格匹配：逐字严格照抄源时间戳（默认关闭，关闭时做速度带平滑）
@@ -154,6 +155,7 @@ export const useUI = create((set, get) => ({
       set({ syllables: hasPref ? r.syllables : LS.get('syllables', false) })
       // 智能逐字补全同样跟随主进程配置；缺失时回退 localStorage
       set({ syllablePredict: typeof r.syllablePredict === 'boolean' ? r.syllablePredict : LS.get('sylPredict', false) })
+      set({ syllableOverwrite: typeof r.syllableOverwrite === 'boolean' ? r.syllableOverwrite : LS.get('sylOverwrite', false) })
       // 严格匹配 / 速度带挡位跟随主进程配置
       set({ syllableStrict: typeof r.syllableStrict === 'boolean' ? r.syllableStrict : LS.get('sylStrict', false) })
       set({ syllableSmooth: ['mild', 'normal', 'strong'].includes(r.syllableSmooth) ? r.syllableSmooth : LS.get('sylSmooth', 'normal') })
@@ -175,6 +177,11 @@ export const useUI = create((set, get) => ({
     LS.set('sylPredict', !!on)
     set({ syllablePredict: !!on })
     await window.fn.experimentalSet?.({ syllablePredict: !!on }).catch(() => {})
+  },
+  async setSyllableOverwrite(on) {
+    LS.set('sylOverwrite', !!on)
+    set({ syllableOverwrite: !!on })
+    await window.fn.experimentalSet?.({ syllableOverwrite: !!on }).catch(() => {})
   },
   async setSyllableStrict(on) {
     LS.set('sylStrict', !!on)
@@ -650,7 +657,7 @@ async function enrichSyllableLines(id, song, lines) {
     last = finish(next)
     lyricLines = last
     broadcast()
-  })
+  }, { overwriteLyrics: !!useUI.getState().syllableOverwrite })
   return last || finish(merged)
 }
 

@@ -273,6 +273,7 @@ function useLyrics(song) {
   const syllablesEnabled = useUI((s) => s.syllables)
   const syllablePredict = useUI((s) => s.syllablePredict)
   const syllablesDebug = useUI((s) => s.syllablesDebug)
+  const syllableOverwrite = useUI((s) => s.syllableOverwrite)
   const translationDebug = useUI((s) => s.translationDebug)
   const sourceEnabled = useUI((s) => s.experimental?.sourceEnabled)
   const aiFallback = useUI((s) => s.experimental?.aiFallback)
@@ -324,7 +325,7 @@ function useLyrics(song) {
           if (dead) return
           meta = info
           setState({ lines: predict(next), loading: false })
-        })
+        }, { overwriteLyrics: syllableOverwrite })
         if (dead) return
         setState({ lines: predict(merged), loading: false })
         if (syllablesDebug) {
@@ -339,7 +340,7 @@ function useLyrics(song) {
     }
     run()
     return () => { dead = true }
-  }, [id, translationEnabled, romanizationEnabled, syllablesEnabled, syllablePredict, syllablesDebug, translationDebug, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [id, translationEnabled, romanizationEnabled, syllablesEnabled, syllablePredict, syllablesDebug, syllableOverwrite, translationDebug, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return state
 }

@@ -165,6 +165,7 @@ const experimentalDefaults = () => ({
   romanization: false,
   syllables: false,
   syllablePredict: false,
+  syllableOverwrite: false,
   syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'],
   // 严格匹配：默认关闭。关闭时对逐字时间轴做速度带平滑（视觉匀速），开启时逐字严格照抄源时间戳。
   syllableStrict: false,
@@ -185,6 +186,7 @@ function experimentalRead() {
     romanization: !!e.romanization,
     syllables: !!e.syllables,
     syllablePredict: !!e.syllablePredict,
+    syllableOverwrite: !!e.syllableOverwrite,
     syllableSources: cleanSyllableSources(e.syllableSources),
     syllableStrict: !!e.syllableStrict,
     syllableSmooth: cleanSyllableSmooth(e.syllableSmooth),
@@ -202,6 +204,7 @@ function experimentalWrite(patch) {
     model: String(patch.model ?? cur.model ?? '').trim(),
     syllables: patch.syllables === undefined ? cur.syllables : !!patch.syllables,
     syllablePredict: patch.syllablePredict === undefined ? cur.syllablePredict : !!patch.syllablePredict,
+    syllableOverwrite: patch.syllableOverwrite === undefined ? cur.syllableOverwrite : !!patch.syllableOverwrite,
     syllableSources: patch.syllableSources === undefined ? cur.syllableSources : cleanSyllableSources(patch.syllableSources),
     syllableStrict: patch.syllableStrict === undefined ? cur.syllableStrict : !!patch.syllableStrict,
     syllableSmooth: patch.syllableSmooth === undefined ? cur.syllableSmooth : cleanSyllableSmooth(patch.syllableSmooth),
