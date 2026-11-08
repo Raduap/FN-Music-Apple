@@ -9,6 +9,7 @@ import { TranslationGlyph, TransliterationGlyph } from '../lyricModeIcons'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
 import { smoothFills } from '../karaoke'
 import { closeFullPlayer, openFullPlayer } from '../motion'
+import { LYRICS_RESUME_DELAY, shouldFollowPlayback, shouldPinToggle } from '../lyricsScroll'
 import * as Icon from '../icons'
 
 // ---------- 滑块（进度 / 音量）：指针拖动、键盘、滚轮、悬停时间提示 ----------
@@ -353,9 +354,14 @@ export function LyricsView({ song, big = false }) {
   const prevSong = useRef(song?.id)
   const raf = useRef(0)
   const scrollRaf = useRef(0)
+  const idleTimer = useRef(0)
+  const returnRaf = useRef(0)
+  const returning = useRef(false)
   const synced = lines.length && lines[0].time >= 0
 
   const active = useMemo(() => lineAt(lines, time + 0.25), [time, lines])
+  const activeRef = useRef(-1)
+  activeRef.current = active
   const syllablesEnabled = useUI((s) => s.syllables)
   const syllableStrict = useUI((s) => s.syllableStrict)
   const syllableSmooth = useUI((s) => s.syllableSmooth)
@@ -367,8 +373,6 @@ export function LyricsView({ song, big = false }) {
   const hasRoman = useMemo(() => lines.some((line) => String(line?.roman || '').trim()), [lines])
   const showTrans = translation && hasTrans
   const showRoman = showRomanizationOn && hasRoman
-  const activeRef = useRef(active)
-  activeRef.current = active
 
   // 当前关注句：优先用正在播放的那句；没有同步歌词或尚未到时，退回第一个可见句。
   const measureFocus = () => {
@@ -406,10 +410,60 @@ export function LyricsView({ song, big = false }) {
 
   useEffect(() => {
     const el = ref.current
-    if (!el || active < 0 || Date.now() - userScroll.current < 3000) return
+    cancelAnimationFrame(raf.current)
+    raf.current = 0
+    if (!el || active < 0 || !shouldFollowPlayback(Date.now(), userScroll.current)) return
     const line = el.querySelector(`[data-i="${active}"]`)
     if (line) el.scrollTo({ top: line.offsetTop - el.clientHeight * (big ? 0.38 : 0.32), behavior: 'smooth' })
   }, [active, big])
+
+  // 切歌时清掉上一首的手动滚动宽限期与回滚动画，避免把新歌拉回旧句。
+  useEffect(() => {
+    clearTimeout(idleTimer.current)
+    cancelAnimationFrame(returnRaf.current)
+    returnRaf.current = 0
+    returning.current = false
+    userScroll.current = 0
+  }, [song?.id])
+
+  useEffect(() => () => {
+    clearTimeout(idleTimer.current)
+    cancelAnimationFrame(returnRaf.current)
+    cancelAnimationFrame(raf.current)
+  }, [])
+
+  // 用户停止滚动三秒后，主动回到当前播放句；不依赖下一句切换。
+  const onUserScroll = () => {
+    returning.current = false
+    cancelAnimationFrame(returnRaf.current)
+    returnRaf.current = 0
+    cancelAnimationFrame(raf.current)
+    raf.current = 0
+    userScroll.current = Date.now()
+    clearTimeout(idleTimer.current)
+    idleTimer.current = setTimeout(() => {
+      userScroll.current = 0
+      returning.current = true
+      const el = ref.current
+      const index = activeRef.current
+      if (!el || index < 0) { returning.current = false; return }
+      const line = el.querySelector(`[data-i="${index}"]`)
+      if (!line) { returning.current = false; return }
+      const target = line.offsetTop - el.clientHeight * (big ? 0.38 : 0.32)
+      const from = el.scrollTop
+      const started = performance.now()
+      const tick = () => {
+        const box = ref.current
+        if (!box) { returning.current = false; return }
+        const progress = Math.min(1, (performance.now() - started) / 450)
+        box.scrollTop = from + (target - from) * (1 - (1 - progress) ** 3)
+        if (progress < 1) { returnRaf.current = requestAnimationFrame(tick); return }
+        returnRaf.current = 0
+        returning.current = false
+      }
+      tick()
+    }, LYRICS_RESUME_DELAY)
+  }
 
   // 逐字扫色：rAF 每帧读 audio.currentTime（真实音频时钟，无 tick 粒度问题），
   // 用连续进度边直接写当前句每个词的铺色宽度。切句 / 无词数据时清理为普通文本。
@@ -491,9 +545,14 @@ export function LyricsView({ song, big = false }) {
       if (box) focus.current = box
       return
     }
+    cancelAnimationFrame(raf.current)
+    raf.current = 0
+    const pinActive = a.active ?? activeRef.current
     const DURATION = 340 // 略长于译文展开动画（0.26s），确保覆盖完整过渡
     const start = performance.now()
     const pin = () => {
+      // 副行补偿只服务触发它的那一句；换句后立即让位给播放自动滚动。
+      if (activeRef.current !== pinActive) { raf.current = 0; return }
       const line = el.querySelector(`[data-i="${a.i}"] .lt-main`)
       if (line) {
         const d = line.getBoundingClientRect().top - a.top
@@ -515,17 +574,15 @@ export function LyricsView({ song, big = false }) {
     return () => cancelAnimationFrame(raf.current)
   }, [showTrans, showRoman, lines, song?.id])
 
-  // 点击翻译 / 音译按钮时记录基准位置，交给上面的布局效果补偿。
-  const onToggleTranslation = () => {
+  // 连续切换副行时，取消上一轮补偿并以当前视口重新锚定，避免旧句把列表拉回。
+  const withScrollAnchor = (update) => {
+    if (!shouldPinToggle(returning.current)) return update()
     const box = measureFocus()
-    if (box) anchor.current = box
-    toggleTranslation()
+    if (box) anchor.current = { ...box, active: activeRef.current }
+    update()
   }
-  const onToggleRomanization = () => {
-    const box = measureFocus()
-    if (box) anchor.current = box
-    toggleRomanization()
-  }
+  const onToggleTranslation = () => withScrollAnchor(toggleTranslation)
+  const onToggleRomanization = () => withScrollAnchor(toggleRomanization)
 
   if (!song) return <div className="lyrics-empty">未在播放</div>
   if (loading) return <div className="lyrics-empty"><Spinner /></div>
@@ -562,7 +619,10 @@ export function LyricsView({ song, big = false }) {
       <div
         className={`lyrics ${big ? 'big' : ''} ${synced ? 'synced' : ''}`}
         ref={ref}
-        onWheel={() => (userScroll.current = Date.now())}
+        onWheel={onUserScroll}
+        onPointerDown={onUserScroll}
+        onTouchStart={onUserScroll}
+        onKeyDown={onUserScroll}
       >
         <div className="lyrics-pad" />
         {lines.map((l, i) => {
@@ -573,7 +633,16 @@ export function LyricsView({ song, big = false }) {
               data-i={i}
               className={`lyric-line ${i === active ? 'active' : ''} ${i < active ? 'past' : ''} ${(l.translation || (showRoman && l.roman)) ? 'translated' : ''}`}
               style={big && synced && i !== active ? { filter: `blur(${d * 0.6}px)` } : undefined}
-              onClick={() => synced && l.time >= 0 && (seek(l.time), (userScroll.current = 0))}
+              onClick={() => {
+                if (!synced || l.time < 0) return
+                // 点击某句是主动跳转，立即恢复正常跟随，不保留上一轮回滚动画。
+                clearTimeout(idleTimer.current)
+                cancelAnimationFrame(returnRaf.current)
+                returnRaf.current = 0
+                returning.current = false
+                userScroll.current = 0
+                seek(l.time)
+              }}
             >
               {/* 逐字高亮只在当前句渲染；past / 未到句子保持普通文本（AMLL 同款结构）。
                   宽度不由 React 管理：rAF 每帧按 audio.currentTime 直接写 DOM，
