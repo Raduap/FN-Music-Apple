@@ -5,6 +5,7 @@ import { api } from '../api'
 import { getAudio, usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
 import { hasTranslation, karaokeFills, karaokeWindowEnd, lineAt, loadLyrics, loadSyllablesProgressive, mergeSyllableLines, predictKaraokeLines, toLines } from '../lyrics'
+import { TranslationGlyph, TransliterationGlyph } from '../lyricModeIcons'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
 import { smoothFills } from '../karaoke'
 import { closeFullPlayer, openFullPlayer } from '../motion'
@@ -340,12 +341,15 @@ export function LyricsView({ song, big = false }) {
   const seek = usePlayer((s) => s.seek)
   const translation = useUI((s) => s.translation)
   const toggleTranslation = useUI((s) => s.toggleTranslation)
+  const showRomanizationOn = useUI((s) => s.showRomanization)
+  const toggleRomanization = useUI((s) => s.toggleRomanization)
   const ref = useRef(null)
   const userScroll = useRef(0)
   const anchor = useRef(null) // 切换翻译或补入译文时，当前句原文的视口位置
   const focus = useRef(null) // 当前关注句原文的实测视口位置（滚动时持续更新）
   const prevLines = useRef(lines)
   const prevShow = useRef(false)
+  const prevRoman = useRef(false)
   const prevSong = useRef(song?.id)
   const raf = useRef(0)
   const scrollRaf = useRef(0)
@@ -362,7 +366,7 @@ export function LyricsView({ song, big = false }) {
   const hasTrans = useMemo(() => hasTranslation(lines), [lines])
   const hasRoman = useMemo(() => lines.some((line) => String(line?.roman || '').trim()), [lines])
   const showTrans = translation && hasTrans
-  const showRoman = translation && hasRoman
+  const showRoman = showRomanizationOn && hasRoman
   const activeRef = useRef(active)
   activeRef.current = active
 
@@ -471,13 +475,15 @@ export function LyricsView({ song, big = false }) {
       prevSong.current = song?.id
       prevLines.current = lines
       prevShow.current = showTrans
+      prevRoman.current = showRoman
       anchor.current = null
       focus.current = null
       return
     }
-    const changed = prevLines.current !== lines || prevShow.current !== showTrans
+    const changed = prevLines.current !== lines || prevShow.current !== showTrans || prevRoman.current !== showRoman
     prevLines.current = lines
     prevShow.current = showTrans
+    prevRoman.current = showRoman
     const a = changed ? (anchor.current || focus.current) : null
     anchor.current = null
     if (!a) {
@@ -507,13 +513,18 @@ export function LyricsView({ song, big = false }) {
     }
     pin()
     return () => cancelAnimationFrame(raf.current)
-  }, [showTrans, lines, song?.id])
+  }, [showTrans, showRoman, lines, song?.id])
 
-  // 点击翻译按钮时同样记录基准位置，交给上面的布局效果补偿
+  // 点击翻译 / 音译按钮时记录基准位置，交给上面的布局效果补偿。
   const onToggleTranslation = () => {
     const box = measureFocus()
     if (box) anchor.current = box
     toggleTranslation()
+  }
+  const onToggleRomanization = () => {
+    const box = measureFocus()
+    if (box) anchor.current = box
+    toggleRomanization()
   }
 
   if (!song) return <div className="lyrics-empty">未在播放</div>
@@ -522,17 +533,30 @@ export function LyricsView({ song, big = false }) {
 
   return (
     <div className={`lyrics-wrap ${big ? 'big' : ''}`}>
-      {hasTrans && (
+      {(hasTrans || hasRoman) && (
         <div className={`lyrics-tools ${big ? 'big' : ''}`}>
-          <button
-            className={`tr-btn ${translation ? 'on' : ''}`}
-            onClick={onToggleTranslation}
-            title={translation ? '隐藏翻译' : '显示翻译'}
-            aria-label={translation ? '隐藏翻译' : '显示翻译'}
-            aria-pressed={translation}
-          >
-            <Icon.Translate size={16} /><span>翻译</span>
-          </button>
+          {hasTrans && (
+            <button
+              className={`lyrics-mode-btn ${translation ? 'on' : ''}`}
+              onClick={onToggleTranslation}
+              title={translation ? '隐藏翻译' : '显示翻译'}
+              aria-label={translation ? '隐藏翻译' : '显示翻译'}
+              aria-pressed={translation}
+            >
+              <TranslationGlyph checked={translation} size={32} />
+            </button>
+          )}
+          {hasRoman && (
+            <button
+              className={`lyrics-mode-btn ${showRomanizationOn ? 'on' : ''}`}
+              onClick={onToggleRomanization}
+              title={showRomanizationOn ? '隐藏音译' : '显示音译'}
+              aria-label={showRomanizationOn ? '隐藏音译' : '显示音译'}
+              aria-pressed={showRomanizationOn}
+            >
+              <TransliterationGlyph checked={showRomanizationOn} size={32} />
+            </button>
+          )}
         </div>
       )}
       <div
@@ -547,7 +571,7 @@ export function LyricsView({ song, big = false }) {
             <div
               key={i}
               data-i={i}
-              className={`lyric-line ${i === active ? 'active' : ''} ${i < active ? 'past' : ''} ${(l.translation || (showRoman && l.roman)) ? 'translated' : ''} ${(showTrans && l.translation) || (showRoman && l.roman) ? 'show-sub' : ''}`}
+              className={`lyric-line ${i === active ? 'active' : ''} ${i < active ? 'past' : ''} ${(l.translation || (showRoman && l.roman)) ? 'translated' : ''}`}
               style={big && synced && i !== active ? { filter: `blur(${d * 0.6}px)` } : undefined}
               onClick={() => synced && l.time >= 0 && (seek(l.time), (userScroll.current = 0))}
             >
@@ -566,9 +590,18 @@ export function LyricsView({ song, big = false }) {
               ) : (
                 <span className="lt-main">{l.text || '♪'}</span>
               )}
-              {/* 音译副行：插入在原文与译文之间，复用译文副行的结构与样式 */}
-              {showRoman && String(l.roman || '').trim() && <span className="lt-sub-wrap" aria-hidden={!showRoman}><span className="lt-sub lt-sub-roman">{l.roman}</span></span>}
-              {l.translation && <span className="lt-sub-wrap" aria-hidden={!showTrans}><span className="lt-sub">{l.translation}</span></span>}
+              {/* 音译副行：插入在原文与译文之间，复用译文副行的结构与动画。
+                  两个副行各自展开，翻译关闭时音译不会把译文行一起撑开。 */}
+              {String(l.roman || '').trim() && (
+                <span className={`lt-sub-wrap lt-sub-wrap-roman ${showRoman ? 'on' : ''}`} aria-hidden={!showRoman}>
+                  <span className="lt-sub lt-sub-roman">{l.roman}</span>
+                </span>
+              )}
+              {l.translation && (
+                <span className={`lt-sub-wrap lt-sub-wrap-trans ${showTrans ? 'on' : ''}`} aria-hidden={!showTrans}>
+                  <span className="lt-sub">{l.translation}</span>
+                </span>
+              )}
             </div>
           )
         })}

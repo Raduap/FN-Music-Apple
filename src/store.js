@@ -69,6 +69,7 @@ export const useUI = create((set, get) => ({
   motion: LS.get('motion', 'on'),
   sidebarCollapsed: LS.get('sbCollapsed', false),
   translation: LS.get('translation', true), // 双语歌词是否显示译文
+  showRomanization: LS.get('showRomanization', true), // 音译副行是否显示（与翻译显示开关独立）
   pageTitle: '', // 当前页面标题，滚动后显示在顶部导航条里
   scrolled: false,
 
@@ -85,6 +86,7 @@ export const useUI = create((set, get) => ({
   closePanel: () => set({ panel: null }),
   toggleSidebar: () => set((s) => { LS.set('sbCollapsed', !s.sidebarCollapsed); return { sidebarCollapsed: !s.sidebarCollapsed } }),
   toggleTranslation: () => set((s) => { LS.set('translation', !s.translation); return { translation: !s.translation } }),
+  toggleRomanization: () => set((s) => { LS.set('showRomanization', !s.showRomanization); return { showRomanization: !s.showRomanization } }),
   setPageTitle: (pageTitle) => set({ pageTitle }),
   setScrolled: (scrolled) => set((s) => (s.scrolled === scrolled ? s : { scrolled })),
   setFullPlayer: (v) => set({ fullPlayer: v }),
