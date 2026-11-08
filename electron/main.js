@@ -1056,8 +1056,11 @@ function registerIpc() {
   ipcMain.handle('lyrics:translate', async (_e, payload) => {
     try {
       const settings = experimentalRead()
-      if (!settings.enabled) return { ok: false, error: '实验性歌词翻译未开启' }
+      // 音译与翻译是独立能力：任一开启都应允许取源（同一次响应同时带 tlyric 与 romalrc）。
+      if (!settings.enabled && !settings.romanization) return { ok: false, error: '实验性歌词增强未开启' }
       const song = payload?.song || {}
+      // 渲染层会明确告知本次是否需要译文；只开音译时不要触发译文/AI 补译。
+      const wantTranslation = payload?.translate !== false
       const source = settings.sourceEnabled ? await fetchNeteaseTranslation(song) : { ok: false, error: '源站译词未开启' }
       const sourceLines = source.ok && Array.isArray(source.lines) ? source.lines : []
       const local = Array.isArray(payload?.localLines) ? payload.localLines : []
@@ -1110,6 +1113,19 @@ function registerIpc() {
         if (!tr) missing.push({ i, text })
       }
       let ai = { ok: false, translations: [], error: '' }
+      if (!wantTranslation) {
+        // 只取音译：跳过 AI 补译，避免无谓的模型调用与费用。
+        return {
+          ok: true,
+          translations: [],
+          romans,
+          source: source.ok ? source.source : 'none',
+          matched: source.ok ? source.matched : '',
+          sourceCount: 0,
+          aiCount: 0,
+          warning: '',
+        }
+      }
       if (missing.length && settings.aiFallback) {
         ai = await remoteTranslate(missing.map((x) => x.text), { ...settings, title: song.title || '', artist: song.artist || '', context: payload?.context || '' })
         if (ai.ok) missing.forEach((x, j) => { translations[x.i] = ai.translations[j] || '' })

@@ -138,11 +138,11 @@ const hasRomanization = (lines) => lines.some((line) => String(line?.roman || ''
  *   - 缺音译的行（开关开启时）→ 写 line.roman
  * 只是把结果贴到不同的副行字段上，绝不改动正文。
  */
-async function translateLines(id, lines, song, { romanize = false } = {}) {
+async function translateLines(id, lines, song, { translate = true, romanize = false } = {}) {
   if (!lines.length) return lines
   const cached = done.get(id)
-  if (cached && hasTranslation(cached) && (!romanize || hasRomanization(cached))) return cached
-  const targets = translationTargets(lines)
+  if (cached && (!translate || hasTranslation(cached)) && (!romanize || hasRomanization(cached))) return cached
+  const targets = translate ? translationTargets(lines) : []
   // 音译目标：开关开启时，缺 roman 的所有非空行（可与译文目标重叠，一次请求带回）
   const romanTargets = romanize
     ? lines.map((line, index) => ({ line, index })).filter(({ line }) => String(line?.text || '').trim() && !String(line?.roman || '').trim())
@@ -163,6 +163,7 @@ async function translateLines(id, lines, song, { romanize = false } = {}) {
       const context = lines.map((l) => String(l?.text || '').trim()).filter(Boolean).join(String.fromCharCode(10))
       const r = await bridge.lyricsTranslate({
         song: { title: song?.title || '', artist: song?.artist || '', album: song?.album || '', duration: song?.duration || 0 },
+        translate: !!translate,
         lines: requestLines,
         localLines: requestLines.map((_, i) => {
           const index = [...requestIndex.entries()].find(([, v]) => v === i)?.[0]
@@ -174,11 +175,13 @@ async function translateLines(id, lines, song, { romanize = false } = {}) {
       const out = lines.map((l) => ({ ...l }))
       let filled = 0
       let romanFilled = 0
-      targets.forEach((t) => {
-        const i = requestIndex.get(t.index)
-        const text = String(r.translations?.[i] || '').trim()
-        if (text) { out[t.index].translation = text; filled++ }
-      })
+      if (translate) {
+        targets.forEach((t) => {
+          const i = requestIndex.get(t.index)
+          const text = String(r.translations?.[i] || '').trim()
+          if (text) { out[t.index].translation = text; filled++ }
+        })
+      }
       if (romanize) {
         romanTargets.forEach(({ index }) => {
           const i = requestIndex.get(index)
@@ -212,9 +215,12 @@ export function loadLyrics(id, song = null, { translate = false, romanize = fals
   const cached = done.get(id)
   if (done.has(id) || raw.has(id)) {
     const original = raw.get(id) || cached
-    if (translate) {
-      if (cached && hasTranslation(cached) && (!romanize || hasRomanization(cached))) return Promise.resolve(cached)
-      return translateLines(id, original, song, { romanize })
+    if (translate || romanize) {
+      // 独立判断：翻译关时只需检查音译是否已缓存；音译关时只需检查译文。
+      const translatedOk = !translate || (cached && hasTranslation(cached))
+      const romanOk = !romanize || (cached && hasRomanization(cached))
+      if (cached && translatedOk && romanOk) return Promise.resolve(cached)
+      return translateLines(id, original, song, { translate, romanize })
     }
     return Promise.resolve(original)
   }
@@ -224,13 +230,13 @@ export function loadLyrics(id, song = null, { translate = false, romanize = fals
   if (pending.has(id)) {
     const base = pending.get(id)
     if (!translate) return base
-    return base.then((lines) => translateLines(id, lines, song, { romanize }))
+    return base.then((lines) => translateLines(id, lines, song, { translate, romanize }))
   }
   pending.set(id, api.lyric(id).then(async (text) => {
     const lines = toLines(text)
     raw.set(id, lines)
     let out = lines
-    if (translate || romanize) out = await translateLines(id, lines, song, { romanize })
+    if (translate || romanize) out = await translateLines(id, lines, song, { translate, romanize })
     done.set(id, out)
     if (done.size > MAX) {
       const oldest = done.keys().next().value

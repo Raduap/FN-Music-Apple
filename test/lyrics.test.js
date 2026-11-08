@@ -275,6 +275,74 @@ describe('歌词', () => {
     ]
     expect(lyricFrame(lines, 1.5)).toMatchObject({ lyricRoman: 'a', nextLyricRoman: 'b', nextNextLyricRoman: 'c' })
   })
+
+  it('只开音译（翻译关闭）：只写 roman，不写 translation、不触发 AI', async () => {
+    const lyrics = '[00:01.00]君の名は\n[00:05.00]Hello'
+    const id = 'roman-only-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    let lastPayload = null
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => ({ json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) })
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async (payload) => {
+        lastPayload = payload
+        return {
+          ok: true,
+          translations: ['', ''],
+          romans: ['kimi no na wa', 'hello'],
+          source: 'netease',
+          sourceCount: 0,
+          aiCount: 0,
+        }
+      },
+    }
+    try {
+      const song = { id, title: 'Kimi', artist: 'Tester', album: '', duration: 180 }
+      const lines = await loadLyrics(id, song, { translate: false, romanize: true })
+      expect(lastPayload.translate).toBe(false)
+      expect(lines[0].roman).toBe('kimi no na wa')
+      expect(lines[0].translation || '').toBe('')
+      expect(lines[1].roman).toBe('hello')
+      expect(lines[1].translation || '').toBe('')
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+    }
+  })
+
+  it('只开翻译（音译关闭）：只写 translation，不写 roman', async () => {
+    const lyrics = '[00:01.00]君の名は\n[00:05.00]Hello'
+    const id = 'trans-only-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    let lastPayload = null
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => ({ json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) })
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async (payload) => {
+        lastPayload = payload
+        return { ok: true, translations: ['你的名字', '你好'], romans: ['kimi no na wa', 'hello'], source: 'netease', sourceCount: 2, aiCount: 0 }
+      },
+    }
+    try {
+      const song = { id, title: 'Kimi', artist: 'Tester', album: '', duration: 180 }
+      const lines = await loadLyrics(id, song, { translate: true, romanize: false })
+      expect(lastPayload.translate).toBe(true)
+      expect(lines[0].translation).toBe('你的名字')
+      expect(lines[0].roman || '').toBe('')
+      expect(lines[1].roman || '').toBe('')
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+    }
+  })
 })
 
 
