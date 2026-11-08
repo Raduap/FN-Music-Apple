@@ -5,7 +5,7 @@ import { api } from '../api'
 import { getAudio, usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
 import { hasTranslation, karaokeFills, karaokeWindowEnd, lineAt, loadLyrics, loadSyllablesProgressive, mergeSyllableLines, peekTranslationMeta, predictKaraokeLines, toLines } from '../lyrics'
-import { translationDebugMessage } from '../lyricsDebug'
+import { syllableOverrideMessage, translationDebugMessage } from '../lyricsDebug'
 import { TranslationGlyph, TransliterationGlyph } from '../lyricModeIcons'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
 import { smoothFills } from '../karaoke'
@@ -319,24 +319,33 @@ function useLyrics(song) {
       // 3. 逐字：按用户排序流式抓取，到 90% 先显示、到 98% 停止；更好的结果静默替换。
       if (!syllablesEnabled) return
       let reason = ''
-      let meta = null
+      let syllableMeta = null
+      let syllableError = ''
       try {
         const merged = await loadSyllablesProgressive(song, lines, (next, info) => {
           if (dead) return
-          meta = info
+          syllableMeta = info
           setState({ lines: predict(next), loading: false })
         }, { overwriteLyrics: syllableOverwrite })
         if (dead) return
         setState({ lines: predict(merged), loading: false })
         if (syllablesDebug) {
-          reason = meta
-            ? `选中 ${(meta.coverage * 100).toFixed(0)}%（${meta.source}/${meta.provider}）${meta.coverage < 0.9 ? '（低于合格线，取最高）' : ''}`
+          reason = syllableMeta
+            ? `选中 ${(syllableMeta.coverage * 100).toFixed(0)}%（${syllableMeta.source}/${syllableMeta.provider}）${syllableMeta.coverage < 0.9 ? '（低于合格线，取最高）' : ''}`
             : '所有来源都没有达到合格线的逐字数据，退回逐行歌词'
         }
       } catch (e) {
-        if (syllablesDebug) reason = '逐字抓取失败：' + (e?.message || '未知错误') + '，退回逐行歌词'
+        if (dead) return
+        syllableError = e?.message || '未知错误'
+        if (syllablesDebug) reason = '逐字抓取失败：' + syllableError + '，退回逐行歌词'
       }
-      if (syllablesDebug && reason) useUI.getState().showToast(`逐字调试 · ${song?.title || ''}：${reason}`)
+      if (dead) return
+      if (syllableOverwrite) {
+        const overrideMessage = syllableOverrideMessage(song, syllableMeta, { enabled: true, error: syllableError })
+        useUI.getState().showToast(reason ? `${overrideMessage} · 逐字调试：${reason}` : overrideMessage)
+      } else if (syllablesDebug && reason) {
+        useUI.getState().showToast(`逐字调试 · ${song?.title || ''}：${reason}`)
+      }
     }
     run()
     return () => { dead = true }

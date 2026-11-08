@@ -85,7 +85,7 @@ export async function loadSyllablesProgressive(song, lines, onUpdate, { overwrit
     }
     best = pick.merged
     bestCoverage = pick.coverage
-    try { onUpdate?.(best, { coverage: pick.coverage, source: pick.source, provider: pick.provider }) } catch {}
+    try { onUpdate?.(best, { coverage: pick.coverage, source: pick.source, provider: pick.provider, overwritten: false }) } catch {}
   }
   const off = bridge.onLyricsSyllablesProgress?.((d) => { if (d?.requestId === requestId) apply(d.candidates) })
   try {
