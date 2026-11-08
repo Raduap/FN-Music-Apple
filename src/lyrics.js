@@ -141,7 +141,12 @@ const hasRomanization = (lines) => lines.some((line) => String(line?.roman || ''
 async function translateLines(id, lines, song, { translate = true, romanize = false } = {}) {
   if (!lines.length) return lines
   const cached = done.get(id)
-  if (cached && (!translate || hasTranslation(cached)) && (!romanize || hasRomanization(cached))) return cached
+  if (cached && (!translate || hasTranslation(cached)) && (!romanize || hasRomanization(cached))) {
+    if (!translationMeta.has(id)) {
+      translationMeta.set(id, { source: 'cache', matched: '', sourceCount: cached.filter((line) => String(line?.translation || '').trim()).length, aiCount: 0, warning: '' })
+    }
+    return cached
+  }
   const targets = translate ? translationTargets(lines) : []
   // 音译目标：开关开启时，缺 roman 的所有非空行（可与译文目标重叠，一次请求带回）
   const romanTargets = romanize
@@ -149,7 +154,13 @@ async function translateLines(id, lines, song, { translate = true, romanize = fa
     : []
   const needTranslation = targets.length && isForeignLyrics(targets)
   const needRoman = romanTargets.length && isForeignLyrics(romanTargets.map(({ line }) => line))
-  if (!needTranslation && !needRoman) return lines
+  if (!needTranslation && !needRoman) {
+    const warning = !targets.length && !romanTargets.length
+      ? '没有需要增强的歌词行'
+      : '当前歌词不是可翻译/音译的外语内容'
+    translationMeta.set(id, { source: 'none', matched: '', sourceCount: 0, aiCount: 0, warning, skipped: true })
+    return lines
+  }
   if (translating.has(id)) return translating.get(id)
   const bridge = globalThis.window?.fn
   if (!bridge?.lyricsTranslate) return lines
@@ -171,7 +182,10 @@ async function translateLines(id, lines, song, { translate = true, romanize = fa
         }),
         context,
       })
-      if (!r?.ok) return lines
+      if (!r?.ok) {
+        translationMeta.set(id, { source: 'none', matched: '', sourceCount: 0, aiCount: 0, warning: r?.error || '翻译请求没有返回结果' })
+        return lines
+      }
       const out = lines.map((l) => ({ ...l }))
       let filled = 0
       let romanFilled = 0
@@ -189,7 +203,10 @@ async function translateLines(id, lines, song, { translate = true, romanize = fa
           if (roman) { out[index].roman = roman; romanFilled++ }
         })
       }
-      if (!filled && !romanFilled) return lines
+      if (!filled && !romanFilled) {
+        translationMeta.set(id, { source: r.source || 'none', matched: r.matched || '', sourceCount: 0, aiCount: 0, warning: r.warning || '源站和 AI 都没有返回可用结果' })
+        return lines
+      }
       translationMeta.set(id, {
         source: r.source || 'none',
         matched: r.matched || '',

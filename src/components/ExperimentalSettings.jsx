@@ -3,7 +3,7 @@ import { useUI } from '../store'
 import { moveItem } from '../lib'
 import * as Icon from '../icons'
 
-const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, romanization: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablePredict: false, syllablesDebug: false, syllableStrict: false, syllableSmooth: 'normal', syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
+const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, romanization: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablePredict: false, syllablesDebug: false, translationDebug: false, syllableStrict: false, syllableSmooth: 'normal', syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
 // 逐字数据源元数据（id / 名称 / 说明）。列表渲染顺序即抓取顺序，
 // 用户可在设置里拖动调整；启用与否是另一维（开关），与顺序无关。
 const SYLLABLE_SOURCES = [
@@ -45,7 +45,7 @@ export function ExperimentalSettings() {
     setTab('translate')
     ui().loadExperimental().then((r) => {
       const s = useUI.getState()
-      setForm({ ...DEFAULTS, ...r, apiKey: '', syllables: s.syllables, syllablePredict: s.syllablePredict, syllablesDebug: s.syllablesDebug, syllableStrict: s.syllableStrict, syllableSmooth: s.syllableSmooth })
+      setForm({ ...DEFAULTS, ...r, apiKey: '', syllables: s.syllables, syllablePredict: s.syllablePredict, syllablesDebug: s.syllablesDebug, translationDebug: s.translationDebug, syllableStrict: s.syllableStrict, syllableSmooth: s.syllableSmooth })
       setStatus(null)
     })
     lastFocus.current = document.activeElement
@@ -167,7 +167,7 @@ export function ExperimentalSettings() {
                       <p>优先使用网易云源站自带的中文译文；源站没有译文的外语行，再调用你配置的 OpenAI 兼容端点补译。已有译文不会被覆盖。</p>
                     </div>
                   </div>
-                  <button className={`fl-toggle exp-toggle ${form.enabled ? 'on' : ''}`} role="switch" aria-checked={form.enabled} onClick={toggle}>
+                  <button className={`fl-toggle exp-toggle ${form.enabled ? 'on' : ''}`} role="switch" aria-label="启用歌词翻译" aria-checked={form.enabled} onClick={toggle}>
                     <span>启用歌词翻译</span><span className="fl-switch" aria-hidden="true" />
                   </button>
                   <button className={`fl-toggle exp-toggle ${form.romanization ? 'on' : ''}`} role="switch" aria-checked={form.romanization} onClick={async () => { const romanization = !form.romanization; setForm((f) => ({ ...f, romanization })); await save({ romanization }) }}>
@@ -190,6 +190,25 @@ export function ExperimentalSettings() {
                     <li>先展示原始歌词，命中缺译文的外语行后再异步翻译。</li>
                     <li>中文歌词、纯音乐和已有译文都不会被改写。</li>
                     <li>当前曲目的侧栏歌词、全屏播放页和悬浮歌词都会同步显示译文。</li>
+                  </ul>
+                </section>
+                <section className="exp-section">
+                  <div className="exp-section-title">调试</div>
+                  <button
+                    className={`fl-toggle exp-toggle ${form.translationDebug ? 'on' : ''}`}
+                    role="switch"
+                    aria-label="翻译调试提示"
+                    data-testid="translation-debug-toggle"
+                    aria-checked={!!form.translationDebug}
+                    onClick={() => {
+                      ui().toggleTranslationDebug()
+                      setForm((f) => ({ ...f, translationDebug: !f.translationDebug }))
+                    }}
+                  >
+                    <span>翻译调试提示</span><span className="fl-switch" aria-hidden="true" />
+                  </button>
+                  <ul className="exp-list">
+                    <li>开启后切歌会用 Toast 提示翻译/音译是否命中、来源、匹配歌曲、源站译文与 AI 补译行数，以及未生效原因。</li>
                   </ul>
                 </section>
                 <section className="exp-section">

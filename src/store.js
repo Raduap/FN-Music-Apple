@@ -60,6 +60,7 @@ export const useUI = create((set, get) => ({
   syllables: false, // 实验性逐字歌词（AMLL TTML DB / LiriQo），关闭时退回逐行歌词
   syllablePredict: LS.get('sylPredict', false), // 智能逐字补全：没有词级数据的行也按字长 / 停顿预测逐字动画
   syllablesDebug: LS.get('sylDebug', false), // 逐字歌词调试 toast：切歌时报告命中情况
+  translationDebug: LS.get('translationDebug', false), // 翻译 / 音译调试 toast：报告来源与命中情况
   syllableStrict: LS.get('sylStrict', false), // 严格匹配：逐字严格照抄源时间戳（默认关闭，关闭时做速度带平滑）
   syllableSmooth: LS.get('sylSmooth', 'normal'), // 速度带挡位：mild / normal / strong（仅非严格时生效）
   floatingLyrics: false, // 悬浮歌词窗口是否开启（真实状态以主进程 prefs 为准）
@@ -190,6 +191,12 @@ export const useUI = create((set, get) => ({
     LS.set('sylDebug', on)
     set({ syllablesDebug: on })
     if (on) get().showToast('逐字调试已开启：切歌时会提示逐字命中情况')
+  },
+  toggleTranslationDebug() {
+    const on = !get().translationDebug
+    LS.set('translationDebug', on)
+    set({ translationDebug: on })
+    if (on) get().showToast('翻译调试已开启：切歌时会提示翻译与音译命中情况')
   },
   async loadLyricsPrefs() {
     const r = await window.fn.lyricsGet?.().catch(() => null)

@@ -4,7 +4,8 @@ import { useShallow } from 'zustand/react/shallow'
 import { api } from '../api'
 import { getAudio, usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
-import { hasTranslation, karaokeFills, karaokeWindowEnd, lineAt, loadLyrics, loadSyllablesProgressive, mergeSyllableLines, predictKaraokeLines, toLines } from '../lyrics'
+import { hasTranslation, karaokeFills, karaokeWindowEnd, lineAt, loadLyrics, loadSyllablesProgressive, mergeSyllableLines, peekTranslationMeta, predictKaraokeLines, toLines } from '../lyrics'
+import { translationDebugMessage } from '../lyricsDebug'
 import { TranslationGlyph, TransliterationGlyph } from '../lyricModeIcons'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
 import { smoothFills } from '../karaoke'
@@ -272,6 +273,7 @@ function useLyrics(song) {
   const syllablesEnabled = useUI((s) => s.syllables)
   const syllablePredict = useUI((s) => s.syllablePredict)
   const syllablesDebug = useUI((s) => s.syllablesDebug)
+  const translationDebug = useUI((s) => s.translationDebug)
   const sourceEnabled = useUI((s) => s.experimental?.sourceEnabled)
   const aiFallback = useUI((s) => s.experimental?.aiFallback)
   const romanizationEnabled = useUI((s) => s.experimental?.romanization)
@@ -297,12 +299,19 @@ function useLyrics(song) {
 
       // 2. 翻译可能很慢（走 AI），完成后才替换；期间界面已经有原词可看。
       let lines = raw
+      if (translationDebug && !translationEnabled && !romanizationEnabled) {
+        useUI.getState().showToast(`翻译调试 · ${song?.title || ''}：翻译和音译均未启用`)
+      }
       if (translationEnabled || romanizationEnabled) {
         const translated = await loadLyrics(id, song, { translate: translationEnabled, romanize: romanizationEnabled })
         if (dead) return
         if (translated !== raw) {
           lines = translated
           setState({ lines: predict(translated), loading: false })
+        }
+        if (translationDebug) {
+          const msg = translationDebugMessage(song, peekTranslationMeta(id), { translate: translationEnabled, romanize: romanizationEnabled })
+          if (!dead) useUI.getState().showToast(msg)
         }
       }
 
@@ -330,7 +339,7 @@ function useLyrics(song) {
     }
     run()
     return () => { dead = true }
-  }, [id, translationEnabled, romanizationEnabled, syllablesEnabled, syllablePredict, syllablesDebug, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [id, translationEnabled, romanizationEnabled, syllablesEnabled, syllablePredict, syllablesDebug, translationDebug, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return state
 }
