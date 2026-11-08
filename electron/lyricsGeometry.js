@@ -100,6 +100,7 @@ function layoutFlags(style, state = {}) {
   // 也就不会出现移动、歌词偏移或被窗口裁掉。
   return {
     showTranslation: !!s.showTranslation && !!st.hasTranslation,
+    showRomanization: !!st.hasRoman,
     showNext: !!s.showNext && !!st.hasNext,
   }
 }
@@ -112,8 +113,10 @@ function visibleRows(style, extra = {}) {
   const s = normalizeStyle(style)
   let rows = 1
   const showTranslation = extra.showTranslation === undefined ? s.showTranslation : !!extra.showTranslation
+  const showRomanization = extra.showRomanization === undefined ? false : !!extra.showRomanization
   const showNext = extra.showNext === undefined ? s.showNext : !!extra.showNext
   if (showTranslation) rows += 1
+  if (showRomanization) rows += 1
   if (showNext) rows += 1
   return rows
 }

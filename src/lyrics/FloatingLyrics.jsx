@@ -13,7 +13,7 @@ import { karaokeClock, karaokeProgress, karaokeWords, smoothFills } from '../kar
 
 const bridge = window.lyricsWin
 const { defaultStyle: DEFAULT_STYLE, fontStacks: FONT_STACKS } = SPEC
-const EMPTY_STATE = { title: '', lyric: '', lyricTrans: '', nextLyric: '', nextLyricTrans: '', nextNextLyric: '', nextNextLyricTrans: '', lyricsReady: false, hasLyrics: false, hasTranslation: false, hasNext: false, playing: false, currentTime: 0, at: 0, duration: 0, palette: 'red' }
+const EMPTY_STATE = { title: '', lyric: '', lyricTrans: '', lyricRoman: '', nextLyric: '', nextLyricTrans: '', nextLyricRoman: '', nextNextLyric: '', nextNextLyricTrans: '', nextNextLyricRoman: '', lyricsReady: false, hasLyrics: false, hasTranslation: false, hasRoman: false, hasNext: false, playing: false, currentTime: 0, at: 0, duration: 0, palette: 'red' }
 // 控制条显隐完全由主进程按光标位置驱动（离开胶囊 / 按钮 3s 后隐藏），页面只镜像 active 状态。
 
 // ---------- 演示模式：在普通浏览器里打开 lyrics.html?demo 预览界面（无 Electron） ----------
@@ -157,6 +157,7 @@ export default function FloatingLyrics() {
   const showTrans = !!s.showTranslation && !!state.hasTranslation
   const showNext = !!s.showNext && !!state.hasNext
   const transText = upcoming ? state.nextLyricTrans : state.lyricTrans
+  const romanText = upcoming ? state.nextLyricRoman : state.lyricRoman
   const nextText = upcoming ? state.nextNextLyric : state.nextLyric
   // 逐字高亮只做当前句：upcoming（前奏预告）时显示的是下一句，跟着用下一句的词级数据。
   // words 文本与整句文本逐字符一致（合并层已保证），宽度不由 React 管，rAF 直接写 DOM。
@@ -360,6 +361,11 @@ export default function FloatingLyrics() {
                 ))
                 : main}
             </div>
+            {state.hasRoman && String(romanText || '').trim() ? (
+              <div className="lsub-wrap on lsub-roman">
+                <div className={`lsub${verticalClass(romanText)}`}>{romanText}</div>
+              </div>
+            ) : null}
             <div className={`lsub-wrap ${showTrans ? 'on' : ''}`} aria-hidden={!showTrans}>
               <div className={`lsub${verticalClass(transText)}`}>{transText}</div>
             </div>

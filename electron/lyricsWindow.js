@@ -55,7 +55,7 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
   const extra = () => G.layoutFlags(style, layoutState)
   // 窗口预留行数：只看这首歌有没有译文 / 下一句，忽略用户当前开关。
   // 这样开关译文 / 下一句时窗口尺寸与位置不变，只有内部胶囊伸缩。
-  const winExtra = () => ({ showTranslation: !!layoutState.hasTranslation, showNext: !!layoutState.hasNext })
+  const winExtra = () => ({ showTranslation: !!layoutState.hasTranslation, showRomanization: !!layoutState.hasRoman, showNext: !!layoutState.hasNext })
   const capSize = () => G.capsuleSize(style, extra())
   // 窗口按 winExtra（整首歌可能出现的最大行数）预留尺寸；它的差值会补到贴屏边一侧，
   // 使开关译文 / 下一句时窗口位置不变（见 lyricsGeometry.capsuleInset）。
