@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { clearLyricsTranslation, detectLyricLang, hasTranslation, lineAt, lyricFrame, lyricPlaceholder, loadLyrics, toLines, translationTargets } from '../src/lyrics.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { clearLyricSessions, clearLyricsTranslation, detectLyricLang, hasTranslation, lineAt, lyricFrame, lyricPlaceholder, loadLyrics, loadLyricsView, toLines, translationTargets } from '../src/lyrics.js'
 
 describe('歌词', () => {
   const lines = toLines('[00:01.00]一\n[00:05.00]二\n[00:09.00]三')
@@ -346,3 +346,43 @@ describe('歌词', () => {
 })
 
 
+
+describe('歌词视图共享会话', () => {
+  const song = { id: 'shared-session-song', title: 'Shared Session', artist: 'Tester', duration: 120 }
+
+  afterEach(() => {
+    clearLyricSessions()
+    clearLyricsTranslation(song.id)
+    delete globalThis.window
+    vi.restoreAllMocks()
+  })
+
+  it('全屏与侧栏先后挂载时只请求一次歌词与逐字', async () => {
+    let lyricCalls = 0
+    let syllableCalls = 0
+    globalThis.window = {
+      fn: {
+        lyricsSyllables: async () => {
+          syllableCalls++
+          return { ok: true, candidates: [] }
+        },
+        onLyricsSyllablesProgress: () => () => {},
+      },
+    }
+    const api = await import('../src/api.js')
+    vi.spyOn(api.api, 'lyric').mockImplementation(async () => {
+      lyricCalls++
+      return '[00:01.00]One\n[00:05.00]Two\n[00:09.00]Three\n[00:13.00]Four'
+    })
+
+    const options = { translate: false, romanize: false, syllables: true, overwriteLyrics: false }
+    const first = loadLyricsView(song, options, () => {})
+    await first.promise
+    const second = loadLyricsView(song, options, () => {})
+    await second.promise
+
+    expect(second.cached).toBe(true)
+    expect(lyricCalls).toBe(1)
+    expect(syllableCalls).toBe(1)
+  })
+})

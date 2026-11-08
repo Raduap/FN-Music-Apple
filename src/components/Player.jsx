@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { api } from '../api'
 import { getAudio, usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
-import { hasTranslation, karaokeFills, karaokeWindowEnd, lineAt, loadLyrics, loadSyllablesProgressive, mergeSyllableLines, peekTranslationMeta, predictKaraokeLines, toLines } from '../lyrics'
+import { hasTranslation, karaokeFills, karaokeWindowEnd, lineAt, loadLyricsView, mergeSyllableLines, peekTranslationMeta, predictKaraokeLines, toLines } from '../lyrics'
 import { syllableOverrideMessage, translationDebugMessage } from '../lyricsDebug'
 import { TranslationGlyph, TransliterationGlyph } from '../lyricModeIcons'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
@@ -282,75 +282,52 @@ function useLyrics(song) {
   const prevId = useRef(null)
   const meta = [song?.title, song?.artist, song?.album].join('\u0000')
   useEffect(() => {
-    if (!id) { prevId.current = null; return setState({ lines: [], loading: false }) }
+    if (!id) { prevId.current = null; setState({ lines: [], loading: false }); return }
     let dead = false
-    // 只有真正切歌才清空（避免短暂显示上一首）；改设置（翻译 / 逐字开关）
-    // 时保留现有歌词，不闪一下空白。清空后立刻用本地原词占位，不等翻译 / 逐字。
     const songChanged = prevId.current !== id
     prevId.current = id
     if (songChanged) setState({ lines: [], loading: true })
-    // 「智能逐字补全」：有真实词级时间的行原样保留，缺的行按字长 / 停顿预测。
     const predict = (src) => (syllablePredict ? predictKaraokeLines(src, { duration: song?.duration || 0 }) : src)
-    const run = async () => {
-      // 1. 本地原词必须最先出，且不依赖翻译与逐字抓取——这就是「切歌不卡加载」。
-      const raw = await loadLyrics(id, song, { translate: false })
-      if (dead) return
-      // 开了「智能逐字补全」就直接先上预测结果，否则先显示普通逐行歌词。
-      setState({ lines: predict(raw), loading: false })
-
-      // 2. 翻译可能很慢（走 AI），完成后才替换；期间界面已经有原词可看。
-      let lines = raw
-      if (translationDebug && !translationEnabled && !romanizationEnabled) {
-        useUI.getState().showToast(`翻译调试 · ${song?.title || ''}：翻译和音译均未启用`)
+    const announced = new Set()
+    const announce = (metaInfo) => {
+      if (dead || !metaInfo || metaInfo.replayed) return
+      if (metaInfo.stage === 'enhanced' && translationDebug) {
+        const msg = translationDebugMessage(song, peekTranslationMeta(id), { translate: translationEnabled, romanize: romanizationEnabled })
+        if (!announced.has(`translation:${msg}`)) { announced.add(`translation:${msg}`); useUI.getState().showToast(msg) }
       }
-      if (translationEnabled || romanizationEnabled) {
-        const translated = await loadLyrics(id, song, { translate: translationEnabled, romanize: romanizationEnabled })
-        if (dead) return
-        if (translated !== raw) {
-          lines = translated
-          setState({ lines: predict(translated), loading: false })
+      if (metaInfo.stage === 'final') {
+        let reason = ''
+        if (syllablesDebug) reason = metaInfo.coverage != null
+          ? `选中 ${(metaInfo.coverage * 100).toFixed(0)}%（${metaInfo.source}/${metaInfo.provider}）${metaInfo.coverage < 0.9 ? '（低于合格线，取最高）' : ''}`
+          : '所有来源都没有达到合格线的逐字数据，退回逐行歌词'
+        if (syllableOverwrite) {
+          const msg = syllableOverrideMessage(song, metaInfo.coverage != null ? metaInfo : null, { enabled: true })
+          const finalMsg = reason ? `${msg} · 逐字调试：${reason}` : msg
+          if (!announced.has(`syllables:${finalMsg}`)) { announced.add(`syllables:${finalMsg}`); useUI.getState().showToast(finalMsg) }
+        } else if (syllablesDebug && reason) {
+          const msg = `逐字调试 · ${song?.title || ''}：${reason}`
+          if (!announced.has(`syllables:${msg}`)) { announced.add(`syllables:${msg}`); useUI.getState().showToast(msg) }
         }
-        if (translationDebug) {
-          const msg = translationDebugMessage(song, peekTranslationMeta(id), { translate: translationEnabled, romanize: romanizationEnabled })
-          if (!dead) useUI.getState().showToast(msg)
-        }
-      }
-
-      // 3. 逐字：按用户排序流式抓取，到 90% 先显示、到 98% 停止；更好的结果静默替换。
-      if (!syllablesEnabled) return
-      let reason = ''
-      let syllableMeta = null
-      let syllableError = ''
-      try {
-        const merged = await loadSyllablesProgressive(song, lines, (next, info) => {
-          if (dead) return
-          syllableMeta = info
-          setState({ lines: predict(next), loading: false })
-        }, { overwriteLyrics: syllableOverwrite })
-        if (dead) return
-        setState({ lines: predict(merged), loading: false })
-        if (syllablesDebug) {
-          reason = syllableMeta
-            ? `选中 ${(syllableMeta.coverage * 100).toFixed(0)}%（${syllableMeta.source}/${syllableMeta.provider}）${syllableMeta.coverage < 0.9 ? '（低于合格线，取最高）' : ''}`
-            : '所有来源都没有达到合格线的逐字数据，退回逐行歌词'
-        }
-      } catch (e) {
-        if (dead) return
-        syllableError = e?.message || '未知错误'
-        if (syllablesDebug) reason = '逐字抓取失败：' + syllableError + '，退回逐行歌词'
-      }
-      if (dead) return
-      if (syllableOverwrite) {
-        const overrideMessage = syllableOverrideMessage(song, syllableMeta, { enabled: true, error: syllableError })
-        useUI.getState().showToast(reason ? `${overrideMessage} · 逐字调试：${reason}` : overrideMessage)
-      } else if (syllablesDebug && reason) {
-        useUI.getState().showToast(`逐字调试 · ${song?.title || ''}：${reason}`)
       }
     }
-    run()
+    const { promise } = loadLyricsView(song, {
+      translate: translationEnabled,
+      romanize: romanizationEnabled,
+      syllables: syllablesEnabled,
+      overwriteLyrics: syllableOverwrite,
+      sourceEnabled,
+      aiFallback,
+    }, (next, info) => {
+      if (dead) return
+      setState({ lines: predict(next), loading: false })
+      announce(info)
+    })
+    promise.then((lines) => {
+      if (dead) return
+      setState({ lines: predict(lines), loading: false })
+    }).catch(() => { if (!dead) setState((s) => ({ ...s, loading: false })) })
     return () => { dead = true }
   }, [id, translationEnabled, romanizationEnabled, syllablesEnabled, syllablePredict, syllablesDebug, syllableOverwrite, translationDebug, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps
-
   return state
 }
 

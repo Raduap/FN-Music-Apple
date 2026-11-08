@@ -13,6 +13,84 @@ const pending = new Map() // id -> Promise<lines>
 const translating = new Map() // id -> 正在进行的翻译 Promise，避免侧栏/全屏重复请求
 const translationMeta = new Map() // id -> { source, matched, sourceCount, aiCount, warning }
 
+// Shared view sessions keep the whole lyric chain stable across panel/full-player remounts.
+const viewSessions = new Map()
+const MAX_VIEW_SESSIONS = 20
+
+function lyricsViewKey(song, options) {
+  return [
+    song?.id || '', song?.title || '', song?.artist || '',
+    Math.round((Number(song?.duration) || 0) / 5) * 5,
+    options.translate ? 1 : 0, options.romanize ? 1 : 0,
+    options.syllables ? 1 : 0, options.overwriteLyrics ? 1 : 0,
+    options.sourceEnabled ? 1 : 0, options.aiFallback ? 1 : 0,
+  ].join('|')
+}
+
+export function loadLyricsView(song, options = {}, onUpdate = null) {
+  const id = song?.id
+  if (!id) return { promise: Promise.resolve([]), cached: false }
+  const key = lyricsViewKey(song, options)
+  let session = viewSessions.get(key)
+  const cached = !!session
+  if (!session) {
+    session = { listeners: new Set(), snapshot: null, promise: null, aborted: false }
+    viewSessions.set(key, session)
+    if (viewSessions.size > MAX_VIEW_SESSIONS) viewSessions.delete(viewSessions.keys().next().value)
+    const emit = (lines, meta) => {
+      session.snapshot = { lines, meta }
+      for (const fn of session.listeners) {
+        try { fn(lines, meta) } catch {}
+      }
+    }
+    session.promise = (async () => {
+      const raw = await loadLyrics(id, song, { translate: false })
+      if (session.aborted) return raw
+      emit(raw, { stage: 'raw' })
+      let lines = raw
+      if (options.translate || options.romanize) {
+        lines = await loadLyrics(id, song, { translate: !!options.translate, romanize: !!options.romanize })
+        if (session.aborted) return lines
+        emit(lines, { stage: 'enhanced', translationMeta: peekTranslationMeta(id) })
+      }
+      if (!options.syllables) {
+        emit(lines, { stage: 'final', translationMeta: peekTranslationMeta(id) })
+        return lines
+      }
+      let lastMeta = null
+      const merged = await loadSyllablesProgressive(song, lines, (next, info) => {
+        if (session.aborted) return
+        lastMeta = { ...info, stage: 'syllables', translationMeta: peekTranslationMeta(id) }
+        emit(next, lastMeta)
+      }, { overwriteLyrics: !!options.overwriteLyrics })
+      if (session.aborted) return merged
+      emit(merged, lastMeta
+        ? { ...lastMeta, stage: 'final' }
+        : { stage: 'final', overwritten: false, translationMeta: peekTranslationMeta(id) })
+      return merged
+    })().catch(() => session.snapshot?.lines || [])
+  }
+  if (typeof onUpdate === 'function') {
+    session.listeners.add(onUpdate)
+    if (session.snapshot) {
+      const { lines, meta } = session.snapshot
+      try { onUpdate(lines, { ...meta, replayed: true }) } catch {}
+    }
+  }
+  const promise = session.promise.finally(() => {
+    if (typeof onUpdate === 'function') session.listeners.delete(onUpdate)
+  })
+  return { promise, cached }
+}
+
+export function clearLyricSessions() {
+  for (const session of viewSessions.values()) {
+    session.aborted = true
+    session.listeners.clear()
+  }
+  viewSessions.clear()
+}
+
 const KANA = /[\u3040-\u30ff]/
 const HANGUL = /[\uac00-\ud7af\u1100-\u11ff]/
 const KANJI = /[\u3400-\u9fff]/g
@@ -108,6 +186,12 @@ export function clearLyricsTranslation(id) {
   pending.delete(id)
   translating.delete(id)
   translationMeta.delete(id)
+  for (const [key, session] of viewSessions) {
+    if (!key.startsWith(`${id}|`)) continue
+    session.aborted = true
+    session.listeners.clear()
+    viewSessions.delete(key)
+  }
 }
 
 export function detectLyricLang(text) {
