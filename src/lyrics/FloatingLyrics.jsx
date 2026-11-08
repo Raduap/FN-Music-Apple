@@ -158,6 +158,10 @@ export default function FloatingLyrics() {
   const showNext = !!s.showNext && !!state.hasNext
   const transText = upcoming ? state.nextLyricTrans : state.lyricTrans
   const romanText = upcoming ? state.nextLyricRoman : state.lyricRoman
+  // 悬浮窗的音译显示是独立样式开关：有音译时占用译文行，没有音译的行仍回退译文。
+  const useRoman = !!s.showRomanization && !!String(romanText || '').trim()
+  const showSub = useRoman || showTrans
+  const subText = useRoman ? romanText : transText
   const nextText = upcoming ? state.nextNextLyric : state.nextLyric
   // 逐字高亮只做当前句：upcoming（前奏预告）时显示的是下一句，跟着用下一句的词级数据。
   // words 文本与整句文本逐字符一致（合并层已保证），宽度不由 React 管，rAF 直接写 DOM。
@@ -361,13 +365,8 @@ export default function FloatingLyrics() {
                 ))
                 : main}
             </div>
-            {state.hasRoman && String(romanText || '').trim() ? (
-              <div className="lsub-wrap on lsub-roman">
-                <div className={`lsub${verticalClass(romanText)}`}>{romanText}</div>
-              </div>
-            ) : null}
-            <div className={`lsub-wrap ${showTrans ? 'on' : ''}`} aria-hidden={!showTrans}>
-              <div className={`lsub${verticalClass(transText)}`}>{transText}</div>
+            <div className={`lsub-wrap ${showSub ? 'on' : ''}`} aria-hidden={!showSub}>
+              <div className={`lsub${verticalClass(subText)}`}>{subText}</div>
             </div>
             <div className={`lnext-wrap ${showNext ? 'on' : ''}`} aria-hidden={!showNext}>
               <div className={`lnext${verticalClass(nextText)}${nextText ? '' : ' empty'}`}>{nextText}</div>

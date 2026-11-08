@@ -661,6 +661,7 @@ function setupLyrics() {
         // 这个菜单本来就挂在悬浮歌词窗口上，不需要再放“显示悬浮歌词”开关。
         { label: '竖排显示', type: 'checkbox', checked: !!s.vertical, click: (it) => setLyricsStyle({ vertical: it.checked }) },
         { label: '显示翻译', type: 'checkbox', checked: s.showTranslation !== false, click: (it) => setLyricsStyle({ showTranslation: it.checked }) },
+        { label: '显示音译（替换译文行）', type: 'checkbox', checked: !!s.showRomanization, click: (it) => setLyricsStyle({ showRomanization: it.checked }) },
         { label: '显示下一句', type: 'checkbox', checked: !!s.showNext, click: (it) => setLyricsStyle({ showNext: it.checked }) },
         { label: '鼠标穿透', type: 'checkbox', checked: !!s.clickThrough, click: (it) => setLyricsStyle({ clickThrough: it.checked }) },
         { type: 'separator' },

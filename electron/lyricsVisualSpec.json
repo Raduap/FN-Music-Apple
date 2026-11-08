@@ -50,6 +50,7 @@
     "showBorder": true,
     "showProgress": true,
     "showTranslation": true,
+    "showRomanization": false,
     "showNext": false,
     "clickThrough": false,
     "vertical": false,

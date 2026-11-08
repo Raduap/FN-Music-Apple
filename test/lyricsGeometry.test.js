@@ -60,6 +60,20 @@ describe('悬浮歌词几何与样式', () => {
     expect(G.capsuleSize(style, normal).height).toBe(G.capsuleSize(style, instrumental).height)
   })
 
+  it('layoutFlags：音译与译文共用一条副行，不额外增加胶囊行数', () => {
+    const base = { fontSize: 30, width: 760, showTranslation: true, showRomanization: false, showNext: false }
+    const lyricOnly = G.layoutFlags(base, { hasTranslation: false, hasRoman: false })
+    const transOnly = G.layoutFlags(base, { hasTranslation: true, hasRoman: false })
+    const romanOnly = G.layoutFlags({ ...base, showRomanization: true }, { hasTranslation: false, hasRoman: true })
+    const both = G.layoutFlags({ ...base, showRomanization: true }, { hasTranslation: true, hasRoman: true })
+    expect(lyricOnly).toMatchObject({ showTranslation: false, showRomanization: false })
+    expect(transOnly).toMatchObject({ showTranslation: true, showRomanization: false })
+    expect(romanOnly).toMatchObject({ showTranslation: false, showRomanization: true })
+    expect(both).toMatchObject({ showTranslation: true, showRomanization: true })
+    expect(G.capsuleSize(base, transOnly).height).toBe(G.capsuleSize({ ...base, showRomanization: true }, romanOnly).height)
+    expect(G.capsuleSize({ ...base, showRomanization: true }, both).height).toBe(G.capsuleSize(base, transOnly).height)
+  })
+
   it('layoutFlags：开启下一句时，整首歌恒定预留下一句行', () => {
     const style = { fontSize: 30, width: 760, showTranslation: false, showNext: true }
     const withNext = G.layoutFlags(style, { lyric: 'A', nextLyric: 'B', hasNext: true })
