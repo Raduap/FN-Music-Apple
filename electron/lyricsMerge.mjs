@@ -371,7 +371,7 @@ function remapEnhancementsByTime(targetLines, sourceLines) {
       roman: String(l?.roman || '').trim(),
     }))
     .filter((l) => Number.isFinite(l.time))
-  return (targetLines || []).map((l) => {
+  const out = (targetLines || []).map((l) => {
     const t = Number(l?.time)
     let best = null
     for (const s of source) {
@@ -386,6 +386,14 @@ function remapEnhancementsByTime(targetLines, sourceLines) {
       ...(best.source.roman ? { roman: best.source.roman } : {}),
     }
   })
+  // 逐字源把本地一句拆成多行时，后面的拆分行可能超出原匹配距离。
+  // 这类行若仍缺译文，按用户规则沿用紧邻上一行的译文；音译不做此兜底。
+  for (let i = 1; i < out.length; i++) {
+    if (String(out[i]?.translation || '').trim()) continue
+    const previous = String(out[i - 1]?.translation || '').trim()
+    if (previous) out[i] = { ...out[i], translation: previous }
+  }
+  return out
 }
 
 function overrideSyllableLines(localLines, cand) {

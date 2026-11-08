@@ -30,12 +30,25 @@ describe('逐字覆盖歌词', () => {
     expect(overrideSyllableLines(local, cand)).toBe(null)
   })
 
-  it('译文/音译按时间迁移，超过容错距离留空', () => {
+  it('翻译/音译正常时间匹配，超距音译不跟随上一句兜底', () => {
     const target = [{ time: 10, text: 'A' }, { time: 100, text: 'B' }]
     const source = [{ time: 10.8, text: 'A', translation: '甲', roman: 'a' }, { time: 20, text: 'X', translation: '乙', roman: 'b' }]
     const out = remapEnhancementsByTime(target, source)
     expect(out[0].translation).toBe('甲')
     expect(out[0].roman).toBe('a')
-    expect(out[1].translation || '').toBe('')
+    expect(out[1].translation).toBe('甲')
+    expect(out[1].roman || '').toBe('')
+  })
+
+  it('超出原匹配距离仍缺译文时沿用紧邻上一句', () => {
+    const target = [{ time: 10, text: '拆行 1' }, { time: 15, text: '拆行 2' }, { time: 20, text: '拆行 3' }, { time: 30, text: '下一句' }]
+    const source = [{ time: 10.8, text: '原句一', translation: '译文一' }, { time: 30.2, text: '原句二', translation: '译文二' }]
+    const out = remapEnhancementsByTime(target, source)
+    expect(out.map((l) => l.translation)).toEqual(['译文一', '译文一', '译文一', '译文二'])
+  })
+
+  it('首句没有命中时不凭空生成译文', () => {
+    const out = remapEnhancementsByTime([{ time: 10, text: 'A' }], [{ time: 20, text: 'B', translation: '乙' }])
+    expect(out[0].translation || '').toBe('')
   })
 })
