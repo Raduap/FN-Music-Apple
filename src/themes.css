@@ -358,12 +358,19 @@
 .lt-main.karaoke { display: inline; }
 .lyric-line.active .lt-main.karaoke { color: color-mix(in srgb, currentColor 45%, transparent); }
 .lyrics.big .lyric-line.active .lt-main.karaoke { color: rgba(255, 255, 255, 0.32); }
-.lt-main.karaoke .kw { position: relative; display: inline-block; white-space: pre; }
+.lt-main.karaoke .kw {
+  position: relative;
+  display: inline-block;
+  min-width: max-content;
+  white-space: pre;
+}
+/* 纯空白词在 inline-block 中会保留宽度，但绝对定位的裁切层没有文本宽度；
+   显式按内容给最小宽度，避免空格在逐字结构里被压缩成 0。 */
 .lt-main.karaoke .kw-fill {
   position: absolute;
   inset: 0;
-  /* --fill 由 rAF 逐帧写入（0..1），不是写死宽度，所以扫色是纯合成层动画 */
   width: calc(var(--fill, 0) * 100%);
+  min-width: min(100%, max-content);
   overflow: hidden;
   color: var(--accent);
   pointer-events: none;

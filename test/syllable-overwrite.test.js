@@ -23,6 +23,24 @@ describe('逐字覆盖歌词', () => {
     expect(result.lines[0].end).toBe(2)
   })
 
+  it('覆盖行保留正文空格，逐字拼接与原文一致', () => {
+    const lines = ['Hello world', 'Look at the sky', 'One more time', 'Sing it loud', 'Here we go'].map((text, i) => ({ time: i * 5, text }))
+    const cand = {
+      source: 'qq',
+      provider: 'qq-qrc',
+      lines: lines.map((l, i) => ({
+        time: l.time,
+        end: l.time + 3,
+        text: l.text,
+        words: l.text.split(' ').map((textPart, wi) => ({ text: textPart, time: l.time + wi * 0.5, end: l.time + wi * 0.5 + 0.4 })),
+      })),
+    }
+    const result = overrideSyllableLines(lines, cand)
+    expect(result).not.toBe(null)
+    expect(result.lines[0].words.map((w) => w.text).join('')).toBe('Hello world')
+    expect(result.lines[1].words.map((w) => w.text).join('')).toBe('Look at the sky')
+  })
+
   it('低文本重合的翻唱/错误版本不覆盖', () => {
     const cand = { source: 'qq', provider: 'qq-qrc', lines: local.map((_, i) => remoteLine(`X${i}-完全不同`, i * 5)) }
     const score = candidateStructureScore(local, cand)

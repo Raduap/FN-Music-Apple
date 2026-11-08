@@ -401,14 +401,22 @@ function overrideSyllableLines(localLines, cand) {
   if (!isTrustedOverride(localLines, cand, score)) return null
   const remote = (cand?.lines || [])
     .filter((l) => String(l?.text || '').trim() && l?.words?.length)
-    .map((l) => ({
-      time: Number(l.time),
-      ...(Number.isFinite(Number(l.end)) ? { end: Number(l.end) } : {}),
-      text: String(l.text),
-      words: sanitizeWordTimeline(l.words, { start: Number(l.time), end: Number.isFinite(Number(l.end)) ? Number(l.end) : undefined }),
-      ...(l.translation ? { translation: l.translation } : {}),
-      ...(l.roman ? { roman: l.roman } : {}),
-    }))
+    .map((l) => {
+      const text = String(l.text)
+      const lineEnd = Number.isFinite(Number(l.end)) ? Number(l.end) : undefined
+      // 覆盖后显示正文来自候选；词级文本必须从这份正文重建，不能直接信任
+      // 源 words 的拼接。部分 QRC/YRC 候选把空格放在词外，直接用会让高亮态
+      // 变成 Helloworld（普通态来自 line.text，所以只在逐字行出现）。
+      const aligned = alignCharTimeline(text, l.words)
+      return {
+        time: Number(l.time),
+        ...(lineEnd != null ? { end: lineEnd } : {}),
+        text,
+        words: sanitizeWordTimeline(aligned || l.words, { start: Number(l.time), end: lineEnd }),
+        ...(l.translation ? { translation: l.translation } : {}),
+        ...(l.roman ? { roman: l.roman } : {}),
+      }
+    })
     .filter((l) => Number.isFinite(l.time) && l.words.length)
     .sort((a, b) => a.time - b.time)
   if (!remote.length) return null
