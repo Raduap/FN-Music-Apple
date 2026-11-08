@@ -205,6 +205,76 @@ describe('歌词', () => {
       expect(lyricFrame(karaoke, 10).lyricWords).toBe(null)
     })
   })
+
+  it('romanization：音译与译文共用同一次源站请求，按行写入 roman', async () => {
+    const lyrics = '[00:01.00]君の名は\n[00:05.00]Hello'
+    const id = 'roman-shared-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    let calls = 0
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => ({ json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) })
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async ({ lines }) => {
+        calls++
+        return {
+          ok: true,
+          translations: lines.map((t) => (t === 'Hello' ? '你好' : '')),
+          romans: lines.map((t) => (t === '君の名は' ? 'kimi no na wa' : '')),
+          source: 'netease',
+          sourceCount: 1,
+          aiCount: 0,
+        }
+      },
+    }
+    try {
+      const song = { id, title: 'Kimi', artist: 'Tester', album: '', duration: 180 }
+      const lines = await loadLyrics(id, song, { translate: true, romanize: true })
+      expect(calls).toBe(1)
+      expect(lines[0].roman).toBe('kimi no na wa')
+      expect(lines[0].translation || '').toBe('')
+      expect(lines[1].translation).toBe('你好')
+      expect(lines[1].roman || '').toBe('')
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+    }
+  })
+
+  it('romanization 关闭时不写入 roman 字段', async () => {
+    const lyrics = '[00:01.00]君の名は'
+    const id = 'roman-off2-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => ({ json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) })
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async () => ({ ok: true, translations: ['译'], romans: ['roman'], source: 'netease', sourceCount: 0, aiCount: 0 }),
+    }
+    try {
+      const song = { id, title: 'Kimi', artist: 'Tester', album: '', duration: 180 }
+      const lines = await loadLyrics(id, song, { translate: true })
+      expect(lines[0].roman || '').toBe('')
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+    }
+  })
+
+  it('lyricFrame 携带 roman，供悬浮歌词音译副行使用', () => {
+    const lines = [
+      { time: 1, text: 'A', translation: '甲', roman: 'a' },
+      { time: 2, text: 'B', translation: '乙', roman: 'b' },
+      { time: 3, text: 'C', translation: '丙', roman: 'c' },
+    ]
+    expect(lyricFrame(lines, 1.5)).toMatchObject({ lyricRoman: 'a', nextLyricRoman: 'b', nextNextLyricRoman: 'c' })
+  })
 })
 
 
