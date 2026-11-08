@@ -161,6 +161,7 @@ const experimentalDefaults = () => ({
   baseUrl: 'https://api.deepseek.com/v1',
   model: 'deepseek-chat',
   hasKey: false,
+  romanization: false,
   syllables: false,
   syllablePredict: false,
   syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'],
@@ -180,6 +181,7 @@ function experimentalRead() {
     baseUrl: e.baseUrl || 'https://api.deepseek.com/v1',
     model: e.model || 'deepseek-chat',
     hasKey: !!readExperimentalKey(),
+    romanization: !!e.romanization,
     syllables: !!e.syllables,
     syllablePredict: !!e.syllablePredict,
     syllableSources: cleanSyllableSources(e.syllableSources),
@@ -194,6 +196,7 @@ function experimentalWrite(patch) {
     enabled: patch.enabled === undefined ? cur.enabled : !!patch.enabled,
     sourceEnabled: patch.sourceEnabled === undefined ? cur.sourceEnabled : !!patch.sourceEnabled,
     aiFallback: patch.aiFallback === undefined ? cur.aiFallback : !!patch.aiFallback,
+    romanization: patch.romanization === undefined ? cur.romanization : !!patch.romanization,
     baseUrl: String(patch.baseUrl ?? cur.baseUrl ?? '').trim(),
     model: String(patch.model ?? cur.model ?? '').trim(),
     syllables: patch.syllables === undefined ? cur.syllables : !!patch.syllables,
@@ -1095,6 +1098,7 @@ function registerIpc() {
         return (bestTranslated || bestAny)?.row || null
       }
       const translations = []
+      const romans = []
       const missing = []
       for (let i = 0; i < lines.length; i++) {
         const text = lines[i]
@@ -1102,6 +1106,7 @@ function registerIpc() {
         const hit = findSourceLine(Number(localLine.ms || 0), text)
         const tr = String(hit?.translation || '').trim()
         translations[i] = tr
+        romans[i] = String(hit?.roman || '').trim()
         if (!tr) missing.push({ i, text })
       }
       let ai = { ok: false, translations: [], error: '' }
@@ -1113,6 +1118,7 @@ function registerIpc() {
       return {
         ok: true,
         translations,
+        romans,
         source: source.ok ? source.source : 'none',
         matched: source.ok ? source.matched : '',
         sourceCount: Math.max(0, sourceCount),
