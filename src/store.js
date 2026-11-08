@@ -56,7 +56,7 @@ export const useUI = create((set, get) => ({
   appearanceOpen: false,
   lyricsSettingsOpen: false,
   experimentalOpen: false,
-  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: false, syllablePredict: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] },
+  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, romanization: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: false, syllablePredict: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] },
   syllables: false, // 实验性逐字歌词（AMLL TTML DB / LiriQo），关闭时退回逐行歌词
   syllablePredict: LS.get('sylPredict', false), // 智能逐字补全：没有词级数据的行也按字长 / 停顿预测逐字动画
   syllablesDebug: LS.get('sylDebug', false), // 逐字歌词调试 toast：切歌时报告命中情况
@@ -634,8 +634,11 @@ function broadcast() {
           : original
         lyricsReady = true
         broadcast()
-        if (useUI.getState().experimental?.enabled) {
-          const translated = await loadLyrics(id, song, { translate: true })
+        if (useUI.getState().experimental?.enabled || useUI.getState().experimental?.romanization) {
+          const translated = await loadLyrics(id, song, {
+            translate: useUI.getState().experimental?.enabled,
+            romanize: useUI.getState().experimental?.romanization,
+          })
           if (lyricFor !== id) return
           if (translated !== original) {
             lyricLines = translated
@@ -670,12 +673,16 @@ function broadcast() {
     hasLyrics: lyricLines.length > 0,
     hasTranslation: hasTranslation(lyricLines),
     hasNext: hasNextLyric(lyricLines),
+    hasRoman: lyricLines.some((line) => String(line?.roman || '').trim()),
     lyricIndex: frame.index,
     lyricTrans: frame.lyricTrans,
+    lyricRoman: frame.lyricRoman,
     nextLyric: frame.nextLyric,
     nextLyricTrans: frame.nextLyricTrans,
+    nextLyricRoman: frame.nextLyricRoman,
     nextNextLyric: frame.nextNextLyric,
     nextNextLyricTrans: frame.nextNextLyricTrans,
+    nextNextLyricRoman: frame.nextNextLyricRoman,
     // 逐字开关开启时把当前句（+下一句）的词级时间轴塞进广播 payload；
     // 关闭或该句没有 words 时为 null，payload 不会因此变大。
     lyricWords: ui.syllables ? frame.lyricWords || null : null,

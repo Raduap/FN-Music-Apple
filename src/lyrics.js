@@ -129,32 +129,64 @@ function isForeignLyrics(targets) {
   return !!(all && lang !== 'zh' && lang !== 'unknown')
 }
 
-async function translateLines(id, lines, song) {
+const hasRomanization = (lines) => lines.some((line) => String(line?.roman || '').trim())
+
+/**
+ * 翻译与音译共用同一条源站请求（同一次网易云响应里的 tlyric + romalrc），
+ * 两者的匹配规则、对齐逻辑、缓存与写法完全一致：
+ *   - 缺译文的行 → 写 line.translation
+ *   - 缺音译的行（开关开启时）→ 写 line.roman
+ * 只是把结果贴到不同的副行字段上，绝不改动正文。
+ */
+async function translateLines(id, lines, song, { romanize = false } = {}) {
   if (!lines.length) return lines
   const cached = done.get(id)
-  if (cached && hasTranslation(cached)) return cached
+  if (cached && hasTranslation(cached) && (!romanize || hasRomanization(cached))) return cached
   const targets = translationTargets(lines)
-  if (!targets.length || !isForeignLyrics(targets)) return lines
+  // 音译目标：开关开启时，缺 roman 的所有非空行（可与译文目标重叠，一次请求带回）
+  const romanTargets = romanize
+    ? lines.map((line, index) => ({ line, index })).filter(({ line }) => String(line?.text || '').trim() && !String(line?.roman || '').trim())
+    : []
+  const needTranslation = targets.length && isForeignLyrics(targets)
+  const needRoman = romanTargets.length && isForeignLyrics(romanTargets.map(({ line }) => line))
+  if (!needTranslation && !needRoman) return lines
   if (translating.has(id)) return translating.get(id)
   const bridge = globalThis.window?.fn
   if (!bridge?.lyricsTranslate) return lines
+  // 合并成一次请求：译文与音译来自同一次响应，按请求行序索引回填。
+  const requestLines = []
+  const requestIndex = new Map()
+  for (const t of targets) if (!requestIndex.has(t.index)) { requestIndex.set(t.index, requestLines.length); requestLines.push(t.text) }
+  for (const { line, index } of romanTargets) if (!requestIndex.has(index)) { requestIndex.set(index, requestLines.length); requestLines.push(String(line.text || '').trim()) }
   const run = (async () => {
     try {
-      const context = lines.map((l) => String(l?.text || '').trim()).filter(Boolean).join('\n')
+      const context = lines.map((l) => String(l?.text || '').trim()).filter(Boolean).join(String.fromCharCode(10))
       const r = await bridge.lyricsTranslate({
         song: { title: song?.title || '', artist: song?.artist || '', album: song?.album || '', duration: song?.duration || 0 },
-        lines: targets.map((x) => x.text),
-        localLines: targets.map((x) => ({ ms: (Number(lines[x.index]?.time) || 0) * 1000, text: x.text })),
+        lines: requestLines,
+        localLines: requestLines.map((_, i) => {
+          const index = [...requestIndex.entries()].find(([, v]) => v === i)?.[0]
+          return { ms: (Number(lines[index]?.time) || 0) * 1000, text: lines[index]?.text || '' }
+        }),
         context,
       })
-      if (!r?.ok || !r.translations?.length) return lines
+      if (!r?.ok) return lines
       const out = lines.map((l) => ({ ...l }))
       let filled = 0
-      targets.forEach((t, i) => {
-        const text = String(r.translations[i] || '').trim()
+      let romanFilled = 0
+      targets.forEach((t) => {
+        const i = requestIndex.get(t.index)
+        const text = String(r.translations?.[i] || '').trim()
         if (text) { out[t.index].translation = text; filled++ }
       })
-      if (!filled) return lines
+      if (romanize) {
+        romanTargets.forEach(({ index }) => {
+          const i = requestIndex.get(index)
+          const roman = String(r.romans?.[i] || '').trim()
+          if (roman) { out[index].roman = roman; romanFilled++ }
+        })
+      }
+      if (!filled && !romanFilled) return lines
       translationMeta.set(id, {
         source: r.source || 'none',
         matched: r.matched || '',
@@ -176,13 +208,13 @@ async function translateLines(id, lines, song) {
   }
 }
 
-export function loadLyrics(id, song = null, { translate = false } = {}) {
+export function loadLyrics(id, song = null, { translate = false, romanize = false } = {}) {
   const cached = done.get(id)
   if (done.has(id) || raw.has(id)) {
     const original = raw.get(id) || cached
     if (translate) {
-      if (cached && hasTranslation(cached)) return Promise.resolve(cached)
-      return translateLines(id, original, song)
+      if (cached && hasTranslation(cached) && (!romanize || hasRomanization(cached))) return Promise.resolve(cached)
+      return translateLines(id, original, song, { romanize })
     }
     return Promise.resolve(original)
   }
@@ -192,13 +224,13 @@ export function loadLyrics(id, song = null, { translate = false } = {}) {
   if (pending.has(id)) {
     const base = pending.get(id)
     if (!translate) return base
-    return base.then((lines) => translateLines(id, lines, song))
+    return base.then((lines) => translateLines(id, lines, song, { romanize }))
   }
   pending.set(id, api.lyric(id).then(async (text) => {
     const lines = toLines(text)
     raw.set(id, lines)
     let out = lines
-    if (translate) out = await translateLines(id, lines, song)
+    if (translate || romanize) out = await translateLines(id, lines, song, { romanize })
     done.set(id, out)
     if (done.size > MAX) {
       const oldest = done.keys().next().value
@@ -263,10 +295,13 @@ export function lyricFrame(lines, t) {
     index: i,
     lyric: cur?.text || '',
     lyricTrans: cur?.translation || '',
+    lyricRoman: cur?.roman || '',
     nextLyric: next.line?.text || '',
     nextLyricTrans: next.line?.translation || '',
+    nextLyricRoman: next.line?.roman || '',
     nextNextLyric: afterNext.line?.text || '',
     nextNextLyricTrans: afterNext.line?.translation || '',
+    nextNextLyricRoman: afterNext.line?.roman || '',
     // 逐字时间轴（合并过 syllables 的行才有 words）：悬浮歌词按 lyricIndex 对齐，
     // 只带当前句与下一句，避免整首歌的词级数据随每次广播序列化。
     lyricWords: cur?.words?.length ? cur.words : null,

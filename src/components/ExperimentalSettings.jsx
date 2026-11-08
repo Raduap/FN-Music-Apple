@@ -3,7 +3,7 @@ import { useUI } from '../store'
 import { moveItem } from '../lib'
 import * as Icon from '../icons'
 
-const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablePredict: false, syllablesDebug: false, syllableStrict: false, syllableSmooth: 'normal', syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
+const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, romanization: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablePredict: false, syllablesDebug: false, syllableStrict: false, syllableSmooth: 'normal', syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
 // 逐字数据源元数据（id / 名称 / 说明）。列表渲染顺序即抓取顺序，
 // 用户可在设置里拖动调整；启用与否是另一维（开关），与顺序无关。
 const SYLLABLE_SOURCES = [
@@ -61,7 +61,7 @@ export function ExperimentalSettings() {
 
   if (!open) return null
 
-  const patch = { enabled: form.enabled, sourceEnabled: form.sourceEnabled, aiFallback: form.aiFallback, baseUrl: form.baseUrl.trim(), model: form.model.trim() }
+  const patch = { enabled: form.enabled, sourceEnabled: form.sourceEnabled, aiFallback: form.aiFallback, romanization: form.romanization, baseUrl: form.baseUrl.trim(), model: form.model.trim() }
   const save = async (extra = {}) => {
     setBusy('save')
     setStatus(null)
@@ -170,6 +170,13 @@ export function ExperimentalSettings() {
                   <button className={`fl-toggle exp-toggle ${form.enabled ? 'on' : ''}`} role="switch" aria-checked={form.enabled} onClick={toggle}>
                     <span>启用歌词翻译</span><span className="fl-switch" aria-hidden="true" />
                   </button>
+                  <button className={`fl-toggle exp-toggle ${form.romanization ? 'on' : ''}`} role="switch" aria-checked={form.romanization} onClick={async () => { const romanization = !form.romanization; setForm((f) => ({ ...f, romanization })); await save({ romanization }) }}>
+                    <span>显示音译（日语/韩语等）</span><span className="fl-switch" aria-hidden="true" />
+                  </button>
+                  <ul className="exp-list">
+                    <li>音译只取自源站同一条歌词响应的 romalrc（与译文同一次请求），绝不用 AI 生成，也不会改动正文。</li>
+                    <li>音译副行插在原文与译文之间；源站没有 romalrc 的语言（如英文）不会显示。</li>
+                  </ul>
                 </section>
                 <section className="exp-section">
                   <div className="exp-section-title">工作方式</div>

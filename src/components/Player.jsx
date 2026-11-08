@@ -272,6 +272,7 @@ function useLyrics(song) {
   const syllablesDebug = useUI((s) => s.syllablesDebug)
   const sourceEnabled = useUI((s) => s.experimental?.sourceEnabled)
   const aiFallback = useUI((s) => s.experimental?.aiFallback)
+  const romanizationEnabled = useUI((s) => s.experimental?.romanization)
   const [state, setState] = useState({ lines: [], loading: false })
   const prevId = useRef(null)
   const meta = [song?.title, song?.artist, song?.album].join('\u0000')
@@ -294,8 +295,8 @@ function useLyrics(song) {
 
       // 2. 翻译可能很慢（走 AI），完成后才替换；期间界面已经有原词可看。
       let lines = raw
-      if (translationEnabled) {
-        const translated = await loadLyrics(id, song, { translate: true })
+      if (translationEnabled || romanizationEnabled) {
+        const translated = await loadLyrics(id, song, { translate: translationEnabled, romanize: romanizationEnabled })
         if (dead) return
         if (translated !== raw) {
           lines = translated
@@ -327,7 +328,7 @@ function useLyrics(song) {
     }
     run()
     return () => { dead = true }
-  }, [id, translationEnabled, syllablesEnabled, syllablePredict, syllablesDebug, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [id, translationEnabled, romanizationEnabled, syllablesEnabled, syllablePredict, syllablesDebug, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return state
 }
@@ -359,7 +360,9 @@ export function LyricsView({ song, big = false }) {
   // requestAnimationFrame 本地插值——以上次已知时间和 audio 实际流逝速度推进
   // 进度边，每帧重算 karaokeFills。暂停 / seek / 切歌时直接贴齐真实时间。
   const hasTrans = useMemo(() => hasTranslation(lines), [lines])
+  const hasRoman = useMemo(() => lines.some((line) => String(line?.roman || '').trim()), [lines])
   const showTrans = translation && hasTrans
+  const showRoman = translation && hasRoman
   const activeRef = useRef(active)
   activeRef.current = active
 
@@ -544,7 +547,7 @@ export function LyricsView({ song, big = false }) {
             <div
               key={i}
               data-i={i}
-              className={`lyric-line ${i === active ? 'active' : ''} ${i < active ? 'past' : ''} ${l.translation ? 'translated' : ''} ${showTrans && l.translation ? 'show-sub' : ''}`}
+              className={`lyric-line ${i === active ? 'active' : ''} ${i < active ? 'past' : ''} ${(l.translation || (showRoman && l.roman)) ? 'translated' : ''} ${(showTrans && l.translation) || (showRoman && l.roman) ? 'show-sub' : ''}`}
               style={big && synced && i !== active ? { filter: `blur(${d * 0.6}px)` } : undefined}
               onClick={() => synced && l.time >= 0 && (seek(l.time), (userScroll.current = 0))}
             >
@@ -563,6 +566,8 @@ export function LyricsView({ song, big = false }) {
               ) : (
                 <span className="lt-main">{l.text || '♪'}</span>
               )}
+              {/* 音译副行：插入在原文与译文之间，复用译文副行的结构与样式 */}
+              {showRoman && String(l.roman || '').trim() && <span className="lt-sub-wrap" aria-hidden={!showRoman}><span className="lt-sub lt-sub-roman">{l.roman}</span></span>}
               {l.translation && <span className="lt-sub-wrap" aria-hidden={!showTrans}><span className="lt-sub">{l.translation}</span></span>}
             </div>
           )
