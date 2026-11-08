@@ -3,6 +3,7 @@ import { api, streamUrl, invalidate } from './api'
 import { acquireCover, prefetchCover } from './covers'
 import { hasNextLyric, hasTranslation, lyricFrame, loadLyrics, loadSyllablesProgressive, predictKaraokeLines } from './lyrics'
 import { shuffled } from './lib'
+import { advanceIndex, RAPID_NEXT_DELAY } from './rapidNext'
 import { applyMotion } from './motion'
 import { DEFAULT_WALLPAPER, applyPalette, isPalette } from './appearance'
 
@@ -316,6 +317,20 @@ export const useAuth = create((set) => ({
 
 // ---------- 播放器 ----------
 const saved = LS.get('queue', { queue: [], index: -1 })
+let rapidNextTimer = 0
+let rapidNextTarget = -1
+
+function cancelRapidNext() {
+  if (rapidNextTimer) clearTimeout(rapidNextTimer)
+  rapidNextTimer = 0
+  rapidNextTarget = -1
+}
+
+function commitRapidNext() {
+  const target = rapidNextTarget
+  cancelRapidNext()
+  if (target >= 0 && usePlayer.getState().queue[target]) usePlayer.getState().playIndex(target)
+}
 
 export const usePlayer = create((set, get) => ({
   queue: saved.queue || [],
@@ -354,6 +369,7 @@ export const usePlayer = create((set, get) => ({
   /** 播放一组歌曲，从 startIndex 开始；shuffleAll 时随机排序 */
   play(songs, startIndex = 0, { shuffle } = {}) {
     if (!songs.length) return
+    cancelRapidNext()
     const useShuffle = shuffle ?? get().shuffle
     let queue = songs
     let index = startIndex
@@ -371,6 +387,7 @@ export const usePlayer = create((set, get) => ({
   playShuffled(songs) { get().play(songs, Math.floor(Math.random() * songs.length), { shuffle: true }) },
 
   playIndex(i) {
+    cancelRapidNext()
     const song = get().queue[i]
     if (!song) return
     set({ index: i })
@@ -397,6 +414,7 @@ export const usePlayer = create((set, get) => ({
   },
 
   removeFromQueue(i) {
+    cancelRapidNext()
     const { queue, original, index } = get()
     if (i === index || !queue[i]) return
     const q = queue.filter((_, k) => k !== i)
@@ -407,6 +425,7 @@ export const usePlayer = create((set, get) => ({
   },
 
   clearUpcoming() {
+    cancelRapidNext()
     const { queue, original, index } = get()
     const kept = queue.slice(0, index + 1)
     const ids = new Set(kept.map((s) => s.id))
@@ -425,13 +444,24 @@ export const usePlayer = create((set, get) => ({
   next(auto = false) {
     const { queue, index, repeat } = get()
     if (!queue.length) return
-    if (auto && repeat === 'one') { audio.currentTime = 0; audio.play().catch(() => {}); return }
-    if (index + 1 < queue.length) get().playIndex(index + 1)
-    else if (repeat === 'all' || !auto) get().playIndex(0)
-    else { audio.pause(); audio.currentTime = 0; set({ playing: false, currentTime: 0 }) }
+    if (auto) {
+      cancelRapidNext()
+      if (repeat === 'one') { audio.currentTime = 0; audio.play().catch(() => {}); return }
+      const target = advanceIndex(index, queue.length, { wrap: repeat === 'all' })
+      if (target >= 0) get().playIndex(target)
+      else { audio.pause(); audio.currentTime = 0; set({ playing: false, currentTime: 0 }) }
+      return
+    }
+    // 首次点击只记录目标；安静窗口结束后一次性加载最终歌曲，连点不会逐首启动请求。
+    const from = rapidNextTarget >= 0 ? rapidNextTarget : index
+    rapidNextTarget = advanceIndex(from, queue.length, { wrap: true })
+    if (rapidNextTimer) clearTimeout(rapidNextTimer)
+    rapidNextTimer = setTimeout(commitRapidNext, RAPID_NEXT_DELAY)
   },
 
   prev() {
+    // 先清理待执行的下一首，再按当前实际播放位置决定上一首语义。
+    cancelRapidNext()
     const { queue, index } = get()
     if (!queue.length) return
     if (audio.currentTime > 3 || pendingSeek > 3 || index === 0) { get().seek(0); return }
@@ -460,6 +490,7 @@ export const usePlayer = create((set, get) => ({
   },
 
   toggleShuffle() {
+    cancelRapidNext()
     const { shuffle, queue, original, index } = get()
     const cur = queue[index]
     const on = !shuffle
@@ -497,6 +528,7 @@ export const usePlayer = create((set, get) => ({
   },
 
   stop() {
+    cancelRapidNext()
     audio.pause()
     audio.removeAttribute('src')
     audio.load()
