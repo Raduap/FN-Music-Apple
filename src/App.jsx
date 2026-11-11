@@ -10,7 +10,7 @@ import * as Icon from './icons'
 import Login from './pages/Login'
 import Home from './pages/Home'
 import Search from './pages/Search'
-import { Albums, Artists, Favorites, GenreDetail, Genres, Playlists, Songs } from './pages/Library'
+import { Albums, Artists, Favorites, GenreDetail, Genres, Playlists, RecentlyPlayed, Songs } from './pages/Library'
 import { AlbumDetail, ArtistDetail, PlaylistDetail } from './pages/Detail'
 
 export const RAIL_BREAKPOINT = 980 // 窗口宽度低于此值时侧边栏自动收成图标栏
@@ -161,6 +161,7 @@ function Main() {
             <Route path="/" element={<Home />} />
             <Route path="/search" element={<Search />} />
             <Route path="/recent" element={<Albums recent />} />
+            <Route path="/recent-played" element={<RecentlyPlayed />} />
             <Route path="/albums" element={<Albums />} />
             <Route path="/artists" element={<Artists />} />
             <Route path="/songs" element={<Songs />} />

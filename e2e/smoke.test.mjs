@@ -100,6 +100,17 @@ test('喜欢歌曲后出现在“喜欢的歌曲”中', async () => {
   await win.locator('.songlist .t1').getByText(title, { exact: true }).waitFor()
 })
 
+test('最近播放页面显示播放历史并支持移除', async () => {
+  const nav = win.getByRole('navigation', { name: '主导航' })
+  await nav.getByRole('link', { name: '最近播放' }).click()
+  await win.getByRole('heading', { name: '最近播放' }).waitFor()
+  const row = win.locator('.songlist [role="row"]').nth(1)
+  const title = await row.locator('.t1').innerText()
+  await row.click({ button: 'right' })
+  await win.getByRole('menuitem', { name: '从最近播放中移除' }).click()
+  await win.locator('.songlist .t1').getByText(title, { exact: true }).waitFor({ state: 'detached' })
+})
+
 test('搜索', async () => {
   await win.keyboard.press('Control+F')
   await win.keyboard.type('周杰伦')

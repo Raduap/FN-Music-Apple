@@ -119,7 +119,8 @@ export default function Sidebar({ rail }) {
         <Item to="/" icon={Icon.Home} end rail={rail}>主页</Item>
 
         {rail ? <div className="sb-divider" /> : <div className="sb-section">资料库</div>}
-        <Item to="/recent" icon={Icon.Clock} rail={rail}>最近添加</Item>
+        <Item to="/recent" icon={Icon.Disc} rail={rail}>最近添加</Item>
+        <Item to="/recent-played" icon={Icon.Clock} rail={rail}>最近播放</Item>
         <Item to="/artists" icon={Icon.Mic} rail={rail}>艺人</Item>
         <Item to="/albums" icon={Icon.AlbumIcon} rail={rail}>专辑</Item>
         <Item to="/songs" icon={Icon.Note} rail={rail}>歌曲</Item>

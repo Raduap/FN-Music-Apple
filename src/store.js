@@ -19,6 +19,10 @@ let pendingSeek = 0
 
 // 尚未完成的“喜欢”写请求。界面会先乐观更新，“喜欢的歌曲”页面读取列表前要等这些请求完成，否则会读到旧数据
 const favoriteWrites = new Set()
+
+// 当前这次播放是否已上报过 track_play。切歌 / 重播时由 _load 重置，避免缓冲反复触发
+// playing 事件时重复上报；上报走官方 event/report，fnmusic-ext 插件据此写在线播放历史。
+let reportedPlayId = ''
 function trackFavorite(p) {
   favoriteWrites.add(p)
   p.catch(() => {}).finally(() => favoriteWrites.delete(p))
@@ -205,6 +209,7 @@ export const usePlayer = create((set, get) => ({
 
   _load(song, autoplay = true, start = 0) {
     pendingSeek = 0
+    reportedPlayId = '' // 新的一首：首次真正出声时再上报播放
     audio.src = streamUrl(song.id)
     audio.currentTime = 0
     if (start > 0) {
@@ -391,7 +396,14 @@ window.addEventListener('beforeunload', saveCurrentPosition)
 audio.volume = usePlayer.getState().volume
 audio.addEventListener('play', () => usePlayer.setState({ playing: true }))
 audio.addEventListener('pause', () => usePlayer.setState({ playing: false }))
-audio.addEventListener('playing', () => usePlayer.setState({ loading: false, playing: true }))
+audio.addEventListener('playing', () => {
+  usePlayer.setState({ loading: false, playing: true })
+  const song = usePlayer.getState().queue[usePlayer.getState().index]
+  if (song && song.id && song.id !== reportedPlayId) {
+    reportedPlayId = song.id
+    api.reportPlay(song, Date.now()).catch(() => {}) // 历史上报失败不影响播放
+  }
+})
 audio.addEventListener('waiting', () => usePlayer.setState({ loading: true }))
 audio.addEventListener('ended', () => usePlayer.getState().next(true))
 audio.addEventListener('loadedmetadata', () => {
