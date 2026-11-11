@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
-import { lineAt, loadLyrics, peekLyrics } from '../lyrics'
+import { hasTranslation, lineAt, loadLyrics, peekLyrics } from '../lyrics'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
 import { closeFullPlayer, openFullPlayer } from '../motion'
 import * as Icon from '../icons'
@@ -268,11 +268,17 @@ export function LyricsView({ song, big = false }) {
   const { lines, loading } = useLyrics(song)
   const time = usePlayer((s) => s.currentTime)
   const seek = usePlayer((s) => s.seek)
+  const translation = useUI((s) => s.translation)
+  const toggleTranslation = useUI((s) => s.toggleTranslation)
   const ref = useRef(null)
   const userScroll = useRef(0)
+  const anchor = useRef(null) // 切换翻译时，当前句原文的视口位置
+  const raf = useRef(0)
   const synced = lines.length && lines[0].time >= 0
 
   const active = useMemo(() => lineAt(lines, time + 0.25), [time, lines])
+  const hasTrans = useMemo(() => hasTranslation(lines), [lines])
+  const showTrans = translation && hasTrans
 
   useEffect(() => {
     const el = ref.current
@@ -281,32 +287,94 @@ export function LyricsView({ song, big = false }) {
     if (line) el.scrollTo({ top: line.offsetTop - el.clientHeight * (big ? 0.38 : 0.32), behavior: 'smooth' })
   }, [active, big])
 
+  // 翻译显隐时译文行高度会连续变化，其余歌词随之平移。
+  // 这里在动画全程逐帧补偿滚动，把当前句原文锚定在原位置。
+  // 注意：不能按“位移稳定”提前退出——动画启动的头一两帧高度尚未变化，
+  // 会被误判为已稳定，导致后半段动画失去补偿而出现滑动。
+  // 补偿时必须临时关闭 scroll-behavior: smooth，否则会被平滑滚动接管。
+  useLayoutEffect(() => {
+    const el = ref.current
+    const a = anchor.current
+    if (!el || !a) return
+    anchor.current = null
+    const DURATION = 340 // 略长于译文展开动画（0.26s），确保覆盖完整过渡
+    const start = performance.now()
+    const pin = () => {
+      const line = el.querySelector(`[data-i="${a.i}"] .lt-main`)
+      if (line) {
+        const d = line.getBoundingClientRect().top - a.top
+        if (d) {
+          const prev = el.style.scrollBehavior
+          el.style.scrollBehavior = 'auto'
+          el.scrollTop += d
+          el.style.scrollBehavior = prev
+        }
+      }
+      if (performance.now() - start < DURATION) raf.current = requestAnimationFrame(pin)
+      else raf.current = 0
+    }
+    pin()
+    return () => cancelAnimationFrame(raf.current)
+  }, [showTrans])
+
+  // 记录当前句原文的视口位置，作为切换翻译后的补偿基准
+  const onToggleTranslation = () => {
+    const el = ref.current
+    if (el) {
+      let i = active
+      if (i < 0) {
+        for (const k of el.querySelectorAll('.lyric-line')) {
+          if (k.offsetTop + k.offsetHeight > el.scrollTop) { i = +k.dataset.i; break }
+        }
+      }
+      const line = i >= 0 ? el.querySelector(`[data-i="${i}"] .lt-main`) : null
+      if (line) anchor.current = { i, top: line.getBoundingClientRect().top }
+    }
+    toggleTranslation()
+  }
+
   if (!song) return <div className="lyrics-empty">未在播放</div>
   if (loading) return <div className="lyrics-empty"><Spinner /></div>
   if (!lines.length) return <div className="lyrics-empty"><Icon.Lyrics size={36} /><span>暂无歌词</span></div>
 
   return (
-    <div
-      className={`lyrics ${big ? 'big' : ''} ${synced ? 'synced' : ''}`}
-      ref={ref}
-      onWheel={() => (userScroll.current = Date.now())}
-    >
-      <div className="lyrics-pad" />
-      {lines.map((l, i) => {
-        const d = active < 0 ? 0 : Math.min(4, Math.abs(i - active))
-        return (
-          <div
-            key={i}
-            data-i={i}
-            className={`lyric-line ${i === active ? 'active' : ''} ${i < active ? 'past' : ''}`}
-            style={big && synced && i !== active ? { filter: `blur(${d * 0.6}px)` } : undefined}
-            onClick={() => synced && l.time >= 0 && (seek(l.time), (userScroll.current = 0))}
+    <div className={`lyrics-wrap ${big ? 'big' : ''}`}>
+      {hasTrans && (
+        <div className={`lyrics-tools ${big ? 'big' : ''}`}>
+          <button
+            className={`tr-btn ${translation ? 'on' : ''}`}
+            onClick={onToggleTranslation}
+            title={translation ? '隐藏翻译' : '显示翻译'}
+            aria-label={translation ? '隐藏翻译' : '显示翻译'}
+            aria-pressed={translation}
           >
-            {l.text || '♪'}
-          </div>
-        )
-      })}
-      <div className="lyrics-pad" />
+            <Icon.Translate size={16} /><span>翻译</span>
+          </button>
+        </div>
+      )}
+      <div
+        className={`lyrics ${big ? 'big' : ''} ${synced ? 'synced' : ''}`}
+        ref={ref}
+        onWheel={() => (userScroll.current = Date.now())}
+      >
+        <div className="lyrics-pad" />
+        {lines.map((l, i) => {
+          const d = active < 0 ? 0 : Math.min(4, Math.abs(i - active))
+          return (
+            <div
+              key={i}
+              data-i={i}
+              className={`lyric-line ${i === active ? 'active' : ''} ${i < active ? 'past' : ''} ${l.translation ? 'translated' : ''} ${showTrans && l.translation ? 'show-sub' : ''}`}
+              style={big && synced && i !== active ? { filter: `blur(${d * 0.6}px)` } : undefined}
+              onClick={() => synced && l.time >= 0 && (seek(l.time), (userScroll.current = 0))}
+            >
+              <span className="lt-main">{l.text || '♪'}</span>
+              {l.translation && <span className="lt-sub-wrap" aria-hidden={!showTrans}><span className="lt-sub">{l.translation}</span></span>}
+            </div>
+          )
+        })}
+        <div className="lyrics-pad" />
+      </div>
     </div>
   )
 }
