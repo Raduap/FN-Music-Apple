@@ -33,7 +33,7 @@ const BALL_MODES = [['always', '始终显示'], ['hidden', '主窗口隐藏时�
  * @param {(coverId: string) => Promise<Electron.NativeImage | null>} o.coverImage  当前歌曲封面（用于菜单）
  * @param {() => void} o.quit
  */
-function createTray({ show, command, getCloseToTray, setCloseToTray, getBallMode, setBallMode, coverImage, quit }) {
+function createTray({ show, command, getCloseToTray, setCloseToTray, getBallMode, setBallMode, getLyricsOn, setLyricsOn, openLyricsSettings, coverImage, quit }) {
   const tray = new Tray(trayIcon())
   let player = { title: '', artist: '', coverId: '', playing: false, favorite: false }
   let cover = null // 当前歌曲的封面缩略图（菜单图标）
@@ -53,6 +53,13 @@ function createTray({ show, command, getCloseToTray, setCloseToTray, getBallMode
       {
         label: '悬浮球',
         submenu: BALL_MODES.map(([mode, label]) => ({ label, type: 'radio', checked: getBallMode() === mode, click: () => setBallMode(mode) })),
+      },
+      {
+        label: '悬浮歌词',
+        submenu: [
+          { label: '显示悬浮歌词', type: 'checkbox', checked: getLyricsOn(), click: (item) => setLyricsOn(item.checked) },
+          { label: '歌词样式…', click: openLyricsSettings },
+        ],
       },
       { label: '关闭窗口时最小化到托盘', type: 'checkbox', checked: getCloseToTray(), click: (item) => setCloseToTray(item.checked) },
       { type: 'separator' },

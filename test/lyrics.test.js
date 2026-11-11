@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hasTranslation, lineAt, toLines } from '../src/lyrics.js'
+import { hasTranslation, lineAt, lyricFrame, lyricPlaceholder, toLines } from '../src/lyrics.js'
 
 describe('歌词', () => {
   const lines = toLines('[00:01.00]一\n[00:05.00]二\n[00:09.00]三')
@@ -10,6 +10,7 @@ describe('歌词', () => {
     expect(lineAt(lines, 100)).toBe(2)
     expect(lineAt([], 5)).toBe(-1)
   })
+
   it('没有时间戳的纯文本歌词保留为不滚动的行', () => {
     const plain = toLines('第一行\n\n第二行')
     expect(plain).toEqual([{ time: -1, text: '第一行' }, { time: -1, text: '第二行' }])
@@ -54,5 +55,50 @@ describe('歌词', () => {
       { time: 10, text: '译文二' },
     ])
     expect(hasTranslation(tri)).toBe(false)
+  })
+
+  describe('lyricPlaceholder（悬浮歌词兜底文案）', () => {
+    it('歌词还没加载完时不显示纯音乐，而是显示当前歌曲名', () => {
+      expect(lyricPlaceholder({ title: '晴天', lyricsReady: false, hasLyrics: false, lyric: '', nextLyric: '' })).toBe('晴天')
+    })
+
+    it('歌词已经加载完且确认没有歌词时，才显示纯音乐', () => {
+      expect(lyricPlaceholder({ title: '晴天', lyricsReady: true, hasLyrics: false, lyric: '', nextLyric: '' })).toBe('纯音乐，请欣赏')
+    })
+
+    it('歌词已加载但没有可显示行时不显示纯音乐', () => {
+      expect(lyricPlaceholder({ title: '晴天', lyricsReady: true, hasLyrics: true, lyric: '', nextLyric: '' })).toBe('晴天')
+    })
+
+    it('旧消息缺少 lyricsReady 时不把未知状态误判为纯音乐', () => {
+      expect(lyricPlaceholder({ title: '晴天', hasLyrics: false, lyric: '', nextLyric: '' })).toBe('晴天')
+    })
+
+    it('没有在播放时显示未在播放', () => {
+      expect(lyricPlaceholder({ title: '', lyricsReady: true, hasLyrics: false, lyric: '', nextLyric: '' })).toBe('未在播放')
+    })
+  })
+
+  describe('lyricFrame（悬浮歌词）', () => {
+    const bi = toLines('[00:01.00]One\n[00:01.00]一\n[00:05.00]Two\n[00:05.00]二\n[00:09.00]Three\n[00:09.00]三')
+    it('返回当前句原文 + 译文 + 下一句原文', () => {
+      expect(lyricFrame(bi, 2)).toMatchObject({ index: 0, lyric: 'One', lyricTrans: '一', nextLyric: 'Two', nextLyricTrans: '二' })
+    })
+    it('最后一句没有下一句时，当前句仍有译文', () => {
+      expect(lyricFrame(bi, 100)).toMatchObject({ index: 2, lyric: 'Three', lyricTrans: '三', nextLyric: '', nextLyricTrans: '' })
+    })
+    it('前奏时把首句作为待播放预告返回', () => {
+      expect(lyricFrame(bi, 0)).toMatchObject({ index: -1, lyric: '', lyricTrans: '', nextLyric: 'One', nextLyricTrans: '一' })
+    })
+    it('当前句是伴奏 / 空行时，下一句跳过空行取真正的歌词', () => {
+      const withGap = toLines('[00:01.00]One\n[00:05.00]\n[00:09.00]Two\n[00:13.00]\n[00:17.00]Three')
+      expect(lyricFrame(withGap, 2)).toMatchObject({ index: 0, lyric: 'One', nextLyric: 'Two', nextLyricTrans: '' })
+      expect(lyricFrame(withGap, 6)).toMatchObject({ index: 1, lyric: '', nextLyric: 'Two', nextLyricTrans: '' })
+      expect(lyricFrame(withGap, 14)).toMatchObject({ index: 3, lyric: '', nextLyric: 'Three', nextLyricTrans: '' })
+    })
+    it('单语歌词译文为空、下一句仍可用', () => {
+      const mono = toLines('[00:01.00]甲\n[00:05.00]乙')
+      expect(lyricFrame(mono, 2)).toMatchObject({ index: 0, lyric: '甲', lyricTrans: '', nextLyric: '乙', nextLyricTrans: '' })
+    })
   })
 })

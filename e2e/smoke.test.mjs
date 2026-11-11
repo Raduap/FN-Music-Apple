@@ -16,11 +16,12 @@ const SERVER = `127.0.0.1:${PORT}`
 const userData = mkdtempSync(join(tmpdir(), 'fnm-e2e-'))
 let mock, app, win
 
-// 主窗口与悬浮球窗口在主进程中的状态
-const windows = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => ({ ball: w.webContents.getURL().includes('ball.html'), visible: w.isVisible() })))
-const mainVisible = async () => (await windows()).find((w) => !w.ball)?.visible
-const ballVisible = async () => !!(await windows()).find((w) => w.ball)?.visible
-const closeMain = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('ball.html')).close())
+// 主窗口、悬浮球与悬浮歌词窗口在主进程中的状态
+const windows = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => ({ kind: (w.webContents.getURL().includes('ball.html') ? 'ball' : w.webContents.getURL().includes('lyrics.html') ? 'lyrics' : 'main'), visible: w.isVisible() })))
+const mainVisible = async () => (await windows()).find((w) => w.kind === 'main')?.visible
+const ballVisible = async () => !!(await windows()).find((w) => w.kind === 'ball')?.visible
+const lyricsVisible = async () => !!(await windows()).find((w) => w.kind === 'lyrics')?.visible
+const closeMain = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('ball.html') && !w.webContents.getURL().includes('lyrics.html')).close())
 async function ballPage() {
   for (let i = 0; i < 100; i++) {
     const p = app.windows().find((w) => !w.isClosed() && w.url().includes('ball.html'))
@@ -28,6 +29,14 @@ async function ballPage() {
     await new Promise((r) => setTimeout(r, 100))
   }
   throw new Error('悬浮球窗口没有出现')
+}
+async function lyricsPage() {
+  for (let i = 0; i < 100; i++) {
+    const p = app.windows().find((w) => !w.isClosed() && w.url().includes('lyrics.html'))
+    if (p) return p
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  throw new Error('悬浮歌词窗口没有出现')
 }
 const until = async (fn, msg) => {
   for (let i = 0; i < 100; i++) { if (await fn()) return; await new Promise((r) => setTimeout(r, 100)) }
@@ -42,7 +51,7 @@ async function launch() {
   })
   await app.firstWindow()
   // 主窗口（悬浮球是另一个窗口）
-  for (let i = 0; i < 100 && !(win = app.windows().find((w) => !w.url().includes('ball.html'))); i++) await new Promise((r) => setTimeout(r, 100))
+  for (let i = 0; i < 100 && !(win = app.windows().find((w) => !w.url().includes('ball.html') && !w.url().includes('lyrics.html'))); i++) await new Promise((r) => setTimeout(r, 100))
   win.setDefaultTimeout(15000)
 }
 
@@ -89,6 +98,21 @@ test('歌词面板显示同步歌词', async () => {
   await win.keyboard.press('Control+L')
   await win.locator('.sidepanel .lyrics.synced .lyric-line').first().waitFor()
   await win.keyboard.press('Control+L')
+})
+
+test('悬浮歌词：播放栏按钮可开关浮窗', async () => {
+  const bar = win.getByRole('contentinfo', { name: '播放器' })
+  const btn = bar.getByRole('button', { name: '开启悬浮歌词' })
+  await btn.click()
+  await until(lyricsVisible, '开启后应出现悬浮歌词窗口')
+  const lp = await lyricsPage()
+  lp.setDefaultTimeout(15000)
+  await lp.locator('.lc').waitFor()
+  // 当前句 + 译文两层都应显示（默认双语歌词显示译文）
+  await lp.locator('.lmain').waitFor()
+  // 关闭
+  await bar.getByRole('button', { name: '关闭悬浮歌词' }).click()
+  await until(async () => !(await lyricsVisible()), '关闭后应销毁悬浮歌词窗口')
 })
 
 test('喜欢歌曲后出现在“喜欢的歌曲”中', async () => {
@@ -290,7 +314,7 @@ test('关闭窗口后停留在托盘，音乐继续播放', async () => {
   await win.waitForFunction((t) => document.querySelector('.pb-time').textContent !== t, before, poll)
 
   // 托盘菜单的“暂停”：主进程向渲染进程发送播放控制命令
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('ball.html')).webContents.send('player:command', 'toggle'))
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('ball.html') && !w.webContents.getURL().includes('lyrics.html')).webContents.send('player:command', 'toggle'))
   await win.waitForFunction(() => document.title.startsWith('⏸'), null, poll)
 
   // 再次启动应用（第二个实例）时调出窗口

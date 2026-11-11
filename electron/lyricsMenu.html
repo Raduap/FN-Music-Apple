@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; background: transparent; overflow: hidden;
+    font: 13px/1.4 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    color: #f2f2f4; user-select: none; -webkit-user-select: none;
+  }
+  .menu {
+    /* 宽度取内容真实宽度（max-content），不受窗口自身宽度影响。
+       否则块级元素宽度恒等于窗口宽，量出的“尺寸”其实是当前窗口宽 —— 用它去 setBounds
+       会形成「窗口变宽→量到更宽→再设更宽」的反馈，表现为菜单尺寸来回跳（时闪时不闪）。 */
+    width: max-content;
+    padding: 6px; border-radius: 10px;
+    background: rgba(32, 32, 36, 0.96);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  }
+  .item {
+    display: flex; align-items: center; gap: 8px;
+    height: 28px; padding: 0 10px; border-radius: 6px; white-space: nowrap;
+  }
+  .item:hover { background: rgba(255, 255, 255, 0.14); }
+  .box { width: 14px; flex: none; text-align: center; font-size: 12px; opacity: 0.9; }
+  .sep { height: 1px; margin: 5px 8px; background: rgba(255, 255, 255, 0.14); }
+</style>
+</head>
+<body>
+<div class="menu" id="menu"></div>
+<script>
+  const api = window.menuApi
+  const menu = document.getElementById('menu')
+
+  // 菜单窗常驻复用：每次打开由主进程同步调用本函数重建列表，并直接返回真实尺寸
+  // （主进程拿到尺寸后一次性摆位并显示，不需要动画，也不需要等下一帧）。
+  window.__renderMenu = function (items) {
+    menu.textContent = ''
+    ;(items || []).forEach((it, i) => {
+      if (it.type === 'separator') {
+        const d = document.createElement('div')
+        d.className = 'sep'
+        menu.appendChild(d)
+        return
+      }
+      const row = document.createElement('div')
+      row.className = 'item'
+      const box = document.createElement('span')
+      box.className = 'box'
+      box.textContent = it.type === 'checkbox' && it.checked ? '✓' : ''
+      const label = document.createElement('span')
+      label.className = 'label'
+      label.textContent = it.label == null ? '' : String(it.label)
+      row.appendChild(box)
+      row.appendChild(label)
+      row.addEventListener('click', () => api.choose(i))
+      menu.appendChild(row)
+    })
+    const r = menu.getBoundingClientRect()
+    return [r.width, r.height]
+  }
+
+  addEventListener('keydown', (e) => { if (e.key === 'Escape') api.close() })
+  // 失焦关闭由主进程控制「是否已武装」：刚显示的一小段时间内不武装，避开 show 时的瞬时 blur；
+  // 主进程确认焦点稳定后会发 menu:arm，此后失焦（点到别处）才关闭。
+  let armed = false
+  api.onArm(() => { armed = true })
+  api.onDisarm(() => { armed = false })
+  addEventListener('blur', () => { if (armed) api.close() })
+</script>
+</body>
+</html>

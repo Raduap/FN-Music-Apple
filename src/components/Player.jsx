@@ -172,6 +172,9 @@ export function PlayerBar() {
   const song = useCurrent()
   const panel = useUI((s) => s.panel)
   const togglePanel = useUI((s) => s.togglePanel)
+  const floatingLyrics = useUI((s) => s.floatingLyrics)
+  const setFloatingLyrics = useUI((s) => s.setFloatingLyrics)
+  const openLyricsSettings = useUI((s) => s.openLyricsSettings)
   const toggleFavorite = usePlayer((s) => s.toggleFavorite)
   const scrub = useScrub()
   const songMenu = useSongMenu()
@@ -236,6 +239,16 @@ export function PlayerBar() {
 
       <div className="pb-right">
         <QualityBadge song={song} />
+        <button
+          className={"icon-btn fl-toggle-btn " + (floatingLyrics ? "on" : "")}
+          onClick={() => setFloatingLyrics(!floatingLyrics)}
+          onContextMenu={(e) => { e.preventDefault(); openLyricsSettings() }}
+          title={(floatingLyrics ? "关闭悬浮歌词" : "开启悬浮歌词") + "（右键设置）"}
+          aria-label={floatingLyrics ? "关闭悬浮歌词" : "开启悬浮歌词"}
+          aria-pressed={floatingLyrics}
+        >
+          <Icon.LyricBox size={18} />
+        </button>
         <VolumeControl />
         <button className={`icon-btn ${panel === 'lyrics' ? 'on' : ''}`} onClick={() => togglePanel('lyrics')} title="歌词 (Ctrl+L)" aria-label="歌词" aria-pressed={panel === 'lyrics'}>
           <Icon.Lyrics size={18} />

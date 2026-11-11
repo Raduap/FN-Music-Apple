@@ -6,6 +6,7 @@ import Sidebar from './components/Sidebar'
 import { PlayerBar, SidePanel, FullPlayer } from './components/Player'
 import { ContextMenu, Dialog, ErrorBoundary, ScrollCtx, Spinner, Toast } from './components/common'
 import { AppearancePanel, Wallpaper, useActiveWallpaper } from './components/Appearance'
+import { FloatingLyricsSettings } from './components/FloatingLyricsSettings'
 import * as Icon from './icons'
 import Login from './pages/Login'
 import Home from './pages/Home'
@@ -204,6 +205,7 @@ function Shell() {
       <FullPlayer />
     </div>
     <AppearancePanel />
+    <FloatingLyricsSettings />
     </>
   )
 }
@@ -218,7 +220,12 @@ export default function App() {
     restore()
     const lost = () => useAuth.setState({ status: 'out' })
     window.addEventListener('fn:auth-lost', lost)
-    return () => window.removeEventListener('fn:auth-lost', lost)
+    useUI.getState().loadLyricsPrefs()
+    const off = window.fn.onLyricsSettings?.(() => useUI.getState().openLyricsSettings())
+    return () => {
+      window.removeEventListener('fn:auth-lost', lost)
+      off?.()
+    }
   }, [restore])
 
   return (
