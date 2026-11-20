@@ -82,7 +82,18 @@ async function fetchText(url) {
 }
 
 let s2t = null
+const HAN = /[\u3400-\u9fff]/g
+const KANA = /[\u3040-\u30ff]/g
+const HANGUL = /[\uac00-\ud7af\u1100-\u11ff]/g
+const LATIN = /[A-Za-z]/g
+function isJapaneseOrKorean(text) {
+  const value = String(text || '')
+  return (value.match(KANA) || []).length > 0 || (value.match(HANGUL) || []).length > 0
+}
 function toSimplified(text) {
+  // opencc t→cn 只适合繁体中文；日文汉字（如 時/僕）会被改成简体中文。
+  // 匹配侧另有 fold 表，但显示侧不能改写原文，所以日文/韩文直接跳过转换。
+  if (isJapaneseOrKorean(text)) return text
   try {
     s2t ||= opencc.Converter({ from: 't', to: 'cn' })
     return s2t(String(text || ''))
@@ -320,17 +331,31 @@ async function fetchNeteaseLines(title, artist, duration) {
 }
 
 // AMLL TTML DB：本地索引匹配后再拉取 TTML。
+let amllIndexPromise = null
+let amllIndexAt = 0
+const AMLL_INDEX_TTL = 24 * 3600 * 1000
+async function loadAmllIndex() {
+  if (amllIndexPromise && Date.now() - amllIndexAt < AMLL_INDEX_TTL) return amllIndexPromise
+  amllIndexAt = Date.now()
+  amllIndexPromise = fetchText(INDEX_URL).then((text) => {
+    const rows = []
+    for (const line of String(text || '').split('\n')) {
+      if (!line.trim()) continue
+      try { rows.push(JSON.parse(line)) } catch {}
+    }
+    return rows
+  }).catch((e) => { amllIndexPromise = null; amllIndexAt = 0; throw e })
+  return amllIndexPromise
+}
+
 async function fetchAmllCandidates(title, artist, debug) {
   const out = []
-  const index = await fetchText(INDEX_URL)
+  const rows = await loadAmllIndex()
   const q = norm(title)
   const qa = norm(artist)
-  if (!index || !q) return out
+  if (!rows.length || !q) return out
   const found = []
-  for (const line of index.split('\n')) {
-    if (!line.trim()) continue
-    let j
-    try { j = JSON.parse(line) } catch { continue }
+  for (const j of rows) {
     const md = {}
     for (const [k, v] of j.metadata || []) md[k] = Array.isArray(v) ? v : [v]
     const name = norm(md.musicName?.[0])
