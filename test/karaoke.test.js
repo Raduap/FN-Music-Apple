@@ -34,6 +34,14 @@ describe('karaokeFills（连续逐字进度）', () => {
     expect(pos(f2)).toBeGreaterThan(pos(f1))
   })
 
+  it('limit 会传给平滑预算，避免扫色越过下一句起点', () => {
+    const slow = { text: 'a b', words: [{ text: 'a', time: 0, end: 0.1 }, { text: 'b', time: 0.1, end: 0.2 }] }
+    const unlimited = karaokeFills(slow, 1.5, { smooth: 'strong' })
+    const bounded = karaokeFills(slow, 1.5, { smooth: 'strong', limit: 0.5 })
+    expect(unlimited.pos).toBe(unlimited.total)
+    expect(bounded.pos).toBe(bounded.total)
+  })
+
   it('无词数据返回 null', () => {
     expect(karaokeFills({ text: 'x' }, 1)).toBe(null)
     expect(karaokeFills(null, 1)).toBe(null)

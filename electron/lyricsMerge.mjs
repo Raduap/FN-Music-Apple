@@ -1011,11 +1011,11 @@ function smoothWordTimeline(words, mode = 'strict', limit = null) {
 }
 
 // ---------- 卡拉OK进度 ----------
-function karaokeFills(line, t, { smooth = 'strict' } = {}) {
+function karaokeFills(line, t, { smooth = 'strict', limit = null } = {}) {
   // 防御性清洗：兼容历史 / 外部传入的脏时间轴，保证进度只随时间单调前进
   const base = sanitizeWordTimeline(line?.words || [], { start: line?.time, end: line?.end })
   // 非严格模式：把词速收进合理带内，抹平源数据的忽快忽慢（保留整句窗口与停顿）
-  const words = smoothWordTimeline(base, smooth)
+  const words = smoothWordTimeline(base, smooth, limit)
   const text = String(line?.text || '')
   const n = words.length
   if (!n) return null
