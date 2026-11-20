@@ -145,7 +145,7 @@ function writeExperimentalKey(key) {
 
 // 逐字数据源白名单：删除某个源后（如历史版本的 lrclib），
 // 老用户 prefs 里的残留 id 不能带进设置面板，否则序号错乱 / 出现幽灵源。
-const SYLLABLE_SOURCE_IDS = ['amll', 'liriqo', 'kugou', 'netease', 'qq']
+const SYLLABLE_SOURCE_IDS = ['qq', 'netease', 'kugou', 'amll', 'liriqo']
 const cleanSyllableSources = (list) => {
   const out = Array.isArray(list) ? list.filter((s) => SYLLABLE_SOURCE_IDS.includes(s)) : []
   return out.length ? out : [...SYLLABLE_SOURCE_IDS]
@@ -156,17 +156,17 @@ const SYLLABLE_SMOOTH_IDS = ['mild', 'normal', 'strong']
 const cleanSyllableSmooth = (v) => (SYLLABLE_SMOOTH_IDS.includes(v) ? v : 'normal')
 
 const experimentalDefaults = () => ({
-  enabled: false,
+  enabled: true,
   sourceEnabled: true,
-  aiFallback: true,
+  aiFallback: false,
   baseUrl: 'https://api.deepseek.com/v1',
   model: 'deepseek-chat',
   hasKey: false,
-  romanization: false,
-  syllables: false,
+  romanization: true,
+  syllables: true,
   syllablePredict: false,
   syllableOverwrite: false,
-  syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'],
+  syllableSources: ['qq', 'netease', 'kugou', 'amll', 'liriqo'],
   // 严格匹配：默认关闭。关闭时对逐字时间轴做速度带平滑（视觉匀速），开启时逐字严格照抄源时间戳。
   syllableStrict: false,
   // 速度带挡位（仅在非严格时生效）：mild 宽松 / normal 适中 / strong 更匀。

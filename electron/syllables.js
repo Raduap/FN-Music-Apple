@@ -26,7 +26,7 @@ const QQ_LYRIC = 'https://c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg'
 // - kugou：酷狗 KRC 直连（两步搜索 + 解密），中文逐字覆盖最好
 // - netease：网易云 YRC 直连（EAPI），中日英覆盖均衡
 // - qq：QQ 音乐 QRC 直连（自定义 DES 解密），中文流行覆盖好
-const SYLLABLE_SOURCES = ['amll', 'liriqo', 'kugou', 'netease', 'qq']
+const SYLLABLE_SOURCES = ['qq', 'netease', 'kugou', 'amll', 'liriqo']
 
 const SYLLABLE_UA = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36',

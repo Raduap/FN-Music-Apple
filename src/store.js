@@ -57,8 +57,8 @@ export const useUI = create((set, get) => ({
   appearanceOpen: false,
   lyricsSettingsOpen: false,
   experimentalOpen: false,
-  experimental: { enabled: false, configured: false, sourceEnabled: true, aiFallback: true, romanization: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: false, syllablePredict: false, syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] },
-  syllables: false, // 实验性逐字歌词（AMLL TTML DB / LiriQo），关闭时退回逐行歌词
+  experimental: { enabled: true, configured: false, sourceEnabled: true, aiFallback: false, romanization: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: true, syllablePredict: false, syllableSources: ['qq', 'netease', 'kugou', 'amll', 'liriqo'] },
+  syllables: true, // 实验性逐字歌词（AMLL TTML DB / LiriQo），关闭时退回逐行歌词
   syllablePredict: LS.get('sylPredict', false), // 智能逐字补全：没有词级数据的行也按字长 / 停顿预测逐字动画
   syllableOverwrite: LS.get('sylOverwrite', false), // 覆盖歌词：可信逐字命中时用源歌词替换本地正文
   syllablesDebug: LS.get('sylDebug', false), // 逐字歌词调试 toast：切歌时报告命中情况

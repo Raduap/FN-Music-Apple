@@ -3,7 +3,7 @@ import { useUI } from '../store'
 import { moveItem } from '../lib'
 import * as Icon from '../icons'
 
-const DEFAULTS = { enabled: false, sourceEnabled: true, aiFallback: true, romanization: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: false, syllablePredict: false, syllablesDebug: false, translationDebug: false, syllableOverwrite: false, syllableStrict: false, syllableSmooth: 'normal', syllableSources: ['amll', 'liriqo', 'kugou', 'netease', 'qq'] }
+const DEFAULTS = { enabled: true, sourceEnabled: true, aiFallback: false, romanization: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasKey: false, syllables: true, syllablePredict: false, syllablesDebug: false, translationDebug: false, syllableOverwrite: false, syllableStrict: false, syllableSmooth: 'normal', syllableSources: ['qq', 'netease', 'kugou', 'amll', 'liriqo'] }
 // 逐字数据源元数据（id / 名称 / 说明）。列表渲染顺序即抓取顺序，
 // 用户可在设置里拖动调整；启用与否是另一维（开关），与顺序无关。
 const SYLLABLE_SOURCES = [
