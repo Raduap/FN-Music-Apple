@@ -523,9 +523,11 @@ async function remoteTranslate(lines, settings, deadlineMs = 180000) {
     }
     let blockErr = null
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (Date.now() >= deadline) break
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
+      const { signal, clear } = abortAfter(Math.min(60000, remaining), '翻译端点响应超时')
       try {
-        const res = await net.fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) })
+        const res = await net.fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal })
         const text = await res.text()
         let json = null
         try { json = JSON.parse(text) } catch {}
@@ -539,7 +541,9 @@ async function remoteTranslate(lines, settings, deadlineMs = 180000) {
         blockErr = `${REMOTE_ERR[res.status] || `服务端返回 HTTP ${res.status}`}${detail ? '｜' + detail : ''}`
         if ([400, 401, 402, 403, 404].includes(res.status)) break
       } catch (e) {
-        blockErr = `连不上翻译端点：${e.message}`
+        blockErr = e?.name === 'AbortError' ? '翻译端点响应超时' : `连不上翻译端点：${e.message}`
+      } finally {
+        clear()
       }
       await new Promise((r) => setTimeout(r, 800 * (attempt + 1)))
     }
