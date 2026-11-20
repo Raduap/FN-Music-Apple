@@ -251,7 +251,7 @@ export function ExperimentalSettings() {
                     <Icon.Lyrics size={18} />
                     <div>
                       <b>逐字 / 卡拉OK歌词</b>
-                      <p>优先使用 AMLL TTML DB 的社区人工逐字歌词，其次通过聚合接口获取各平台词级时间轴；当前句按真实播放进度逐字扫色。</p>
+                      <p>按下方顺序逐源尝试：QQ 音乐、网易云、酷狗、AMLL TTML DB、LiriQo；当前句按真实播放进度逐字扫色。</p>
                     </div>
                   </div>
                   <div className="exp-feature-row">

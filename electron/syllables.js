@@ -1,5 +1,5 @@
 // 逐字歌词抓取（实验性）：纯逻辑模块，便于单测与主进程复用。
-// 数据源：AMLL TTML DB（社区人工逐字库）→ LiriQo 聚合 → 酷狗 KRC / 网易云 YRC / QQ 音乐 QRC 直连。
+// 数据源默认顺序：QQ 音乐 QRC → 网易云 YRC → 酷狗 KRC → AMLL TTML DB → LiriQo 聚合。
 const { net } = require('electron')
 const opencc = require('opencc-js')
 const { decryptQrc, parseQrc } = require('./qrc')
@@ -21,11 +21,11 @@ const QQ_SEARCH = 'https://c.y.qq.com/soso/fcgi-bin/client_search_cp'
 const QQ_LYRIC = 'https://c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg'
 
 // 逐字数据源清单（顺序即默认优先级，设置面板可调整 / 开关）。
+// - qq：QQ 音乐 QRC 直连（自定义 DES 解密），中文流行覆盖好
+// - netease：网易云 YRC 直连（EAPI），中日英覆盖均衡
+// - kugou：酷狗 KRC 直连（两步搜索 + 解密），中文逐字覆盖最好
 // - amll：AMLL TTML DB，社区人工校准，质量最高
 // - liriqo：聚合接口（Apple / 酷狗 / 网易 / 千千等）
-// - kugou：酷狗 KRC 直连（两步搜索 + 解密），中文逐字覆盖最好
-// - netease：网易云 YRC 直连（EAPI），中日英覆盖均衡
-// - qq：QQ 音乐 QRC 直连（自定义 DES 解密），中文流行覆盖好
 const SYLLABLE_SOURCES = ['qq', 'netease', 'kugou', 'amll', 'liriqo']
 
 const SYLLABLE_UA = {

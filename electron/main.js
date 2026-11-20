@@ -179,7 +179,7 @@ function experimentalRead() {
   return {
     enabled: !!e.enabled,
     sourceEnabled: e.sourceEnabled !== false,
-    aiFallback: e.aiFallback !== false,
+    aiFallback: !!e.aiFallback,
     baseUrl: e.baseUrl || 'https://api.deepseek.com/v1',
     model: e.model || 'deepseek-chat',
     hasKey: !!readExperimentalKey(),
