@@ -137,10 +137,11 @@ function readExperimentalKey() {
 
 function writeExperimentalKey(key) {
   try {
-    if (!key) { fs.rmSync(experimentalKeyFile(), { force: true }); return }
-    if (!safeStorage.isEncryptionAvailable()) return
+    if (!key) { fs.rmSync(experimentalKeyFile(), { force: true }); return { ok: true } }
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: '系统安全存储不可用，API Key 未保存' }
     fs.writeFileSync(experimentalKeyFile(), Buffer.concat([Buffer.from('E1'), safeStorage.encryptString(String(key))]))
-  } catch {}
+    return { ok: true }
+  } catch (e) { return { ok: false, error: 'API Key 保存失败：' + e.message } }
 }
 
 // 逐字数据源白名单：删除某个源后（如历史版本的 lrclib），
@@ -209,9 +210,10 @@ function experimentalWrite(patch) {
     syllableStrict: patch.syllableStrict === undefined ? cur.syllableStrict : !!patch.syllableStrict,
     syllableSmooth: patch.syllableSmooth === undefined ? cur.syllableSmooth : cleanSyllableSmooth(patch.syllableSmooth),
   }
-  if (patch.apiKey !== undefined) writeExperimentalKey(String(patch.apiKey || '').trim())
+  let keyResult = { ok: true }
+  if (patch.apiKey !== undefined) keyResult = writeExperimentalKey(String(patch.apiKey || '').trim())
   writePrefs({ ...readPrefs(), experimental: next })
-  return experimentalRead()
+  return { ...experimentalRead(), keySaveError: keyResult.ok ? '' : keyResult.error }
 }
 
 // ---------- 源站译词（网易云） ----------
@@ -1056,7 +1058,11 @@ function registerIpc() {
   ipcMain.handle('app:info', () => ({ version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }))
   ipcMain.handle('prefs:get', () => readPrefs())
   ipcMain.handle('experimental:get', () => experimentalRead())
-  ipcMain.handle('experimental:set', (_e, patch) => ({ ok: true, settings: experimentalWrite(patch || {}) }))
+  ipcMain.handle('experimental:set', (_e, patch) => {
+    const settings = experimentalWrite(patch || {})
+    if (settings.keySaveError) return { ok: false, error: settings.keySaveError, settings }
+    return { ok: true, settings }
+  })
   ipcMain.handle('experimental:test', async (_e, patch) => {
     try {
       const settings = { ...experimentalRead(), ...(patch || {}), useApiKeyOverride: true }
@@ -1141,7 +1147,7 @@ function registerIpc() {
           romans,
           source: source.ok ? source.source : 'none',
           matched: source.ok ? source.matched : '',
-          sourceCount: 0,
+          sourceCount: romans.filter(Boolean).length,
           aiCount: 0,
           warning: '',
         }

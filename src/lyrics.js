@@ -36,7 +36,12 @@ export function loadLyricsView(song, options = {}, onUpdate = null) {
   if (!session) {
     session = { listeners: new Set(), snapshot: null, promise: null, aborted: false }
     viewSessions.set(key, session)
-    if (viewSessions.size > MAX_VIEW_SESSIONS) viewSessions.delete(viewSessions.keys().next().value)
+    if (viewSessions.size > MAX_VIEW_SESSIONS) {
+      const [oldestKey, oldest] = viewSessions.entries().next().value
+      oldest.aborted = true
+      oldest.listeners.clear()
+      viewSessions.delete(oldestKey)
+    }
     const emit = (lines, meta) => {
       session.snapshot = { lines, meta }
       for (const fn of session.listeners) {
@@ -256,7 +261,8 @@ async function translateLines(id, lines, song, { translate = true, romanize = fa
     translationMeta.set(id, { source: 'none', matched: '', sourceCount: 0, aiCount: 0, warning, skipped: true })
     return lines
   }
-  if (translating.has(id)) return translating.get(id)
+  const translateKey = id + '|' + (translate ? 1 : 0) + (romanize ? 1 : 0)
+  if (translating.has(translateKey)) return translating.get(translateKey)
   const bridge = globalThis.window?.fn
   if (!bridge?.lyricsTranslate) return lines
   // 合并成一次请求：译文与音译来自同一次响应，按请求行序索引回填。
@@ -315,11 +321,11 @@ async function translateLines(id, lines, song, { translate = true, romanize = fa
       return lines
     }
   })()
-  translating.set(id, run)
+  translating.set(translateKey, run)
   try {
     return await run
   } finally {
-    translating.delete(id)
+    translating.delete(translateKey)
   }
 }
 
@@ -341,7 +347,7 @@ export function loadLyrics(id, song = null, { translate = false, romanize = fals
   // translateLines 内部用 translating Map 去重，多个并发翻译请求只会真正翻译一次。
   if (pending.has(id)) {
     const base = pending.get(id)
-    if (!translate) return base
+    if (!translate && !romanize) return base
     return base.then((lines) => translateLines(id, lines, song, { translate, romanize }))
   }
   pending.set(id, api.lyric(id).then(async (text) => {
