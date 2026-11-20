@@ -331,9 +331,14 @@ async function fetchNeteaseLines(title, artist, duration) {
 // AMLL TTML DB：本地索引匹配后再拉取 TTML。
 let amllIndexPromise = null
 let amllIndexAt = 0
+let amllIndexFailedAt = 0
 const AMLL_INDEX_TTL = 24 * 3600 * 1000
+// 抓到空索引不等于「这个索引是空的」：429 / 404 / 断网都会让 fetchText 返回空串。
+// 空结果只能短暂冷却，否则一次抖动就让 AMLL 停用一整天。
+const AMLL_INDEX_RETRY = 60 * 1000
 async function loadAmllIndex() {
   if (amllIndexPromise && Date.now() - amllIndexAt < AMLL_INDEX_TTL) return amllIndexPromise
+  if (!amllIndexPromise && amllIndexFailedAt && Date.now() - amllIndexFailedAt < AMLL_INDEX_RETRY) return []
   amllIndexAt = Date.now()
   amllIndexPromise = fetchText(INDEX_URL).then((text) => {
     const rows = []
@@ -341,8 +346,9 @@ async function loadAmllIndex() {
       if (!line.trim()) continue
       try { rows.push(JSON.parse(line)) } catch {}
     }
+    if (!rows.length) { amllIndexPromise = null; amllIndexAt = 0; amllIndexFailedAt = Date.now() }
     return rows
-  }).catch((e) => { amllIndexPromise = null; amllIndexAt = 0; throw e })
+  }).catch((e) => { amllIndexPromise = null; amllIndexAt = 0; amllIndexFailedAt = Date.now(); throw e })
   return amllIndexPromise
 }
 

@@ -213,6 +213,7 @@ export default function FloatingLyrics() {
   const karaokeRef = useRef(null)
   karaokeRef.current = karaoke
   const karaokeOn = !!karaoke && !!s.karaoke
+  const karaokeStart = useRef(null) // 暂停后恢复播放要显式重新点火，见下
   useEffect(() => {
     if (!karaokeOn) return
     const el = mainRef.current
@@ -239,12 +240,20 @@ export default function FloatingLyrics() {
       })
       raf = requestAnimationFrame(step)
     }
-    raf = requestAnimationFrame(step)
+    // 暂停时 step 自己退出；暂停不改变本 effect 的依赖，恢复播放必须显式重启。
+    // 同时暂停不再触发 cleanup，已唱部分的 --fill 会留在画面上，不会回退变空。
+    const start = () => { if (!raf) raf = requestAnimationFrame(step) }
+    karaokeStart.current = start
+    start()
     return () => {
+      karaokeStart.current = null
       cancelAnimationFrame(raf)
       nodes.forEach((node) => { node.style.setProperty('--fill', '0') })
     }
-  }, [karaokeOn, state.lyricIndex, state.syllableSmooth, state.playing]) // 只在扫色开关 / 换句 / 平滑模式变化时重建；时钟与词级数据走 ref
+  }, [karaokeOn, state.lyricIndex, state.syllableSmooth]) // 只在扫色开关 / 换句 / 平滑模式变化时重建；时钟、播放状态走 ref / 单独的恢复 effect
+  useEffect(() => {
+    if (state.playing) karaokeStart.current?.()
+  }, [state.playing])
 
   const startResize = (dir) => (e) => {
     if (e.button !== 0) return

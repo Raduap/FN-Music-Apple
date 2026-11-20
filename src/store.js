@@ -164,7 +164,9 @@ export const useUI = create((set, get) => ({
   },
   async saveExperimental(patch) {
     const r = await window.fn.experimentalSet?.(patch || {})
-    if (r?.ok) set({ experimental: { ...get().experimental, ...r.settings } })
+    // 只有 Key 落盘失败时主进程才返回 ok:false，其余设置其实已经写进 prefs。
+    // 这里按 settings 合并，避免界面显示与已保存状态分叉（下次启动才发现改了）。
+    if (r?.settings) set({ experimental: { ...get().experimental, ...r.settings } })
     return r
   },
   async setSyllables(on) {

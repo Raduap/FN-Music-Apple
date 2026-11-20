@@ -336,6 +336,7 @@ export function LyricsView({ song, big = false }) {
   const syllablesDebug = useUI((s) => s.syllablesDebug)
   const time = usePlayer((s) => s.currentTime)
   const seek = usePlayer((s) => s.seek)
+  const playing = usePlayer((s) => s.playing)
   const translation = useUI((s) => s.translation)
   const toggleTranslation = useUI((s) => s.toggleTranslation)
   const showRomanizationOn = useUI((s) => s.showRomanization)
@@ -465,6 +466,7 @@ export function LyricsView({ song, big = false }) {
   // 用连续进度边直接写当前句每个词的铺色宽度。切句 / 无词数据时清理为普通文本。
   // 这是 AMLL Player / Apple Music Web 的成熟做法：结构交给 React，逐帧样式走 DOM。
   const karaokeActive = syllablesEnabled && active >= 0 && !!lines[active]?.words?.length
+  const karaokeStart = useRef(null) // 当前句的扫色循环启动器：暂停后恢复播放要显式重新点火
   // 手动调试钩子：DevTools 里 await __syllablesProbe('歌名','歌手') 直接看原始返回
   useEffect(() => {
     if (!syllablesDebug) return
@@ -508,12 +510,20 @@ export function LyricsView({ song, big = false }) {
       })
       raf = requestAnimationFrame(step)
     }
-    raf = requestAnimationFrame(step)
+    // 暂停时 step 自己退出（raf 归零），而暂停不会改变本 effect 的任何依赖，
+    // 所以恢复播放必须显式重启；否则当前句要等到换句才继续扫色。
+    const start = () => { if (!raf) raf = requestAnimationFrame(step) }
+    karaokeStart.current = start
+    start()
     return () => {
+      karaokeStart.current = null
       cancelAnimationFrame(raf)
       fills.forEach((node) => { node.style.setProperty('--fill', '0') })
     }
   }, [karaokeActive, active, lines, smoothMode])
+  useEffect(() => {
+    if (playing) karaokeStart.current?.()
+  }, [playing])
   // 译文补入（lines 引用变化）或翻译显隐时，译文行高度会连续变化，其余歌词随之平移。
   // 这里用变化前记录的位置做基准，在动画全程逐帧补偿滚动，把关注句锚定在原位置。
   // 注意：不能按“位移稳定”提前退出——动画启动的头一两帧高度尚未变化，

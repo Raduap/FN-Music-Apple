@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { karaokeFills } from '../src/lyrics.js'
+import { karaokeFills, smoothWordTimeline } from '../src/lyrics.js'
 
 describe('karaokeFills（连续逐字进度）', () => {
   const line = {
@@ -35,11 +35,23 @@ describe('karaokeFills（连续逐字进度）', () => {
   })
 
   it('limit 会传给平滑预算，避免扫色越过下一句起点', () => {
-    const slow = { text: 'a b', words: [{ text: 'a', time: 0, end: 0.1 }, { text: 'b', time: 0.1, end: 0.2 }] }
-    const unlimited = karaokeFills(slow, 1.5, { smooth: 'strong' })
-    const bounded = karaokeFills(slow, 1.5, { smooth: 'strong', limit: 0.5 })
-    expect(unlimited.pos).toBe(unlimited.total)
-    expect(bounded.pos).toBe(bounded.total)
+    // 6 个 0.4s 正常词 + 1 个 0.02s 短词：strong 平滑会把句尾从 2.42s 拉到 2.635s，
+    // limit 2.5 必须把它压回 2.5；若 limit 没透传，bounded 与 unlimited 会一模一样。
+    let start = 0
+    const words = []
+    for (let i = 0; i < 6; i++) { words.push({ text: 'a', time: start, end: start + 0.4 }); start += 0.4 }
+    words.push({ text: 'b', time: start, end: start + 0.02 })
+    const long = { text: 'a a a a a a b', words }
+    const limit = 2.5
+    // 平滑后的句尾从 2.42s 被拉到约 2.635s；取「限位点」与「平滑句尾」的中点采样，
+    // 这样即使以后调平滑参数，只要能越过下一句起点，断言依然成立。
+    const smoothedEnd = smoothWordTimeline(words, 'strong').at(-1).end
+    expect(smoothedEnd).toBeGreaterThan(limit)
+    const t = (limit + smoothedEnd) / 2
+    const unlimited = karaokeFills(long, t, { smooth: 'strong' })
+    const bounded = karaokeFills(long, t, { smooth: 'strong', limit })
+    expect(bounded.fills.every((f) => f === 1)).toBe(true) // limit 生效：此刻必须已经铺满
+    expect(unlimited.fills.some((f) => f < 1)).toBe(true) // 对照：不限位时还没铺满，断言才有区分度
   })
 
   it('无词数据返回 null', () => {

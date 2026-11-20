@@ -67,7 +67,11 @@ export function ExperimentalSettings() {
     setStatus(null)
     const r = await ui().saveExperimental({ ...patch, ...extra, ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}) })
     setBusy('')
-    if (!r?.ok) return setStatus({ bad: true, text: r?.error || '保存失败' })
+    if (!r?.ok) {
+      // Key 没存上，但其余设置已落盘：表单跟着已保存的走，输入框保留 Key 方便重试。
+      if (r?.settings) setForm((f) => ({ ...f, ...r.settings }))
+      return setStatus({ bad: true, text: r?.error || '保存失败' })
+    }
     setForm((f) => ({ ...f, ...r.settings, apiKey: '' }))
     return true
   }
