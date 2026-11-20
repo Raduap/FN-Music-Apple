@@ -82,10 +82,8 @@ async function fetchText(url) {
 }
 
 let s2t = null
-const HAN = /[\u3400-\u9fff]/g
 const KANA = /[\u3040-\u30ff]/g
 const HANGUL = /[\uac00-\ud7af\u1100-\u11ff]/g
-const LATIN = /[A-Za-z]/g
 function isJapaneseOrKorean(text) {
   const value = String(text || '')
   return (value.match(KANA) || []).length > 0 || (value.match(HANGUL) || []).length > 0

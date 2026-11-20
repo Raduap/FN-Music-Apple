@@ -220,17 +220,19 @@ export default function FloatingLyrics() {
     let raf = 0
     let shown = null
     let lastT = null
+    const nodes = [...el.querySelectorAll('.kw-fill')]
     const step = () => {
+      if (!stateRef.current.playing) { raf = 0; return }
       const t = karaokeClock(stateRef.current) + 0.25
       // 与全屏页同款：时间回退（拖动 / seek / 广播校正）时丢弃已显示宽度。
       if (lastT != null && t < lastT - 0.05) shown = null
       lastT = t
       const mode = stateRef.current.syllableSmooth || 'strict'
       const limit = Number.isFinite(stateRef.current.lyricEnd) ? stateRef.current.lyricEnd : null
-      const fills = karaokeProgress(karaokeRef.current, t, { smooth: mode, limit })
+      const progress = karaokeProgress(karaokeRef.current, t, { smooth: mode, limit })
       // 正常播放只增不减；回退已在上面的时间检测里处理。
-      shown = smoothFills(shown, fills)
-      el.querySelectorAll('.kw-fill').forEach((node, wi) => {
+      shown = smoothFills(shown, progress)
+      nodes.forEach((node, wi) => {
         const f = shown?.[wi] ?? 0
         // 扫色方向交给 CSS：横排用 width，竖排用 height，都读这个变量。
         node.style.setProperty('--fill', f.toFixed(4))
@@ -240,9 +242,9 @@ export default function FloatingLyrics() {
     raf = requestAnimationFrame(step)
     return () => {
       cancelAnimationFrame(raf)
-      el.querySelectorAll('.kw-fill').forEach((node) => { node.style.setProperty('--fill', '0') })
+      nodes.forEach((node) => { node.style.setProperty('--fill', '0') })
     }
-  }, [karaokeOn, state.lyricIndex, state.syllableSmooth]) // 只在扫色开关 / 换句 / 平滑模式变化时重建；时钟与词级数据走 ref
+  }, [karaokeOn, state.lyricIndex, state.syllableSmooth, state.playing]) // 只在扫色开关 / 换句 / 平滑模式变化时重建；时钟与词级数据走 ref
 
   const startResize = (dir) => (e) => {
     if (e.button !== 0) return
@@ -359,7 +361,7 @@ export default function FloatingLyrics() {
               {karaokeOn
                 ? karaoke.words.map((w, wi) => (
                   <span key={wi} className="kw">
-                    <span className="kw-fill">{w.text}</span>
+                    <span className="kw-fill" aria-hidden="true">{w.text}</span>
                     {w.text}
                   </span>
                 ))

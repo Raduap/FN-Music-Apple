@@ -491,7 +491,9 @@ export function LyricsView({ song, big = false }) {
     const limit = karaokeWindowEnd(lines, active)
     let shown = null
     let lastT = null
+    const fills = [...el.querySelectorAll(`[data-i="${active}"] .kw-fill`)]
     const step = () => {
+      if (!usePlayer.getState().playing) { raf = 0; return }
       const now = (getAudio()?.currentTime || 0) + 0.25
       // 拖动 / seek 导致时间回退时丢弃已显示宽度，让下一帧贴齐目标（允许回退）。
       if (lastT != null && now < lastT - 0.05) shown = null
@@ -499,7 +501,6 @@ export function LyricsView({ song, big = false }) {
       const k = karaokeFills(line, now, { smooth: smoothMode, limit })
       // 只增不减 + 缓动：正常播放宽度绝不倒着褪色。
       shown = smoothFills(shown, k?.fills || null)
-      const fills = el.querySelectorAll(`[data-i="${active}"] .kw-fill`)
       fills.forEach((node, wi) => {
         const f = shown?.[wi] ?? 0
         // 扫色方向交给 CSS：横排用 width，竖排用 height，都读这个变量。
@@ -510,7 +511,7 @@ export function LyricsView({ song, big = false }) {
     raf = requestAnimationFrame(step)
     return () => {
       cancelAnimationFrame(raf)
-      el.querySelectorAll(`[data-i="${active}"] .kw-fill`).forEach((node) => { node.style.setProperty('--fill', '0') })
+      fills.forEach((node) => { node.style.setProperty('--fill', '0') })
     }
   }, [karaokeActive, active, lines, smoothMode])
   // 译文补入（lines 引用变化）或翻译显隐时，译文行高度会连续变化，其余歌词随之平移。
@@ -647,7 +648,7 @@ export function LyricsView({ song, big = false }) {
                 <span className="lt-main karaoke" data-t0={l.words[0].time}>
                   {l.words.map((w, wi) => (
                     <span key={wi} className="kw">
-                      <span className="kw-fill">{w.text}</span>
+                      <span className="kw-fill" aria-hidden="true">{w.text}</span>
                       {w.text}
                     </span>
                   ))}
