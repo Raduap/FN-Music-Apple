@@ -52,6 +52,7 @@
       "electron/**/*",
       "build/icon.png",
       "build/tray/*.png",
+      "src/iconShapes.json",
       "package.json"
     ],
     "win": {

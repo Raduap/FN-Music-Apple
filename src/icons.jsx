@@ -1,4 +1,16 @@
 // 类 SF Symbols 风格的线性/填充图标
+import SHAPES from './iconShapes.json'
+
+// 播放 / 暂停 / 上一首 / 下一首的几何数据放在 iconShapes.json，
+// 主进程的任务栏缩略图工具栏复用同一份数据，避免两套图标各画一遍
+const shape = (n, i) => {
+  if (n.t === 'path') return <path key={i} d={n.d} />
+  if (n.t === 'rect') return <rect key={i} x={n.x} y={n.y} width={n.width} height={n.height} rx={n.rx} />
+  if (n.t === 'g') return <g key={i} transform={n.transform}>{n.children.map(shape)}</g>
+  return null
+}
+const shapes = (name) => SHAPES[name].map(shape)
+
 const I = ({ children, size = 20, fill, className, style, viewBox = '0 0 24 24' }) => (
   <svg
     width={size}
@@ -17,10 +29,10 @@ const I = ({ children, size = 20, fill, className, style, viewBox = '0 0 24 24' 
   </svg>
 )
 
-export const Play = (p) => <I fill {...p}><path d="M7 4.8v14.4c0 .9 1 1.5 1.8 1l11.4-7.2c.7-.5.7-1.5 0-2L8.8 3.8C8 3.3 7 3.9 7 4.8z" /></I>
-export const Pause = (p) => <I fill {...p}><rect x="6" y="4" width="4.2" height="16" rx="1.2" /><rect x="13.8" y="4" width="4.2" height="16" rx="1.2" /></I>
-export const Next = (p) => <I fill {...p}><path d="M2.5 6.2v11.6c0 .8.9 1.3 1.6.8l8.4-5.8c.6-.4.6-1.3 0-1.7L4.1 5.4c-.7-.5-1.6 0-1.6.8z" /><path d="M11.5 6.2v11.6c0 .8.9 1.3 1.6.8l8.4-5.8c.6-.4.6-1.3 0-1.7l-8.4-5.7c-.7-.5-1.6 0-1.6.8z" /></I>
-export const Prev = (p) => <I fill {...p}><g transform="matrix(-1 0 0 1 24 0)"><path d="M2.5 6.2v11.6c0 .8.9 1.3 1.6.8l8.4-5.8c.6-.4.6-1.3 0-1.7L4.1 5.4c-.7-.5-1.6 0-1.6.8z" /><path d="M11.5 6.2v11.6c0 .8.9 1.3 1.6.8l8.4-5.8c.6-.4.6-1.3 0-1.7l-8.4-5.7c-.7-.5-1.6 0-1.6.8z" /></g></I>
+export const Play = (p) => <I fill {...p}>{shapes('play')}</I>
+export const Pause = (p) => <I fill {...p}>{shapes('pause')}</I>
+export const Next = (p) => <I fill {...p}>{shapes('next')}</I>
+export const Prev = (p) => <I fill {...p}>{shapes('prev')}</I>
 export const Shuffle = (p) => <I {...p}><path d="M3 7h3.5c2 0 3.2 1 4.3 2.6l2.4 4.8c1 1.6 2.3 2.6 4.3 2.6H21" /><path d="M3 17h3.5c1.6 0 2.7-.6 3.6-1.7M13.9 8.7c.9-1.1 2-1.7 3.6-1.7H21" /><path d="M18.5 4.5 21 7l-2.5 2.5M18.5 14.5 21 17l-2.5 2.5" /></I>
 export const Repeat = (p) => <I {...p}><path d="M4 11V9.5A3.5 3.5 0 0 1 7.5 6H20M16.5 2.5 20 6l-3.5 3.5" /><path d="M20 13v1.5a3.5 3.5 0 0 1-3.5 3.5H4M7.5 21.5 4 18l3.5-3.5" /></I>
 export const RepeatOne = (p) => <I {...p}><path d="M4 11V9.5A3.5 3.5 0 0 1 7.5 6H20M16.5 2.5 20 6l-3.5 3.5" /><path d="M20 13v1.5a3.5 3.5 0 0 1-3.5 3.5H4M7.5 21.5 4 18l3.5-3.5" /><path d="M11 10.5l1.5-1v5" strokeWidth="1.6" /></I>
