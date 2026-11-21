@@ -6,6 +6,9 @@ const { createTray, BALL_MODES } = require('./tray')
 const { createBall } = require('./ball')
 const { createLyrics } = require('./lyricsWindow')
 const { createCoverCache, coverKey } = require('./coverCache')
+const { fetchSyllables, setSyllableCache } = require('./syllables')
+const { createSyllableCache } = require('./syllableCache')
+const { createLyricsEnhancementCache } = require('./lyricsEnhancementCache')
 
 const isDev = process.env.NODE_ENV === 'development'
 // 自定义数据目录（自动化测试用，让每次测试都从干净的状态开始）
@@ -38,6 +41,7 @@ const state = {
 
 const storeFile = () => path.join(app.getPath('userData'), 'session.bin')
 const prefsFile = () => path.join(app.getPath('userData'), 'prefs.json')
+const experimentalKeyFile = () => path.join(app.getPath('userData'), 'experimental-key.bin')
 const OAUTH_PARTITION = 'persist:fnos-oauth'
 
 // NAS 常用自签名证书。只对用户填写的服务器（以及它的 fnOS 登录页）放行，其他网站照常校验证书
@@ -120,6 +124,435 @@ function readPrefs() {
 }
 function writePrefs(p) {
   try { fs.writeFileSync(prefsFile(), JSON.stringify(p)) } catch {}
+}
+
+function readExperimentalKey() {
+  try {
+    const buf = fs.readFileSync(experimentalKeyFile())
+    const tag = buf.subarray(0, 2).toString()
+    if (tag !== 'E1') return ''
+    return safeStorage.decryptString(buf.subarray(2))
+  } catch { return '' }
+}
+
+function writeExperimentalKey(key) {
+  try {
+    if (!key) { fs.rmSync(experimentalKeyFile(), { force: true }); return { ok: true } }
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: '系统安全存储不可用，API Key 未保存' }
+    fs.writeFileSync(experimentalKeyFile(), Buffer.concat([Buffer.from('E1'), safeStorage.encryptString(String(key))]))
+    return { ok: true }
+  } catch (e) { return { ok: false, error: 'API Key 保存失败：' + e.message } }
+}
+
+// 逐字数据源白名单：删除某个源后（如历史版本的 lrclib），
+// 老用户 prefs 里的残留 id 不能带进设置面板，否则序号错乱 / 出现幽灵源。
+const SYLLABLE_SOURCE_IDS = ['qq', 'netease', 'kugou', 'amll', 'liriqo']
+const cleanSyllableSources = (list) => {
+  const out = Array.isArray(list) ? list.filter((s) => SYLLABLE_SOURCE_IDS.includes(s)) : []
+  return out.length ? out : [...SYLLABLE_SOURCE_IDS]
+}
+
+// 速度带挡位白名单：与 electron/lyricsMerge.mjs 的 SMOOTH_SPREAD 保持一致。
+const SYLLABLE_SMOOTH_IDS = ['mild', 'normal', 'strong']
+const cleanSyllableSmooth = (v) => (SYLLABLE_SMOOTH_IDS.includes(v) ? v : 'normal')
+
+const experimentalDefaults = () => ({
+  enabled: true,
+  sourceEnabled: true,
+  aiFallback: false,
+  baseUrl: 'https://api.deepseek.com/v1',
+  model: 'deepseek-chat',
+  hasKey: false,
+  romanization: true,
+  syllables: true,
+  syllablePredict: false,
+  syllableOverwrite: false,
+  syllableSources: ['qq', 'netease', 'kugou', 'amll', 'liriqo'],
+  // 严格匹配：默认关闭。关闭时对逐字时间轴做速度带平滑（视觉匀速），开启时逐字严格照抄源时间戳。
+  syllableStrict: false,
+  // 速度带挡位（仅在非严格时生效）：mild 宽松 / normal 适中 / strong 更匀。
+  syllableSmooth: 'normal',
+})
+
+function experimentalRead() {
+  const p = readPrefs()
+  const e = { ...experimentalDefaults(), ...(p.experimental || {}) }
+  return {
+    enabled: !!e.enabled,
+    sourceEnabled: e.sourceEnabled !== false,
+    aiFallback: !!e.aiFallback,
+    baseUrl: e.baseUrl || 'https://api.deepseek.com/v1',
+    model: e.model || 'deepseek-chat',
+    hasKey: !!readExperimentalKey(),
+    romanization: !!e.romanization,
+    syllables: !!e.syllables,
+    syllablePredict: !!e.syllablePredict,
+    syllableOverwrite: !!e.syllableOverwrite,
+    syllableSources: cleanSyllableSources(e.syllableSources),
+    syllableStrict: !!e.syllableStrict,
+    syllableSmooth: cleanSyllableSmooth(e.syllableSmooth),
+  }
+}
+
+function experimentalWrite(patch) {
+  const cur = experimentalRead()
+  const next = {
+    enabled: patch.enabled === undefined ? cur.enabled : !!patch.enabled,
+    sourceEnabled: patch.sourceEnabled === undefined ? cur.sourceEnabled : !!patch.sourceEnabled,
+    aiFallback: patch.aiFallback === undefined ? cur.aiFallback : !!patch.aiFallback,
+    romanization: patch.romanization === undefined ? cur.romanization : !!patch.romanization,
+    baseUrl: String(patch.baseUrl ?? cur.baseUrl ?? '').trim(),
+    model: String(patch.model ?? cur.model ?? '').trim(),
+    syllables: patch.syllables === undefined ? cur.syllables : !!patch.syllables,
+    syllablePredict: patch.syllablePredict === undefined ? cur.syllablePredict : !!patch.syllablePredict,
+    syllableOverwrite: patch.syllableOverwrite === undefined ? cur.syllableOverwrite : !!patch.syllableOverwrite,
+    syllableSources: patch.syllableSources === undefined ? cur.syllableSources : cleanSyllableSources(patch.syllableSources),
+    syllableStrict: patch.syllableStrict === undefined ? cur.syllableStrict : !!patch.syllableStrict,
+    syllableSmooth: patch.syllableSmooth === undefined ? cur.syllableSmooth : cleanSyllableSmooth(patch.syllableSmooth),
+  }
+  let keyResult = { ok: true }
+  if (patch.apiKey !== undefined) keyResult = writeExperimentalKey(String(patch.apiKey || '').trim())
+  writePrefs({ ...readPrefs(), experimental: next })
+  return { ...experimentalRead(), keySaveError: keyResult.ok ? '' : keyResult.error }
+}
+
+// ---------- 源站译词（网易云） ----------
+// 与 fnlrc 一致：源站已有 tlyric 时优先使用；只把缺失译文交给 AI 补。
+const NE_LYRICS_UA = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36',
+  Referer: 'https://music.163.com/',
+}
+const NE_LYRICS_SEARCH_URLS = [
+  'https://music.163.com/api/search/get',
+  'https://music.163.com/api/search/get/web',
+]
+const NE_LYRICS_TIMEOUT = 12000
+const NE_LYRICS_DURATION_TOLERANCE = 10
+const NE_LYRICS_SEARCH_LIMIT = 8
+let neLastRequestAt = 0
+
+const normalizeText = (v) => String(v || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+const baseTitle = (title) => {
+  let s = String(title || '').trim()
+  const noise = [
+    /(?:\s*[([（【][^)\]）】]{0,24}?(?:\bsize\b|\bver\b\.?|\bversion\b|\bedit\b\.?|\bmix\b|\bcut\b|\bremaster(?:ed)?\b(?:\s*\d{4})?)\s*[)\]）】])/gi,
+    /(?:\s*[-–—]\s*(?:remaster(?:ed)?(?:\s*\d{4})?|(?:short|tv|original)\s*(?:ver\.?|version|size|mix))\s*$)/gi,
+  ]
+  for (let i = 0; i < 3; i++) {
+    const before = s
+    for (const re of noise) s = s.replace(re, '').trim()
+    s = s.replace(/^[\s\-–—_:·]+|[\s\-–—_:·]+$/g, '')
+    if (s === before) break
+  }
+  return s || String(title || '').trim()
+}
+const textSimilarity = (a, b) => {
+  a = normalizeText(a)
+  b = normalizeText(b)
+  if (!a || !b) return 0
+  if (a === b) return 1
+  if (a.includes(b) || b.includes(a)) {
+    const short = a.length <= b.length ? a : b
+    const long = a.length <= b.length ? b : a
+    return 0.75 + 0.25 * (short.length / long.length)
+  }
+  const max = Math.max(a.length, b.length)
+  const seen = new Array(b.length + 1)
+  for (let i = 0; i <= a.length; i++) {
+    let prev = i
+    for (let j = 0; j <= b.length; j++) {
+      const old = seen[j] ?? j
+      if (i && j) seen[j] = a[i - 1] === b[j - 1] ? seen[j - 1] : Math.min(seen[j - 1], prev, old) + 1
+      else seen[j] = i || j
+      prev = old
+    }
+  }
+  return Math.max(0, 1 - (seen[b.length] || 0) / Math.max(max, 1))
+}
+const titleSimilarity = (query, candidate) => {
+  const q = normalizeText(baseTitle(query))
+  const c = normalizeText(baseTitle(candidate))
+  if (!q || !c) return 0
+  if (q === c) return 1
+  if (q.includes(c) || c.includes(q)) {
+    const short = q.length <= c.length ? q : c
+    const long = q.length <= c.length ? c : q
+    return short.length < 4 ? 0 : 0.75 + 0.25 * (short.length / long.length)
+  }
+  if (q.length < 4 || c.length < 4) return 0
+  return textSimilarity(q, c)
+}
+const artistSimilarity = (a, b) => textSimilarity(a, b)
+const versionPenalty = (query, candidate) => {
+  const qm = new Set((String(query || '').match(/live|cover(?:ed)?|remix|acoustic|unplugged|instrumental|off ?vocal|piano ?version|karaoke|カラオケ|伴奏|纯音乐|纯音|演奏|翻唱|翻自/gi) || []).map((x) => x.toLowerCase()))
+  const cm = new Set((String(candidate || '').match(/live|cover(?:ed)?|remix|acoustic|unplugged|instrumental|off ?vocal|piano ?version|karaoke|カラオケ|伴奏|纯音乐|纯音|演奏|翻唱|翻自/gi) || []).map((x) => x.toLowerCase()))
+  return [...cm].some((x) => !qm.has(x)) ? -2.5 : 0
+}
+const durationOk = (candidateMs, duration) => !candidateMs || !duration || Math.abs(candidateMs / 1000 - duration) <= NE_LYRICS_DURATION_TOLERANCE
+const songScore = (candidate, title, artist, duration) => {
+  const candTitle = candidate?.name || ''
+  const artists = Array.isArray(candidate?.artists) ? candidate.artists.map((a) => a?.name || '').join('/') : ''
+  const durMs = Number(candidate?.duration || candidate?.dt || 0)
+  let score = 3 * titleSimilarity(title, candTitle) + 2 * artistSimilarity(artists, artist)
+  if (durMs && duration) {
+    const diff = Math.abs(durMs / 1000 - duration)
+    score += diff <= 3 ? 3 : diff <= 8 ? 1.5 : -1.5
+  }
+  return { score: score + versionPenalty(title, candTitle), artists, durMs }
+}
+const CREDIT_RE = /^(作词|作曲|编曲|制作人|混音|母带|录音|和声|监制|出品|企划|翻译|校对|字幕|歌词|伴奏|吉他|贝斯|鼓|键盘|弦乐|制作|词曲|produced by|written by|composed by|lyrics by|music by|arranged by|mixed by|mastered by|recorded by|vocal|guitar|bass|drum|piano|strings|engineer|studio|op :|sp :|ed :)/i
+const parseTimestamp = (m) => Number(m[1]) * 60 + Number(m[2]) + (m[3] ? Number((m[3] + '000').slice(0, 3)) / 1000 : 0)
+function parseLrcEntries(text) {
+  const out = []
+  for (const raw of String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')) {
+    const stamps = [...raw.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)]
+    if (!stamps.length) continue
+    const content = raw.replace(/\[[^\]]*\]/g, '').replace(/<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>/g, '').trim().replace(/^[|｜]+|[|｜]+$/g, '').trim()
+    if (!content || CREDIT_RE.test(content)) continue
+    for (const m of stamps) out.push({ ms: Math.round(parseTimestamp(m) * 1000), text: content })
+  }
+  const seen = new Set()
+  return out.filter((x) => {
+    const key = `${x.ms}\u0000${x.text}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }).sort((a, b) => a.ms - b.ms)
+}
+const detectTextLang = (text) => {
+  const s = String(text || '')
+  if (/[\u3040-\u30ff]/.test(s)) return 'ja'
+  if (/[\uac00-\ud7af\u1100-\u11ff]/.test(s)) return 'ko'
+  const letters = [...s].filter((c) => /\p{L}/u.test(c))
+  if (!letters.length) return 'unknown'
+  const n = letters.length
+  if ((s.match(/[\u3400-\u9fff]/g) || []).length / n > 0.5) return 'zh'
+  if ((s.match(/[\u0400-\u04ff]/g) || []).length / n > 0.3) return 'ru'
+  if ((s.match(/[A-Za-z]/g) || []).length / n > 0.5) return 'latin'
+  return 'other'
+}
+async function neThrottle() {
+  const wait = 350 - (Date.now() - neLastRequestAt)
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+  neLastRequestAt = Date.now()
+}
+async function neJson(url, { method = 'GET', data } = {}) {
+  await neThrottle()
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), NE_LYRICS_TIMEOUT)
+  try {
+    const res = await net.fetch(url, {
+      method,
+      headers: data ? { ...NE_LYRICS_UA, 'Content-Type': 'application/x-www-form-urlencoded' } : NE_LYRICS_UA,
+      body: data ? new URLSearchParams(data).toString() : undefined,
+      signal: ctl.signal,
+    })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+async function neSearch(query) {
+  for (const url of NE_LYRICS_SEARCH_URLS) {
+    const d = await neJson(url, { method: 'POST', data: { s: query, type: 1, offset: 0, limit: NE_LYRICS_SEARCH_LIMIT } })
+    const songs = d?.result?.songs
+    if (Array.isArray(songs) && songs.length) return songs
+  }
+  return []
+}
+async function neLyric(songId) {
+  const d = await neJson(`https://music.163.com/api/song/lyric?id=${encodeURIComponent(songId)}&lv=1&kv=1&tv=1&rv=1`)
+  return {
+    lrc: d?.lrc?.lyric || '',
+    tlyric: d?.tlyric?.lyric || '',
+    romalrc: d?.romalrc?.lyric || '',
+    nolyric: !!d?.nolyric,
+  }
+}
+function pickTranslation(candidates, original) {
+  const pool = (candidates || []).filter((x) => String(x || '').trim() && normalizeText(x) !== normalizeText(original))
+  if (!pool.length) return ''
+  const origLang = detectTextLang(original)
+  const score = (text) => {
+    const lang = detectTextLang(text)
+    const roman = origLang !== 'latin' && lang === 'latin'
+    const sameLang = lang === origLang
+    return (roman ? 10 : 0) + (sameLang ? 2 : 0) - Math.min(String(text).length, 80) / 1000
+  }
+  return pool.sort((a, b) => score(a) - score(b))[0]
+}
+async function fetchNeteaseTranslation({ title, artist, album, duration }) {
+  title = String(title || '').trim()
+  artist = String(artist || '').trim()
+  if (!title) return { ok: false, error: '缺少歌曲名' }
+  const base = baseTitle(title)
+  const queries = [`${title} ${artist}`.trim(), title, `${artist} ${title}`.trim()]
+  if (base && normalizeText(base) !== normalizeText(title)) queries.push(artist ? `${base} ${artist}` : base)
+  const seen = new Set()
+  const candidates = []
+  for (const q of queries) {
+    if (!q) continue
+    const songs = await neSearch(q)
+    for (const song of songs) {
+      const id = song?.id
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      const meta = songScore(song, title, artist, duration)
+      if (durationOk(meta.durMs, duration)) candidates.push({ song, ...meta })
+    }
+    if (candidates.some((x) => x.score >= 6.5)) break
+  }
+  candidates.sort((a, b) => b.score - a.score)
+  if (!candidates.length) return { ok: false, error: '网易云没有找到匹配歌曲' }
+  let best = null
+  for (const cand of candidates.slice(0, 5)) {
+    if (cand.score < 4) break
+    const lyric = await neLyric(cand.song.id)
+    if (!lyric.lrc || lyric.nolyric) continue
+    const originals = parseLrcEntries(lyric.lrc)
+    if (!originals.length) continue
+    const translations = parseLrcEntries(lyric.tlyric)
+    const romans = parseLrcEntries(lyric.romalrc)
+    const assigned = new Set()
+    const trustedTranslations = translations.map((row) => ({ ...row, owner: -1, delta: Infinity }))
+    originals.forEach((orig, i) => {
+      let best = null
+      trustedTranslations.forEach((trans, j) => {
+        if (assigned.has(j)) return
+        const d = Math.abs(trans.ms - orig.ms)
+        if (d <= 500 && (!best || d < best.d)) best = { d, j }
+      })
+      if (best) {
+        assigned.add(best.j)
+        trustedTranslations[best.j].owner = i
+        trustedTranslations[best.j].delta = best.d
+      }
+    })
+    const byMs = new Map()
+    trustedTranslations.forEach((row) => {
+      const key = row.owner >= 0 ? originals[row.owner].ms : row.ms
+      if (!byMs.has(key)) byMs.set(key, [])
+      byMs.get(key).push(row.text)
+    })
+    const romanByMs = new Map()
+    for (const row of romans) if (!romanByMs.has(row.ms)) romanByMs.set(row.ms, row.text)
+    const lines = originals.map((row) => {
+      const exact = byMs.get(row.ms)
+      let candidates = exact || []
+      if (!exact?.length) {
+        let near = null
+        for (const [ms, vals] of byMs) {
+          const d = Math.abs(ms - row.ms)
+          if (d <= 300 && (!near || d < near.d)) near = { d, vals }
+        }
+        candidates = near?.vals || []
+      }
+      return { ms: row.ms, text: row.text, translation: pickTranslation(candidates, row.text), roman: romanByMs.get(row.ms) || '' }
+    })
+    const hasTranslation = lines.some((x) => x.translation)
+    const info = {
+      source: 'netease',
+      matched: `${cand.song.name || ''} / ${cand.artists}`.trim(),
+      score: Number(cand.score.toFixed(2)),
+      songId: cand.song.id,
+      lyricLang: detectTextLang(lines.map((x) => x.text).join(' ')),
+      hasTranslation,
+      lines,
+    }
+    if (!best || (hasTranslation && !best.hasTranslation) || ((hasTranslation === best.hasTranslation) && info.score > best.score)) best = info
+    if (hasTranslation && cand.score >= 6.5) break
+  }
+  return best ? { ok: true, ...best } : { ok: false, error: '网易云找到了歌曲，但没有可用歌词或译文' }
+}
+
+const REMOTE_ERR = {
+  400: '请求被拒绝（模型名或参数不对）',
+  401: 'API key 无效或已过期',
+  402: '账户余额不足',
+  403: '无权访问该模型',
+  404: 'Base URL 或模型名不存在',
+  429: '触发限流，请稍后重试',
+}
+
+
+function remoteUrl(baseUrl) {
+  const base = String(baseUrl || '').trim().replace(/\/+$/, '')
+  if (!base) throw new Error('请填写 Base URL')
+  return base.endsWith('/chat/completions') ? base : base + '/chat/completions'
+}
+
+function parseNumbered(text) {
+  const out = {}
+  for (const raw of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
+    const m = /^\s*[*\-\s]*(\d{1,4})\s*[|｜:：.)、]\s*(.*?)\s*$/.exec(raw)
+    if (!m) continue
+    const text = m[2].trim().replace(/^[|｜]+|[|｜]+$/g, '')
+    if (text) out[+m[1]] = text
+  }
+  return out
+}
+
+function buildTranslatePrompt({ title, artist, body, context }) {
+  return `你是专业的歌词翻译，把下面每一行歌词翻译成简体中文。\n${title ? `歌曲：${title}\n` : ''}${artist ? `艺人：${artist}\n` : ''}规则：\n1. 先把整段当成连贯的歌词语境来理解，再逐行输出。输入有多少行，输出就必须有多少行，编号一一对应，不要合并或拆分。\n2. 连续几行可能是同一句话：请按整句理解，再把译文拆回对应的每一行，保证每行都有内容、句意连贯。\n3. 只输出 "编号|译文"，不要输出原文、解释或任何多余的内容。\n4. 不要增译：译文里不能出现原文没有的词句。宁可简短，也不许自己加戏。\n5. 拟声词、语气词、无实义的重复保留原文或音译，不要硬翻成中文。\n6. 译文要符合歌词语气：口语、自然、简短，尽量能唱。人名/专有名词用常见译法。\n${context ? `整首歌的完整歌词如下，仅供你理解语境；要翻译的只是最后的输入：\n${context}\n\n` : ''}输入：\n${body}`
+}
+
+async function remoteTranslate(lines, settings, deadlineMs = 180000) {
+  const { baseUrl, model } = settings
+  const key = settings.useApiKeyOverride && settings.apiKey !== undefined ? String(settings.apiKey || '') : readExperimentalKey()
+  if (!baseUrl || !model) return { ok: false, error: '还没填 Base URL 或模型名' }
+  const url = remoteUrl(baseUrl)
+  const headers = { 'Content-Type': 'application/json' }
+  if (key) headers.Authorization = 'Bearer ' + key
+  const out = {}
+  let firstErr = ''
+  const chunk = 30
+  const deadline = Date.now() + deadlineMs
+  const deepSeek = /(^|\.)deepseek\./i.test(new URL(baseUrl).hostname)
+  for (let start = 0; start < lines.length; start += chunk) {
+    if (Date.now() >= deadline) { firstErr ||= '翻译超出单曲时限（未翻完）'; break }
+    const part = lines.slice(start, start + chunk)
+    const body = part.map((v, i) => `${i + 1}|${v}`).join('\n')
+    const payload = {
+      model,
+      messages: [{ role: 'user', content: buildTranslatePrompt({ title: settings.title, artist: settings.artist, body, context: settings.context }) }],
+      temperature: 0.1,
+      stream: false,
+      max_tokens: 4096,
+      ...(deepSeek ? { thinking: { type: 'disabled' } } : {}),
+    }
+    let blockErr = null
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
+      const { signal, clear } = abortAfter(Math.min(60000, remaining), '翻译端点响应超时')
+      try {
+        const res = await net.fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal })
+        const text = await res.text()
+        let json = null
+        try { json = JSON.parse(text) } catch {}
+        if (res.status >= 200 && res.status < 300) {
+          const content = json?.choices?.[0]?.message?.content || ''
+          Object.assign(out, Object.fromEntries(Object.entries(parseNumbered(content)).filter(([i]) => +i >= 1 && +i <= part.length).map(([i, v]) => [start + +i, v])))
+          blockErr = null
+          break
+        }
+        const detail = json?.error?.message || json?.message || text.slice(0, 160)
+        blockErr = `${REMOTE_ERR[res.status] || `服务端返回 HTTP ${res.status}`}${detail ? '｜' + detail : ''}`
+        if ([400, 401, 402, 403, 404].includes(res.status)) break
+      } catch (e) {
+        blockErr = e?.name === 'AbortError' ? '翻译端点响应超时' : `连不上翻译端点：${e.message}`
+      } finally {
+        clear()
+      }
+      await new Promise((r) => setTimeout(r, 800 * (attempt + 1)))
+    }
+    if (blockErr) { firstErr ||= blockErr; if (/API key|无权|余额|Base URL|模型名/.test(blockErr)) break }
+  }
+  const translations = lines.map((_, i) => out[i + 1] || '')
+  return Object.keys(out).length ? { ok: true, translations } : { ok: false, error: firstErr || '模型没有返回可解析的译文' }
 }
 
 // ---------- 主窗口、托盘与悬浮球 ----------
@@ -238,6 +671,7 @@ function setupLyrics() {
         // 这个菜单本来就挂在悬浮歌词窗口上，不需要再放“显示悬浮歌词”开关。
         { label: '竖排显示', type: 'checkbox', checked: !!s.vertical, click: (it) => setLyricsStyle({ vertical: it.checked }) },
         { label: '显示翻译', type: 'checkbox', checked: s.showTranslation !== false, click: (it) => setLyricsStyle({ showTranslation: it.checked }) },
+        { label: '切换音译', type: 'checkbox', checked: !!s.showRomanization, click: (it) => setLyricsStyle({ showRomanization: it.checked }) },
         { label: '显示下一句', type: 'checkbox', checked: !!s.showNext, click: (it) => setLyricsStyle({ showNext: it.checked }) },
         { label: '鼠标穿透', type: 'checkbox', checked: !!s.clickThrough, click: (it) => setLyricsStyle({ clickThrough: it.checked }) },
         { type: 'separator' },
@@ -457,6 +891,8 @@ const chooseLyricsBackground = (win) => chooseImage(win, { title: '选择悬浮�
 
 // ---------- 封面磁盘缓存 ----------
 let covers = null
+let syllableCache = null
+let lyricsEnhancementCache = null
 const signedGet = async (url) => {
   const headers = { authx: authx('GET', url) }
   if (state.token) headers.Cookie = `music-token=${state.token}`
@@ -607,6 +1043,7 @@ function registerIpc() {
 
   ipcMain.handle('covers:stats', () => covers?.init().then(() => covers.stats()) ?? { count: 0, bytes: 0 })
   ipcMain.handle('covers:clear', async () => { await covers?.clear(); return true })
+  ipcMain.handle('lyrics:enhancement-cache-clear', async () => { await lyricsEnhancementCache?.clear(); return true })
   ipcMain.handle('wallpaper:choose', (e) => chooseWallpaper(BrowserWindow.fromWebContents(e.sender)).catch((err) => ({ ok: false, error: err.message })))
   ipcMain.handle('wallpaper:get', () => readImage('wallpaper', 'wallpaper'))
   ipcMain.handle('wallpaper:clear', () => { fs.rmSync(wallpaperDir(), { recursive: true, force: true }); return true })
@@ -620,6 +1057,134 @@ function registerIpc() {
   ipcMain.handle('lyrics:clear-background', () => { fs.rmSync(lyricsBackgroundDir(), { recursive: true, force: true }); lyricsWin?.notifyBackgroundChanged?.(); return true })
   ipcMain.handle('app:info', () => ({ version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }))
   ipcMain.handle('prefs:get', () => readPrefs())
+  ipcMain.handle('experimental:get', () => experimentalRead())
+  ipcMain.handle('experimental:set', (_e, patch) => {
+    const settings = experimentalWrite(patch || {})
+    if (settings.keySaveError) return { ok: false, error: settings.keySaveError, settings }
+    return { ok: true, settings }
+  })
+  ipcMain.handle('experimental:test', async (_e, patch) => {
+    try {
+      const settings = { ...experimentalRead(), ...(patch || {}), useApiKeyOverride: true }
+      const r = await remoteTranslate(['テスト'], { ...settings, title: '', artist: '', context: '' }, 20000)
+      return r.ok ? { ok: true, message: `${settings.model} 返回了译文` } : r
+    } catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('lyrics:translate', async (_e, payload) => {
+    try {
+      const settings = experimentalRead()
+      // 音译与翻译是独立能力：任一开启都应允许取源（同一次响应同时带 tlyric 与 romalrc）。
+      if (!settings.enabled && !settings.romanization) return { ok: false, error: '实验性歌词增强未开启' }
+      const song = payload?.song || {}
+      // 渲染层会明确告知本次是否需要译文；只开音译时不要触发译文/AI 补译。
+      const wantTranslation = payload?.translate !== false
+      const local = Array.isArray(payload?.localLines) ? payload.localLines : []
+      const lines = local.map((x) => String(x?.text || '')).filter(Boolean)
+      const cacheMode = wantTranslation ? (settings.aiFallback ? 'translate-ai' : 'translate') : 'roman'
+      const cacheKey = lyricsEnhancementCache?.key(song, local, cacheMode) || ''
+      // 先查缓存，命中时不能再访问网易云或 AI。
+      if (cacheKey) {
+        const hit = await lyricsEnhancementCache.get(cacheKey)
+        if (hit?.ok && Array.isArray(hit.translations) && Array.isArray(hit.romans)) {
+          return { ...hit, cached: true }
+        }
+      }
+      const source = settings.sourceEnabled ? await fetchNeteaseTranslation(song) : { ok: false, error: '源站译词未开启' }
+      const sourceLines = source.ok && Array.isArray(source.lines) ? source.lines : []
+      const findSourceLine = (localMs, text) => {
+        if (localMs) {
+          let exactTranslated = null
+          let exactAny = null
+          let nearestTranslated = null
+          let nearestAny = null
+          for (const row of sourceLines) {
+            const d = Math.abs(Number(row.ms || 0) - localMs)
+            const hasTr = !!String(row.translation || '').trim()
+            if (d === 0) {
+              if (hasTr && !exactTranslated) exactTranslated = row
+              if (!exactAny) exactAny = row
+            }
+            if (d <= 900) {
+              if (hasTr && (!nearestTranslated || d < nearestTranslated.d)) nearestTranslated = { d, row }
+              if (!nearestAny || d < nearestAny.d) nearestAny = { d, row }
+            }
+          }
+          if (exactTranslated) return exactTranslated
+          if (nearestTranslated) return nearestTranslated.row
+          if (exactAny) return exactAny
+          if (nearestAny) return nearestAny.row
+        }
+        if (!text) return null
+        let bestTranslated = null
+        let bestAny = null
+        for (const row of sourceLines) {
+          const sim = textSimilarity(text, row.text || '')
+          if (sim < 0.62) continue
+          const hasTr = !!String(row.translation || '').trim()
+          if (hasTr && (!bestTranslated || sim > bestTranslated.sim)) bestTranslated = { sim, row }
+          if (!bestAny || sim > bestAny.sim) bestAny = { sim, row }
+        }
+        return (bestTranslated || bestAny)?.row || null
+      }
+      const translations = []
+      const romans = []
+      const missing = []
+      for (let i = 0; i < lines.length; i++) {
+        const text = lines[i]
+        const localLine = local[i] || {}
+        const hit = findSourceLine(Number(localLine.ms || 0), text)
+        const tr = String(hit?.translation || '').trim()
+        translations[i] = tr
+        romans[i] = String(hit?.roman || '').trim()
+        if (!tr) missing.push({ i, text })
+      }
+      let ai = { ok: false, translations: [], error: '' }
+      if (!wantTranslation) {
+        // 只取音译：跳过 AI 补译，避免无谓的模型调用与费用。
+        const result = {
+          ok: true,
+          translations: [],
+          romans,
+          source: source.ok ? source.source : 'none',
+          matched: source.ok ? source.matched : '',
+          sourceCount: romans.filter(Boolean).length,
+          aiCount: 0,
+          warning: '',
+        }
+        if (cacheKey && romans.some(Boolean)) await lyricsEnhancementCache?.set(cacheKey, result)
+        return result
+      }
+      if (missing.length && settings.aiFallback) {
+        ai = await remoteTranslate(missing.map((x) => x.text), { ...settings, title: song.title || '', artist: song.artist || '', context: payload?.context || '' })
+        if (ai.ok) missing.forEach((x, j) => { translations[x.i] = ai.translations[j] || '' })
+      }
+      const sourceCount = translations.filter(Boolean).length - (ai.ok ? ai.translations.filter(Boolean).length : 0)
+      const result = {
+        ok: true,
+        translations,
+        romans,
+        source: source.ok ? source.source : 'none',
+        matched: source.ok ? source.matched : '',
+        sourceCount: Math.max(0, sourceCount),
+        aiCount: ai.ok ? ai.translations.filter(Boolean).length : 0,
+        warning: !source.ok ? source.error : (missing.length && !settings.aiFallback ? '源站没有译文的行未补译（AI 补译已关闭）' : (missing.length && !ai.ok ? ai.error : '')),
+      }
+      if (cacheKey && (translations.some(Boolean) || romans.some(Boolean))) await lyricsEnhancementCache?.set(cacheKey, result)
+      return result
+    } catch (e) { return { ok: false, error: e.message } }
+  })
+    ipcMain.handle('lyrics:syllables', (e, payload = {}) => {
+      // 流式：主进程按用户排序逐源抓取，覆盖率用渲染层传来的本地 LRC 计算。
+      // 达到合格线先推一版给界面显示，达到优秀线停止后续来源；期间出现更好结果继续推。
+      const sender = e.sender
+      return fetchSyllables({
+        ...payload,
+        sources: readPrefs().experimental?.syllableSources,
+        debug: true,
+        onProgress: (data) => { if (sender && !sender.isDestroyed()) sender.send('lyrics:syllables-progress', data) },
+      })
+    })
+  if (isDev) ipcMain.handle('dev:set-session', (_e, { base, token } = {}) => { Object.assign(state, { base, token, mode: 'dev', username: 'dev' }); return { ok: true } })
   ipcMain.handle('prefs:set', (_e, p) => { writePrefs({ ...readPrefs(), ...p }); syncBall(); syncLyrics(); if (p && p.lyricsStyle) lyricsWin?.setStyle(readPrefs().lyricsStyle); tray?.refresh(); return true })
   ipcMain.handle('tray:info', () => ({ available: !!tray, closeToTray: closeToTray(), ballMode: ballMode(), lyricsOn: lyricsOn() }))
   ipcMain.handle('lyrics:get', () => ({ on: lyricsOn(), style: { ...(readPrefs().lyricsStyle || {}) } }))
@@ -670,6 +1235,13 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',
     },
   })
+  if (isDev) { // 开发模式允许按 F12 手动打开 DevTools（生产构建不受影响）；不再自动弹出
+    win.webContents.on('before-input-event', (_e, input) => {
+      if (input.type === 'keyDown' && input.key === 'F12') {
+        win.webContents.isDevToolsOpened() ? win.webContents.closeDevTools() : win.webContents.openDevTools({ mode: 'detach' })
+      }
+    })
+  }
   if (prefs.maximized) win.maximize()
   win.once('ready-to-show', () => win.show())
 
@@ -738,6 +1310,11 @@ if (!gotLock) {
     session.defaultSession.setUserAgent(app.userAgentFallback)
     session.fromPartition(OAUTH_PARTITION).setUserAgent(app.userAgentFallback)
     covers = createCoverCache({ dir: path.join(app.getPath('userData'), 'covers'), fetchUpstream: signedGet })
+    syllableCache = createSyllableCache({ dir: path.join(app.getPath('userData'), 'syllables') })
+    setSyllableCache(syllableCache)
+    syllableCache.init()
+    lyricsEnhancementCache = createLyricsEnhancementCache({ dir: path.join(app.getPath('userData'), 'lyrics-enhancement') })
+    lyricsEnhancementCache.init()
     covers.init()
     registerProxy()
     registerIpc()

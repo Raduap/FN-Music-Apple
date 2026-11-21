@@ -20,10 +20,10 @@ const hash = (s) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7)
 const SHOWCASE = process.env.MOCK_SHOWCASE === '1'
 const ARTIST_NAMES = SHOWCASE
   ? ['北岸', '白昼航线', '苏木', '鲸落', '南风知意', '纸月亮', '林间小站', 'Velvet Tide', 'Northbound', 'Aurora Lane', 'Glass Garden', 'Midnight Atlas']
-  : ['周杰伦', '林俊杰', '陈奕迅', '邓紫棋', '五月天', '李荣浩', '薛之谦', '王菲', 'Taylor Swift', 'Ed Sheeran', 'Adele', 'Coldplay']
+  : ['米津玄師', '周杰伦', '林俊杰', '陈奕迅', '邓紫棋', '五月天', '李荣浩', '薛之谦', '王菲', 'Taylor Swift', 'Ed Sheeran', 'Adele', 'Coldplay']
 const WORDS = SHOWCASE
   ? ['晚风邮差', '海边的信', '夏夜漫游', '一万光年', '旧城往事', '山间来信', '慢一点', '月光航线', '落日飞行', '人海', '晴朗', '城市边缘', '微光', '长街', '十七岁的雨', '雾中风景', '候鸟', '星河渡口', '午后三点', '小镇烟火', 'Blue Hour', 'Neon Rain', 'Weightless', 'Starlit Road', 'Low Tide', 'Afterglow', 'Paper Sky', 'Slow Motion City']
-  : ['夜曲', '晴天', '稻香', '七里香', '星空', '海阔天空', '光年之外', '浮夸', '十年', '后来', '告白气球', '最长的电影', '彩虹', '背对背拥抱', '江南', '修炼爱情', '那些年', '小幸运', '成都', '平凡之路', 'Blank Space', 'Shape of You', 'Hello', 'Yellow', 'Fix You', 'Viva la Vida', 'Love Story', 'Someone Like You']
+  : ['Lemon', '夜曲', '晴天', '稻香', '七里香', '星空', '海阔天空', '光年之外', '浮夸', '十年', '后来', '告白气球', '最长的电影', '彩虹', '背对背拥抱', '江南', '修炼爱情', '那些年', '小幸运', '成都', '平凡之路', 'Blank Space', 'Shape of You', 'Hello', 'Yellow', 'Fix You', 'Viva la Vida', 'Love Story', 'Someone Like You']
 const GENRES = ['流行', '摇滚', '民谣', 'R&B', '电子', '古典']
 const SHOWCASE_ALBUMS = ['夏日来信', '慢速城市', '海风与灯塔', '远行', '夜航船', '小幸福', '云层之上', '日落公路', '回声', '温柔的光', '第七个夏天', '漫游者', '山与海', '星期天的猫', '午夜电台', '晨雾', 'Coastline', 'Neon Dreams', 'Golden Days', 'Wildflowers', 'Night Drive', 'Open Skies', 'Lighthouse', 'Paper Hearts', 'Northern Lights', 'Sunday Morning', 'Echoes', 'Daydream', 'Silver Lining', 'Long Way Home', 'Hideaway', 'Moonrise', 'Tidal', 'Small Hours', 'Horizon', 'Wanderlust']
 
@@ -51,7 +51,7 @@ artists.forEach((ar, ai) => {
         guid: 'tr' + n++, title, coverId: alb.coverId,
         album: { guid: alb.guid, name: alb.name, coverId: alb.coverId },
         artists: [{ guid: ar.guid, name: ar.name }],
-        duration: (150 + ((hash(title) + t * 13) % 120)) * 1000,
+        duration: (title === 'Lemon' ? 255 : 150 + ((hash(title) + t * 13) % 120)) * 1000,
         year: parseInt(alb.releaseDate), trackNo: t + 1, discNo: 1,
         genre: GENRES[(ai + t) % GENRES.length],
         isFavorite: false, createdAt: alb.newTrackAddedAt + t,
@@ -142,7 +142,14 @@ function wav(track) {
 const wavCache = new Map()
 
 const SHOWCASE_LYRICS = ['晚风把街灯一盏盏点亮', '我把想说的话写进信里', '寄给明天的自己', '路过的云都慢下来', '像在等一首歌唱完', '你说远方并不远', '只要旋律还在耳边', '海浪替我们记住', '那年夏天的形状', '走过人海 也走过长街', '每一步都踩着节拍', '如果你也在听', '就让这一刻再长一点', '灯光落进眼睛里', '像星星落进海里', '我们终会在某个路口', '把故事轻轻讲完', '晚安 城市', '晚安 我的歌']
+const MOCK_LRC_FILE = process.env.FNM_MOCK_LRC_FILE || ''
 function lyric(track) {
+  if (track.title === 'Lemon') {
+    const JP = ['夢ならばどれほどよかったでしょう', '未だにあなたのことを夢にみる', '忘れた物を取りに帰るように', '古びた思い出の埃を払う']
+    const times = [0.851, 6.65, 12.34, 18.02]
+    return JP.map((l, i) => '[' + String(Math.floor(times[i] / 60)).padStart(2, '0') + ':' + (times[i] % 60).toFixed(3).padStart(6, '0') + ']' + l).join(String.fromCharCode(10))
+  }
+  if (MOCK_LRC_FILE) return require('fs').readFileSync(MOCK_LRC_FILE, 'utf8')
   if (SHOWCASE) {
     const dur = Math.min(90, track.duration / 1000), step = (dur - 4) / SHOWCASE_LYRICS.length
     return SHOWCASE_LYRICS.map((l, i) => { const t = 2 + i * step; return `[${String(Math.floor(t / 60)).padStart(2, '0')}:${(t % 60).toFixed(2).padStart(5, '0')}]${l}` }).join('\n')

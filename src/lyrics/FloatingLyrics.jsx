@@ -9,10 +9,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import SPEC from '../../electron/lyricsVisualSpec.json'
 import { lyricPlaceholder } from '../lyrics'
+import { karaokeClock, karaokeProgress, karaokeWords, smoothFills } from '../karaoke'
 
 const bridge = window.lyricsWin
 const { defaultStyle: DEFAULT_STYLE, fontStacks: FONT_STACKS } = SPEC
-const EMPTY_STATE = { title: '', lyric: '', lyricTrans: '', nextLyric: '', nextLyricTrans: '', nextNextLyric: '', nextNextLyricTrans: '', lyricsReady: false, hasLyrics: false, hasTranslation: false, hasNext: false, playing: false, currentTime: 0, at: 0, duration: 0, palette: 'red' }
+const EMPTY_STATE = { title: '', lyric: '', lyricTrans: '', lyricRoman: '', nextLyric: '', nextLyricTrans: '', nextLyricRoman: '', nextNextLyric: '', nextNextLyricTrans: '', nextNextLyricRoman: '', lyricsReady: false, hasLyrics: false, hasTranslation: false, hasRoman: false, hasNext: false, playing: false, currentTime: 0, at: 0, duration: 0, palette: 'red' }
 // 控制条显隐完全由主进程按光标位置驱动（离开胶囊 / 按钮 3s 后隐藏），页面只镜像 active 状态。
 
 // ---------- 演示模式：在普通浏览器里打开 lyrics.html?demo 预览界面（无 Electron） ----------
@@ -156,7 +157,16 @@ export default function FloatingLyrics() {
   const showTrans = !!s.showTranslation && !!state.hasTranslation
   const showNext = !!s.showNext && !!state.hasNext
   const transText = upcoming ? state.nextLyricTrans : state.lyricTrans
+  const romanText = upcoming ? state.nextLyricRoman : state.lyricRoman
+  // 悬浮窗的音译显示是独立样式开关：有音译时占用译文行，没有音译的行仍回退译文。
+  const useRoman = !!s.showRomanization && !!String(romanText || '').trim()
+  const showSub = useRoman || showTrans
+  const subText = useRoman ? romanText : transText
   const nextText = upcoming ? state.nextNextLyric : state.nextLyric
+  // 逐字高亮只做当前句：upcoming（前奏预告）时显示的是下一句，跟着用下一句的词级数据。
+  // words 文本与整句文本逐字符一致（合并层已保证），宽度不由 React 管，rAF 直接写 DOM。
+  // 只在主窗口送来真实词级时间轴时才扫色；没有数据（或逐字开关关闭）保持普通整句文本。
+  const karaoke = !upcoming && state.lyricWords?.length ? karaokeWords({ text: state.lyric, words: state.lyricWords }) : null
 
   // 行 / 列开关时，主进程已经按“靠近边框的边不动”把窗口移到位；
   // 这里让胶囊从旧尺寸和反向位移滑到最终尺寸，避免边框和已有歌词闪现。
@@ -190,6 +200,60 @@ export default function FloatingLyrics() {
     const id = setInterval(draw, 250)
     return () => clearInterval(id)
   }, [state.currentTime, state.at, state.playing, state.duration, edge, s.showProgress])
+
+  // 逐字扫色：悬浮窗没有 audio 元素，用「上次广播的 currentTime + 本地流逝」推算时钟，
+  // 每帧用 karaokeFills 的连续进度边直接写 .kw-fill 的 --fill；暂停 / 切句时贴齐或清零。
+  // 关键：rAF 循环不能每秒随广播重建——那样每帧状态会被清空、扫色 1Hz 闪跳。
+  // 所以循环只依赖「是否扫色 + 当前句文本」，时钟从 stateRef 读取最新广播值。
+  const mainRef = useRef(null)
+  const stateRef = useRef(state)
+  stateRef.current = state
+  // karaoke 每次渲染都是新对象；放进依赖会让 rAF 每秒重建、扫色闪跳。
+  // 用 ref 持最新值，effect 只依赖「本句是否该扫色」与「歌词下标」。
+  const karaokeRef = useRef(null)
+  karaokeRef.current = karaoke
+  const karaokeOn = !!karaoke && !!s.karaoke
+  const karaokeStart = useRef(null) // 暂停后恢复播放要显式重新点火，见下
+  useEffect(() => {
+    if (!karaokeOn) return
+    const el = mainRef.current
+    if (!el) return
+    let raf = 0
+    let shown = null
+    let lastT = null
+    const nodes = [...el.querySelectorAll('.kw-fill')]
+    const step = () => {
+      if (!stateRef.current.playing) { raf = 0; return }
+      const t = karaokeClock(stateRef.current) + 0.25
+      // 与全屏页同款：时间回退（拖动 / seek / 广播校正）时丢弃已显示宽度。
+      if (lastT != null && t < lastT - 0.05) shown = null
+      lastT = t
+      const mode = stateRef.current.syllableSmooth || 'strict'
+      const limit = Number.isFinite(stateRef.current.lyricEnd) ? stateRef.current.lyricEnd : null
+      const progress = karaokeProgress(karaokeRef.current, t, { smooth: mode, limit })
+      // 正常播放只增不减；回退已在上面的时间检测里处理。
+      shown = smoothFills(shown, progress)
+      nodes.forEach((node, wi) => {
+        const f = shown?.[wi] ?? 0
+        // 扫色方向交给 CSS：横排用 width，竖排用 height，都读这个变量。
+        node.style.setProperty('--fill', f.toFixed(4))
+      })
+      raf = requestAnimationFrame(step)
+    }
+    // 暂停时 step 自己退出；暂停不改变本 effect 的依赖，恢复播放必须显式重启。
+    // 同时暂停不再触发 cleanup，已唱部分的 --fill 会留在画面上，不会回退变空。
+    const start = () => { if (!raf) raf = requestAnimationFrame(step) }
+    karaokeStart.current = start
+    start()
+    return () => {
+      karaokeStart.current = null
+      cancelAnimationFrame(raf)
+      nodes.forEach((node) => { node.style.setProperty('--fill', '0') })
+    }
+  }, [karaokeOn, state.lyricIndex, state.syllableSmooth]) // 只在扫色开关 / 换句 / 平滑模式变化时重建；时钟、播放状态走 ref / 单独的恢复 effect
+  useEffect(() => {
+    if (state.playing) karaokeStart.current?.()
+  }, [state.playing])
 
   const startResize = (dir) => (e) => {
     if (e.button !== 0) return
@@ -243,6 +307,9 @@ export default function FloatingLyrics() {
     '--col-extra': `${css.colExtra}px`,
     '--row-gap': `${css.rowGap}px`,
     '--sub-h': `${css.subH}px`,
+    // 逐字已唱部分的颜色：默认跟 --fg 同色系（亮），白/浅色文字在暗底上表现为白扫色；
+    // 浅色背景模式下文字是深色，跟随 --fg 也保持一致。
+    '--karaoke-color': 'var(--fg)',
     ...capVars,
     ...insetVars,
   }
@@ -295,9 +362,22 @@ export default function FloatingLyrics() {
         >
           <div className="ldrag" aria-hidden="true" />
           <div className="lrows">
-            <div className={`lmain${verticalClass(main)}${upcoming ? ' upcoming' : ''}`} title={state.lyric || state.nextLyric || state.title || ''}>{main}</div>
-            <div className={`lsub-wrap ${showTrans ? 'on' : ''}`} aria-hidden={!showTrans}>
-              <div className={`lsub${verticalClass(transText)}`}>{transText}</div>
+            <div
+              ref={mainRef}
+              className={`lmain${karaokeOn ? ' karaoke' : ''}${verticalClass(main)}${upcoming ? ' upcoming' : ''}`}
+              title={state.lyric || state.nextLyric || state.title || ''}
+            >
+              {karaokeOn
+                ? karaoke.words.map((w, wi) => (
+                  <span key={wi} className="kw">
+                    <span className="kw-fill" aria-hidden="true">{w.text}</span>
+                    {w.text}
+                  </span>
+                ))
+                : main}
+            </div>
+            <div className={`lsub-wrap ${showSub ? 'on' : ''}`} aria-hidden={!showSub}>
+              <div className={`lsub${verticalClass(subText)}`}>{subText}</div>
             </div>
             <div className={`lnext-wrap ${showNext ? 'on' : ''}`} aria-hidden={!showNext}>
               <div className={`lnext${verticalClass(nextText)}${nextText ? '' : ' empty'}`}>{nextText}</div>
@@ -320,3 +400,5 @@ export default function FloatingLyrics() {
     </div>
   )
 }
+
+

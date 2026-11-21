@@ -68,9 +68,12 @@ function normalizeStyle(input) {
     showBorder: s.showBorder !== false,
     showProgress: s.showProgress !== false,
     showTranslation: s.showTranslation !== false,
+    showRomanization: !!s.showRomanization,
     showNext: !!s.showNext,
     clickThrough: !!s.clickThrough,
     vertical: !!s.vertical,
+    // 逐字（卡拉OK）扫色开关；没有词级数据时渲染层自动退回普通文本
+    karaoke: s.karaoke !== false,
     // 横排长度不限制上限（用户要求）；竖排长度仍受 MAX_W 限制（见 clampVerticalLength）。
     width: Math.round(clamp(num(Number(s.width), DEFAULT_W), MIN_W, MAX_LEN)),
   }
@@ -98,6 +101,8 @@ function layoutFlags(style, state = {}) {
   // 也就不会出现移动、歌词偏移或被窗口裁掉。
   return {
     showTranslation: !!s.showTranslation && !!st.hasTranslation,
+    // 音译与译文共用同一条副行：两者都有时也只占一行，音译在渲染端替换译文。
+    showRomanization: !!s.showRomanization && !!st.hasRoman,
     showNext: !!s.showNext && !!st.hasNext,
   }
 }
@@ -110,8 +115,9 @@ function visibleRows(style, extra = {}) {
   const s = normalizeStyle(style)
   let rows = 1
   const showTranslation = extra.showTranslation === undefined ? s.showTranslation : !!extra.showTranslation
+  const showRomanization = extra.showRomanization === undefined ? false : !!extra.showRomanization
   const showNext = extra.showNext === undefined ? s.showNext : !!extra.showNext
-  if (showTranslation) rows += 1
+  if (showTranslation || showRomanization) rows += 1
   if (showNext) rows += 1
   return rows
 }
@@ -654,3 +660,4 @@ module.exports = {
   normalizeStyle, layoutFlags, resolveLayoutState, lineHeight, subHeight, mainColumnWidth, subColumnWidth, columnExtra, visibleRows, capsuleSize, minCapHeight, maxCapHeight, minCapWidth, maxCapWidth, maxVerticalLength, capsulePart, anchorCapsule, anchorCapsuleDocked, anchorVerticalToHorizontal, capsuleGrowthShift, nearestEdge, controlFlip, controlSide, sideWindowRect, capFromWindow, clampStyleToArea, clampVerticalLength, windowRect, regions, controlButtons, layout,
   windowSize, fontFromCapsuleHeight, fontFromCapsuleWidth, defaultCapsule, clampCapsule, isOnScreen, unionWorkArea, resizeCapsule, capsuleInset, blendDistance,
 }
+

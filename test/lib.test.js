@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fmtTime, fmtTotal, parseLrc, pickRandom, shuffled } from '../src/lib.js'
+import { fmtTime, fmtTotal, moveItem, parseLrc, pickRandom, shuffled } from '../src/lib.js'
 
 describe('fmtTime', () => {
   it.each([[0, '0:00'], [5.9, '0:05'], [65, '1:05'], [3600, '60:00'], [-3, '0:00'], [NaN, '0:00'], [Infinity, '0:00']])('%s → %s', (s, out) => expect(fmtTime(s)).toBe(out))
@@ -43,5 +43,24 @@ describe('shuffled / pickRandom', () => {
     const r = pickRandom([1, 2, 3, 4, 5], 3)
     expect(r).toHaveLength(3)
     expect(new Set(r).size).toBe(3)
+  })
+})
+
+describe('moveItem（拖动排序纯函数）', () => {
+  it('把元素向后移动', () => expect(moveItem(['a', 'b', 'c', 'd'], 0, 2)).toEqual(['b', 'c', 'a', 'd']))
+  it('把元素向前移动', () => expect(moveItem(['a', 'b', 'c', 'd'], 3, 1)).toEqual(['a', 'd', 'b', 'c']))
+  it('原地移动返回等价副本', () => expect(moveItem(['a', 'b', 'c'], 1, 1)).toEqual(['a', 'b', 'c']))
+  it('目标越界时收敛到末尾', () => expect(moveItem(['a', 'b', 'c'], 0, 99)).toEqual(['b', 'c', 'a']))
+  it('负数目标收敛到开头', () => expect(moveItem(['a', 'b', 'c'], 2, -5)).toEqual(['c', 'a', 'b']))
+  it('不改原数组', () => {
+    const src = ['a', 'b', 'c']
+    moveItem(src, 0, 2)
+    expect(src).toEqual(['a', 'b', 'c'])
+  })
+  it('非法输入安全返回', () => {
+    expect(moveItem([], 0, 1)).toEqual([])
+    expect(moveItem(null, 0, 1)).toEqual([])
+    expect(moveItem(['a'], 0, 1)).toEqual(['a'])
+    expect(moveItem(['a', 'b'], 0, 1.5)).toEqual(['a', 'b'])
   })
 })

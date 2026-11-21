@@ -137,6 +137,9 @@ export function FloatingLyricsSettings() {
             <button className={`fl-toggle ${style.showBorder ? 'on' : ''}`} role="switch" aria-checked={style.showBorder} onClick={() => set({ showBorder: !style.showBorder })}>
               <span>显示边框</span><span className="fl-switch" aria-hidden="true" />
             </button>
+            <button className={`fl-toggle ${style.karaoke !== false ? 'on' : ''}`} role="switch" aria-checked={style.karaoke !== false} onClick={() => set({ karaoke: !(style.karaoke !== false) })}>
+              <span>逐字扫色（需在实验设置里开启逐字歌词）</span><span className="fl-switch" aria-hidden="true" />
+            </button>
           </div>
         </section>
 
@@ -164,3 +167,4 @@ export function FloatingLyricsSettings() {
     </div>
   )
 }
+

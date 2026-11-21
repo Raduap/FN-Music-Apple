@@ -1,8 +1,9 @@
 import { create } from 'zustand'
 import { api, streamUrl, invalidate } from './api'
 import { acquireCover, prefetchCover } from './covers'
-import { hasNextLyric, hasTranslation, lyricFrame, loadLyrics } from './lyrics'
+import { hasNextLyric, hasTranslation, lyricFrame, loadLyrics, loadSyllablesProgressive, predictKaraokeLines } from './lyrics'
 import { shuffled } from './lib'
+import { advanceIndex, RAPID_NEXT_DELAY } from './rapidNext'
 import { applyMotion } from './motion'
 import { DEFAULT_WALLPAPER, applyPalette, isPalette } from './appearance'
 
@@ -55,6 +56,15 @@ export const useUI = create((set, get) => ({
   wallpaperUrl: '', // 自选图片的 blob URL（图片本身存在主进程的 userData 里）
   appearanceOpen: false,
   lyricsSettingsOpen: false,
+  experimentalOpen: false,
+  experimental: { enabled: true, configured: false, sourceEnabled: true, aiFallback: false, romanization: true, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', syllables: true, syllablePredict: false, syllableSources: ['qq', 'netease', 'kugou', 'amll', 'liriqo'] },
+  syllables: true, // 实验性逐字歌词（AMLL TTML DB / LiriQo），关闭时退回逐行歌词
+  syllablePredict: LS.get('sylPredict', false), // 智能逐字补全：没有词级数据的行也按字长 / 停顿预测逐字动画
+  syllableOverwrite: LS.get('sylOverwrite', false), // 覆盖歌词：可信逐字命中时用源歌词替换本地正文
+  syllablesDebug: LS.get('sylDebug', false), // 逐字歌词调试 toast：切歌时报告命中情况
+  translationDebug: LS.get('translationDebug', false), // 翻译 / 音译调试 toast：报告来源与命中情况
+  syllableStrict: LS.get('sylStrict', false), // 严格匹配：逐字严格照抄源时间戳（默认关闭，关闭时做速度带平滑）
+  syllableSmooth: LS.get('sylSmooth', 'normal'), // 速度带挡位：mild / normal / strong（仅非严格时生效）
   floatingLyrics: false, // 悬浮歌词窗口是否开启（真实状态以主进程 prefs 为准）
   lyricsStyle: {}, // 悬浮歌词样式（主进程 prefs.lyricsStyle）
   lyricsStyleSeq: 0, // 丢弃过期样式写入响应，避免快速拖动滑块时旧值覆盖新值
@@ -62,6 +72,7 @@ export const useUI = create((set, get) => ({
   motion: LS.get('motion', 'on'),
   sidebarCollapsed: LS.get('sbCollapsed', false),
   translation: LS.get('translation', true), // 双语歌词是否显示译文
+  showRomanization: LS.get('showRomanization', true), // 音译副行是否显示（与翻译显示开关独立）
   pageTitle: '', // 当前页面标题，滚动后显示在顶部导航条里
   scrolled: false,
 
@@ -78,6 +89,7 @@ export const useUI = create((set, get) => ({
   closePanel: () => set({ panel: null }),
   toggleSidebar: () => set((s) => { LS.set('sbCollapsed', !s.sidebarCollapsed); return { sidebarCollapsed: !s.sidebarCollapsed } }),
   toggleTranslation: () => set((s) => { LS.set('translation', !s.translation); return { translation: !s.translation } }),
+  toggleRomanization: () => set((s) => { LS.set('showRomanization', !s.showRomanization); return { showRomanization: !s.showRomanization } }),
   setPageTitle: (pageTitle) => set({ pageTitle }),
   setScrolled: (scrolled) => set((s) => (s.scrolled === scrolled ? s : { scrolled })),
   setFullPlayer: (v) => set({ fullPlayer: v }),
@@ -132,6 +144,70 @@ export const useUI = create((set, get) => ({
   closeAppearance: () => set({ appearanceOpen: false }),
   openLyricsSettings: () => set({ lyricsSettingsOpen: true }),
   closeLyricsSettings: () => set({ lyricsSettingsOpen: false }),
+  openExperimental: () => set({ experimentalOpen: true }),
+  closeExperimental: () => set({ experimentalOpen: false }),
+  async loadExperimental() {
+    const r = await window.fn.experimentalGet?.().catch(() => null)
+    if (r) {
+      set({ experimental: { ...get().experimental, ...r } })
+      // 逐字歌词开关跟随主进程配置；首次使用时回退 localStorage
+      const hasPref = typeof r.syllables === 'boolean'
+      set({ syllables: hasPref ? r.syllables : LS.get('syllables', false) })
+      // 智能逐字补全同样跟随主进程配置；缺失时回退 localStorage
+      set({ syllablePredict: typeof r.syllablePredict === 'boolean' ? r.syllablePredict : LS.get('sylPredict', false) })
+      set({ syllableOverwrite: typeof r.syllableOverwrite === 'boolean' ? r.syllableOverwrite : LS.get('sylOverwrite', false) })
+      // 严格匹配 / 速度带挡位跟随主进程配置
+      set({ syllableStrict: typeof r.syllableStrict === 'boolean' ? r.syllableStrict : LS.get('sylStrict', false) })
+      set({ syllableSmooth: ['mild', 'normal', 'strong'].includes(r.syllableSmooth) ? r.syllableSmooth : LS.get('sylSmooth', 'normal') })
+    }
+    return r
+  },
+  async saveExperimental(patch) {
+    const r = await window.fn.experimentalSet?.(patch || {})
+    // 只有 Key 落盘失败时主进程才返回 ok:false，其余设置其实已经写进 prefs。
+    // 这里按 settings 合并，避免界面显示与已保存状态分叉（下次启动才发现改了）。
+    if (r?.settings) set({ experimental: { ...get().experimental, ...r.settings } })
+    return r
+  },
+  async setSyllables(on) {
+    LS.set('syllables', !!on)
+    set({ syllables: !!on })
+    // 同时写进主进程 prefs（experimental 配置），重启后 loadExperimental 会恢复
+    await window.fn.experimentalSet?.({ syllables: !!on }).catch(() => {})
+  },
+  async setSyllablePredict(on) {
+    LS.set('sylPredict', !!on)
+    set({ syllablePredict: !!on })
+    await window.fn.experimentalSet?.({ syllablePredict: !!on }).catch(() => {})
+  },
+  async setSyllableOverwrite(on) {
+    LS.set('sylOverwrite', !!on)
+    set({ syllableOverwrite: !!on })
+    await window.fn.experimentalSet?.({ syllableOverwrite: !!on }).catch(() => {})
+  },
+  async setSyllableStrict(on) {
+    LS.set('sylStrict', !!on)
+    set({ syllableStrict: !!on })
+    await window.fn.experimentalSet?.({ syllableStrict: !!on }).catch(() => {})
+  },
+  async setSyllableSmooth(mode) {
+    const m = ['mild', 'normal', 'strong'].includes(mode) ? mode : 'normal'
+    LS.set('sylSmooth', m)
+    set({ syllableSmooth: m })
+    await window.fn.experimentalSet?.({ syllableSmooth: m }).catch(() => {})
+  },
+  toggleSyllablesDebug() {
+    const on = !get().syllablesDebug
+    LS.set('sylDebug', on)
+    set({ syllablesDebug: on })
+    if (on) get().showToast('逐字调试已开启：切歌时会提示逐字命中情况')
+  },
+  toggleTranslationDebug() {
+    const on = !get().translationDebug
+    LS.set('translationDebug', on)
+    set({ translationDebug: on })
+    if (on) get().showToast('翻译调试已开启：切歌时会提示翻译与音译命中情况')
+  },
   async loadLyricsPrefs() {
     const r = await window.fn.lyricsGet?.().catch(() => null)
     if (!r) return
@@ -250,6 +326,20 @@ export const useAuth = create((set) => ({
 
 // ---------- 播放器 ----------
 const saved = LS.get('queue', { queue: [], index: -1 })
+let rapidNextTimer = 0
+let rapidNextTarget = -1
+
+function cancelRapidNext() {
+  if (rapidNextTimer) clearTimeout(rapidNextTimer)
+  rapidNextTimer = 0
+  rapidNextTarget = -1
+}
+
+function commitRapidNext() {
+  const target = rapidNextTarget
+  cancelRapidNext()
+  if (target >= 0 && usePlayer.getState().queue[target]) usePlayer.getState().playIndex(target)
+}
 
 export const usePlayer = create((set, get) => ({
   queue: saved.queue || [],
@@ -288,6 +378,7 @@ export const usePlayer = create((set, get) => ({
   /** 播放一组歌曲，从 startIndex 开始；shuffleAll 时随机排序 */
   play(songs, startIndex = 0, { shuffle } = {}) {
     if (!songs.length) return
+    cancelRapidNext()
     const useShuffle = shuffle ?? get().shuffle
     let queue = songs
     let index = startIndex
@@ -305,6 +396,7 @@ export const usePlayer = create((set, get) => ({
   playShuffled(songs) { get().play(songs, Math.floor(Math.random() * songs.length), { shuffle: true }) },
 
   playIndex(i) {
+    cancelRapidNext()
     const song = get().queue[i]
     if (!song) return
     set({ index: i })
@@ -331,6 +423,7 @@ export const usePlayer = create((set, get) => ({
   },
 
   removeFromQueue(i) {
+    cancelRapidNext()
     const { queue, original, index } = get()
     if (i === index || !queue[i]) return
     const q = queue.filter((_, k) => k !== i)
@@ -341,6 +434,7 @@ export const usePlayer = create((set, get) => ({
   },
 
   clearUpcoming() {
+    cancelRapidNext()
     const { queue, original, index } = get()
     const kept = queue.slice(0, index + 1)
     const ids = new Set(kept.map((s) => s.id))
@@ -359,13 +453,24 @@ export const usePlayer = create((set, get) => ({
   next(auto = false) {
     const { queue, index, repeat } = get()
     if (!queue.length) return
-    if (auto && repeat === 'one') { audio.currentTime = 0; audio.play().catch(() => {}); return }
-    if (index + 1 < queue.length) get().playIndex(index + 1)
-    else if (repeat === 'all' || !auto) get().playIndex(0)
-    else { audio.pause(); audio.currentTime = 0; set({ playing: false, currentTime: 0 }) }
+    if (auto) {
+      cancelRapidNext()
+      if (repeat === 'one') { audio.currentTime = 0; audio.play().catch(() => {}); return }
+      const target = advanceIndex(index, queue.length, { wrap: repeat === 'all' })
+      if (target >= 0) get().playIndex(target)
+      else { audio.pause(); audio.currentTime = 0; set({ playing: false, currentTime: 0 }) }
+      return
+    }
+    // 首次点击只记录目标；安静窗口结束后一次性加载最终歌曲，连点不会逐首启动请求。
+    const from = rapidNextTarget >= 0 ? rapidNextTarget : index
+    rapidNextTarget = advanceIndex(from, queue.length, { wrap: true })
+    if (rapidNextTimer) clearTimeout(rapidNextTimer)
+    rapidNextTimer = setTimeout(commitRapidNext, RAPID_NEXT_DELAY)
   },
 
   prev() {
+    // 先清理待执行的下一首，再按当前实际播放位置决定上一首语义。
+    cancelRapidNext()
     const { queue, index } = get()
     if (!queue.length) return
     if (audio.currentTime > 3 || pendingSeek > 3 || index === 0) { get().seek(0); return }
@@ -394,6 +499,7 @@ export const usePlayer = create((set, get) => ({
   },
 
   toggleShuffle() {
+    cancelRapidNext()
     const { shuffle, queue, original, index } = get()
     const cur = queue[index]
     const on = !shuffle
@@ -431,6 +537,7 @@ export const usePlayer = create((set, get) => ({
   },
 
   stop() {
+    cancelRapidNext()
     audio.pause()
     audio.removeAttribute('src')
     audio.load()
@@ -532,6 +639,30 @@ let lyricLines = []
 let lyricsReady = true
 let lastKey = ''
 let lastSync = { at: 0, time: 0, playing: false }
+
+// 悬浮歌词的逐字数据：主进程按用户排序串行抓取，达到合格线（90%）就先把结果
+// 通过 broadcast 推给悬浮窗显示，达到优秀线（98%）停止后续来源；期间出现更好结果
+// 再次 broadcast（静默替换）。抓取与命中判定都在主进程完成，这里不重复请求。
+async function enrichSyllableLines(id, song, lines) {
+  if (!song) return lines
+  // 「智能逐字补全」：有真实词级时间的行原样保留，缺的行按字长 / 停顿预测，
+  // 让整首歌都有逐字动画。没开这个开关时保持旧行为（只显示真实命中的行）。
+  const finish = (out) => (useUI.getState().syllablePredict
+    ? predictKaraokeLines(out, { duration: song.duration || 0 })
+    : out)
+  // 记录最近一次推送出去的最终数组：外层用引用比较决定要不要再 broadcast，
+  // 返回同一个引用可以避免「同一个结果广播两次」。
+  let last = null
+  const merged = await loadSyllablesProgressive(song, lines, (next) => {
+    // 流式结果：立即替换悬浮窗当前显示，让合格数据先出来，不再干等。
+    if (lyricFor !== id) return
+    last = finish(next)
+    lyricLines = last
+    broadcast()
+  }, { overwriteLyrics: !!useUI.getState().syllableOverwrite })
+  return last || finish(merged)
+}
+
 function broadcast() {
   const s = usePlayer.getState()
   const song = s.queue[s.index]
@@ -541,15 +672,41 @@ function broadcast() {
     lyricsReady = !song
     if (song) {
       const id = song.id
-      loadLyrics(id).then((lines) => {
-        if (lyricFor === id) {
-          lyricLines = lines
-          lyricsReady = true
-          broadcast()
+      // 不管开关状态如何，切歌都先取「不翻译的原词」立即广播：翻译（AI 可能很慢）
+      // 和逐字抓取都在后台分步补，不能让悬浮歌词一直停在加载阶段。
+      const run = async () => {
+        const original = await loadLyrics(id, song, { translate: false })
+        if (lyricFor !== id) return
+        // 0. 先广播未处理的本地歌词，切歌不再卡加载；若开了「智能逐字补全」，
+        //    直接叠加预测，保证「有开关就先按智能逐字走」的要求。
+        lyricLines = useUI.getState().syllables && useUI.getState().syllablePredict
+          ? predictKaraokeLines(original, { duration: song.duration || 0 })
+          : original
+        lyricsReady = true
+        broadcast()
+        if (useUI.getState().experimental?.enabled || useUI.getState().experimental?.romanization) {
+          const translated = await loadLyrics(id, song, {
+            translate: useUI.getState().experimental?.enabled,
+            romanize: useUI.getState().experimental?.romanization,
+          })
+          if (lyricFor !== id) return
+          if (translated !== original) {
+            lyricLines = translated
+            broadcast()
+          }
         }
-      })
+        if (useUI.getState().syllables) {
+          const merged = await enrichSyllableLines(id, song, lyricLines)
+          if (lyricFor === id && merged !== lyricLines) {
+            lyricLines = merged
+            broadcast()
+          }
+        }
+      }
+      run()
     }
   }
+  const ui = useUI.getState()
   const frame = lyricFrame(lyricLines, s.currentTime + 0.25)
   const state = {
     title: song?.title || '',
@@ -566,14 +723,26 @@ function broadcast() {
     hasLyrics: lyricLines.length > 0,
     hasTranslation: hasTranslation(lyricLines),
     hasNext: hasNextLyric(lyricLines),
+    hasRoman: lyricLines.some((line) => String(line?.roman || '').trim()),
     lyricIndex: frame.index,
     lyricTrans: frame.lyricTrans,
+    lyricRoman: frame.lyricRoman,
     nextLyric: frame.nextLyric,
     nextLyricTrans: frame.nextLyricTrans,
+    nextLyricRoman: frame.nextLyricRoman,
     nextNextLyric: frame.nextNextLyric,
     nextNextLyricTrans: frame.nextNextLyricTrans,
-    motion: useUI.getState().motion,
-    palette: useUI.getState().palette,
+    nextNextLyricRoman: frame.nextNextLyricRoman,
+    // 逐字开关开启时把当前句（+下一句）的词级时间轴塞进广播 payload；
+    // 关闭或该句没有 words 时为 null，payload 不会因此变大。
+    lyricWords: ui.syllables ? frame.lyricWords || null : null,
+    nextLyricWords: ui.syllables ? frame.nextLyricWords || null : null,
+    // 扫色平滑模式：严格匹配时 'strict'，否则取速度带挡位。悬浮窗据此与主窗口保持一致。
+    syllableSmooth: ui.syllables && !ui.syllableStrict ? (ui.syllableSmooth || 'normal') : 'strict',
+    // 当前句窗口右界（下一句起点）：悬浮窗做扫色平滑时限制不越过下一句。
+    lyricEnd: ui.syllables ? frame.lyricEnd ?? null : null,
+    motion: ui.motion,
+    palette: ui.palette,
   }
   const key = JSON.stringify(state)
   const now = Date.now()
@@ -585,7 +754,16 @@ function broadcast() {
   window.fn?.setPlayerState?.({ ...state, currentTime: s.currentTime, at: now })
 }
 usePlayer.subscribe(broadcast)
-useUI.subscribe((s, prev) => { if (s.motion !== prev.motion || s.palette !== prev.palette) broadcast() })
+useUI.subscribe((s, prev) => {
+  const expChanged = s.experimental?.enabled !== prev.experimental?.enabled || s.experimental?.sourceEnabled !== prev.experimental?.sourceEnabled || s.experimental?.aiFallback !== prev.experimental?.aiFallback
+  const srcListChanged = s.experimental?.syllableSources?.join(',') !== prev.experimental?.syllableSources?.join(',')
+  const sylChanged = s.syllables !== prev.syllables
+  const predictChanged = s.syllablePredict !== prev.syllablePredict
+  // 严格匹配 / 速度带挡位只影响扫色观感，不必重抓数据；但要立刻广播给悬浮窗。
+  const smoothChanged = s.syllableStrict !== prev.syllableStrict || s.syllableSmooth !== prev.syllableSmooth
+  if (expChanged || sylChanged || srcListChanged || predictChanged) lyricFor = ''
+  if (s.motion !== prev.motion || s.palette !== prev.palette || expChanged || sylChanged || srcListChanged || predictChanged || smoothChanged) broadcast()
+})
 
 window.fn?.onPlayerCommand?.((cmd, arg) => {
   const p = usePlayer.getState()
@@ -616,3 +794,6 @@ export function restorePlayer() {
 }
 export const getAudio = () => audio
 export const useCurrent = () => usePlayer((s) => s.queue[s.index] || null)
+
+
+

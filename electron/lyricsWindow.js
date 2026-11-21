@@ -53,9 +53,9 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
   // 译文行按“整首歌是否有译文”预留，伴奏 / 间奏句不会让胶囊突然收缩。
   // 渲染状态始终是最新值；歌词未就绪时仅布局沿用上一首，避免胶囊先缩再扩。
   const extra = () => G.layoutFlags(style, layoutState)
-  // 窗口预留行数：只看这首歌有没有译文 / 下一句，忽略用户当前开关。
-  // 这样开关译文 / 下一句时窗口尺寸与位置不变，只有内部胶囊伸缩。
-  const winExtra = () => ({ showTranslation: !!layoutState.hasTranslation, showNext: !!layoutState.hasNext })
+  // 窗口预留行数：音译和译文共用一条副行，只看这首歌是否有任一种副行 / 下一句。
+  // 忽略用户当前开关，这样切换译文或音译时窗口尺寸与位置不变，只有内部胶囊伸缩。
+  const winExtra = () => ({ showTranslation: !!(layoutState.hasTranslation || layoutState.hasRoman), showRomanization: false, showNext: !!layoutState.hasNext })
   const capSize = () => G.capsuleSize(style, extra())
   // 窗口按 winExtra（整首歌可能出现的最大行数）预留尺寸；它的差值会补到贴屏边一侧，
   // 使开关译文 / 下一句时窗口位置不变（见 lyricsGeometry.capsuleInset）。
@@ -379,9 +379,9 @@ function createLyrics({ preload, menuPreload, load, readPrefs, writePrefs, comma
       onStyleChanged?.()
       return
     }
-    // 开关译文 / 下一句时，固定靠近屏幕边框的边，拉动远离边框的边。
+    // 开关译文 / 音译 / 下一句时，固定靠近屏幕边框的边，拉动远离边框的边。
     // 其它竖排尺寸变化仍固定右侧，避免原文列在缩放 / 改字号时跑到屏幕外。
-    const lineToggle = ('showTranslation' in p) || ('showNext' in p)
+    const lineToggle = ('showTranslation' in p) || ('showRomanization' in p) || ('showNext' in p)
     const sameOrientation = wasVertical === style.vertical
     const sizeChanged = nextCap.width !== prevCap.width || nextCap.height !== prevCap.height
     let anim = null

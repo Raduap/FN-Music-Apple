@@ -11,7 +11,13 @@ const threeRows = { showTranslation: true, showNext: true }
 describe('悬浮歌词几何与样式', () => {
   it('默认样式：深色玻璃 + 白字 + 显示边框和译文、不显示下一句、不穿透、不竖排', () => {
     const s = G.normalizeStyle({})
-    expect(s).toMatchObject({ fontSize: 30, backgroundMode: 'dark', textColor: '#ffffff', textColorCustom: false, customImage: false, showBorder: true, showProgress: true, frost: 18, showTranslation: true, showNext: false, clickThrough: false, vertical: false, width: 760 })
+    expect(s).toMatchObject({ fontSize: 30, backgroundMode: 'dark', textColor: '#ffffff', textColorCustom: false, customImage: false, showBorder: true, showProgress: true, frost: 18, showTranslation: true, showNext: false, clickThrough: false, vertical: false, karaoke: true, width: 760 })
+  })
+
+  it('逐字扫色开关：默认开启，显式 false 保留', () => {
+    expect(G.normalizeStyle({}).karaoke).toBe(true)
+    expect(G.normalizeStyle({ karaoke: false }).karaoke).toBe(false)
+    expect(G.normalizeStyle({ karaoke: 'x' }).karaoke).toBe(true)
   })
 
   it('非法输入被夹到合法范围并补全，背景不透明度允许 100%', () => {
@@ -52,6 +58,20 @@ describe('悬浮歌词几何与样式', () => {
     expect(normal.showTranslation).toBe(true)
     expect(instrumental.showTranslation).toBe(true)
     expect(G.capsuleSize(style, normal).height).toBe(G.capsuleSize(style, instrumental).height)
+  })
+
+  it('layoutFlags：音译与译文共用一条副行，不额外增加胶囊行数', () => {
+    const base = { fontSize: 30, width: 760, showTranslation: true, showRomanization: false, showNext: false }
+    const lyricOnly = G.layoutFlags(base, { hasTranslation: false, hasRoman: false })
+    const transOnly = G.layoutFlags(base, { hasTranslation: true, hasRoman: false })
+    const romanOnly = G.layoutFlags({ ...base, showRomanization: true }, { hasTranslation: false, hasRoman: true })
+    const both = G.layoutFlags({ ...base, showRomanization: true }, { hasTranslation: true, hasRoman: true })
+    expect(lyricOnly).toMatchObject({ showTranslation: false, showRomanization: false })
+    expect(transOnly).toMatchObject({ showTranslation: true, showRomanization: false })
+    expect(romanOnly).toMatchObject({ showTranslation: false, showRomanization: true })
+    expect(both).toMatchObject({ showTranslation: true, showRomanization: true })
+    expect(G.capsuleSize(base, transOnly).height).toBe(G.capsuleSize({ ...base, showRomanization: true }, romanOnly).height)
+    expect(G.capsuleSize({ ...base, showRomanization: true }, both).height).toBe(G.capsuleSize(base, transOnly).height)
   })
 
   it('layoutFlags：开启下一句时，整首歌恒定预留下一句行', () => {
@@ -639,3 +659,4 @@ describe('悬浮歌词几何与样式', () => {
     })
   })
 })
+

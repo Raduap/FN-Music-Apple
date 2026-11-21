@@ -1,0 +1,1090 @@
+import { T2S_FOLD_PAIRS } from './t2sFoldData.mjs'
+
+// 逐字歌词的纯逻辑：LRC 解析 -> 双语合并 -> 词级时间轴对齐 -> 候选择优 -> 卡拉OK进度。
+// ESM、零依赖，供渲染层（src/，Vite）与 dev 审计工具（Node/Electron）共用同一份实现。
+// 注意：这里只放纯函数，不引用 react / window / electron，也不要用 CJS 的 module.exports，
+// 否则 Vite dev 直接以浏览器原生 ESM 加载时会报「does not provide an export named ...」。
+
+// ---------- LRC 解析 ----------
+function parseLrc(text) {
+  if (!text) return []
+  const lines = []
+  let offset = 0
+  for (const raw of text.split(/\r?\n/)) {
+    const off = /^\[offset:\s*(-?\d+)\]/i.exec(raw.trim())
+    if (off) { offset = +off[1] / 1000; continue }
+    const stamps = [...raw.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)]
+    if (!stamps.length) continue
+    const content = raw.replace(/\[[^\]]*\]/g, '').trim()
+    for (const m of stamps) {
+      const frac = m[3] ? +m[3] / Math.pow(10, m[3].length) : 0
+      lines.push({ time: +m[1] * 60 + +m[2] + frac - offset, text: content })
+    }
+  }
+  lines.sort((a, b) => a.time - b.time)
+  return lines
+}
+
+
+// ---------- 双语合并 ----------
+function toLines(text) {
+  const lines = parseLrc(text)
+  if (!lines.length) {
+    if (!text) return []
+    return text.split(/\r?\n/).map((t) => t.replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean).map((t) => ({ time: -1, text: t }))
+  }
+  return mergeTranslations(lines)
+}
+
+// 双语歌词的常见写法：原文与译文使用相同（或极接近）的时间戳。
+// 容差取 30ms：不同数据源对同一句的原文/译文时间戳常有几十毫秒的取整差异，
+// 直接用「完全相等」会漏合并，译文就会以普通行身份常驻，翻译开关也失效。
+// 但仍需至少 3 个不同时间点出现同时间歌词组，才认定是双语格式，
+// 避免普通重复副歌被误判成双语。
+const SAME_TIME = 0.03
+const hasText = (line) => !!String(line?.text || '').trim()
+// 歌词里是否含译文（用于决定要不要显示翻译开关）
+const hasTranslation = (lines) => lines.some((l) => l.translation)
+
+// 汉字 / 假名 / 拉丁 / 韩文判定：仅用于「偏移译文回填」的保守启发式，
+// 不参与同时间戳合并（同时间戳一律按 LRC 约定取第一行为原文）。
+const RE_HAN = /[\u3400-\u9fff]/
+const RE_KANA = /[\u3040-\u30ff]/
+const RE_LATIN = /[A-Za-z]/
+const RE_HANGUL = /[\uac00-\ud7af]/
+const isHanOnly = (t) => RE_HAN.test(t) && !RE_KANA.test(t) && !RE_LATIN.test(t) && !RE_HANGUL.test(t)
+const isForeign = (t) => RE_KANA.test(t) || RE_LATIN.test(t) || RE_HANGUL.test(t)
+
+// 译文比原文晚一小段时间是常见写法（不是同时间戳）。这类行若不回填，
+// 会作为独立歌词行显示：翻译开关失效、译文常驻。判断条件：
+//   - 时间差严格大于同时间戳容差（gap=0 的同时间戳交给上面的分组逻辑，
+//     那里有「至少 3 组」的证据门槛，不能绕过去）
+//   - 不超过 1.5s
+//   - 后一行是纯中文、前一行是外语、且后一行没有自己的词级时间轴
+// 另外要求整首至少出现 3 次这种配对，才认定它是双语格式；否则按普通
+// 歌词处理——与同时间戳合并的「证据不足不合并」保持同一套原则。
+const OFFSET_TRANSLATION_MAX_GAP = 1.5
+const OFFSET_TRANSLATION_MIN_PAIRS = 3
+function isOffsetTranslationPair(prev, l) {
+  if (!prev || !l) return false
+  if (hasText({ text: prev.translation }) || l.translation) return false
+  if (l.words && l.words.length) return false
+  if (!hasText(prev) || !hasText(l)) return false
+  if (!isHanOnly(String(l.text).trim()) || !isForeign(String(prev.text).trim())) return false
+  const gap = Number(l.time) - Number(prev.time)
+  return gap > SAME_TIME && gap <= OFFSET_TRANSLATION_MAX_GAP
+}
+function mergeOffsetTranslations(lines) {
+  // 先数一遍配对数量：证据不足时完全不合并，避免把普通连续行误并。
+  let pairs = 0
+  for (let i = 1; i < lines.length; i++) {
+    if (isOffsetTranslationPair(lines[i - 1], lines[i])) pairs++
+  }
+  if (pairs < OFFSET_TRANSLATION_MIN_PAIRS) return lines.map((l) => ({ ...l }))
+  const out = []
+  for (const l of lines) {
+    const prev = out[out.length - 1]
+    if (isOffsetTranslationPair(prev, l)) {
+      out[out.length - 1] = { ...prev, translation: String(l.text).trim() }
+      continue
+    }
+    out.push({ ...l })
+  }
+  return out
+}
+
+function sameTimeGroups(lines) {
+  const groups = []
+  for (const l of lines) {
+    const prev = groups[groups.length - 1]
+    // 与上一组的「首个时间戳」比较，且要求时间单调不减，
+    // 防止把相隔很近的两句正常歌词并成一组。
+    if (prev && l.time >= prev.time - SAME_TIME && Math.abs(prev.time - l.time) <= SAME_TIME) prev.lines.push(l)
+    else groups.push({ time: l.time, lines: [l] })
+  }
+  return groups
+}
+function mergeTranslations(lines) {
+  const groups = sameTimeGroups(lines)
+  const translationGroups = groups.filter((g) => g.lines.filter((l) => hasText(l)).length >= 2)
+  let out
+  if (translationGroups.length < 3) {
+    out = lines.map((l) => ({ ...l }))
+  } else {
+    out = []
+    for (const g of groups) {
+      const [first, ...rest] = g.lines
+      // 第三条及以上同时间行不再覆盖已有译文：拼进译文里保留下来，
+      // 绝不丢弃（曾出现过「第二条把第一条译文顶掉」的问题）。
+      const translation = rest.map((l) => l.text).filter((t) => String(t || '').trim()).join('\n')
+      out.push(translation ? { ...first, translation } : { ...first })
+    }
+  }
+  return mergeOffsetTranslations(out)
+}
+
+
+// ---------- 字符时间轴对齐 ----------
+// 繁→简折叠表：匹配比较时把两侧都折成简体，只用于「哪一行配哪一行」，不改显示文本。
+// 动机（实测《アイドル》）：本地 LRC 是日文/繁体原文，而逐字候选源已被 opencc 转成简体，
+// 逐行文本锚点因此大面积失配（实测 35/79），剩下的行被「按时间硬配」错位，
+// 于是有些行在自己的显示窗口内永远轮不到铺色。折叠后锚点命中 74/79，错位随之消失。
+const T2S_FOLD = (() => {
+  const m = new Map()
+  const chars = [...String(T2S_FOLD_PAIRS || '')]
+  for (let i = 0; i + 1 < chars.length; i += 2) m.set(chars[i], chars[i + 1])
+  return m
+})()
+// 把文本折成简体用于比较：先折繁简，再去空白，历史异体字（妳/麽/裏…）也在此统一。
+const foldForCompare = (v) => {
+  let out = ''
+  for (const c of String(v || '')) out += T2S_FOLD.get(c) ?? c
+  return out
+}
+const normForMatch = (v) => foldForCompare(v).replace(/\s+/g, '')
+// 更宽松的归一化：只看字母 / 数字，丢掉所有标点与空白。
+// 用于「远端一行 = 本地连续多句」的拼合判断——不同来源的逗号 / 撇号 / 连字符
+// 写法常有差异（"ye' shall" vs "ye shall"），严格归一化会漏掉这类合行。
+const looseForMatch = (v) => {
+  let out = ''
+  for (const ch of foldForCompare(v).toLowerCase()) if (/[\p{L}\p{N}]/u.test(ch)) out += ch
+  return out
+}
+
+// 「本地一行 = 远端连续多行」的宽松合行阈值（措施 A）。
+// 各源对同一句的写法常有差异：儚く/はかなく、君/キミ、優/优、一绪/一緒 等，
+// 逐字完全相等会大面积漏判，导致合行失败、后半段词被压进最后一格（铺完干等）。
+// 这里改用「长度比 + 首尾锚点 + 字符袋 Dice」三项共同判断，只看是不是同一句。
+const LOOSE_JOIN_MIN_RATIO = 0.8
+const LOOSE_JOIN_MAX_RATIO = 1.35
+const LOOSE_JOIN_MIN_ANCHOR = 0.45
+const LOOSE_JOIN_MIN_DICE = 0.6
+// 字符袋 Dice：忽略顺序只看用字构成，对同义/异体写法比逐字相等宽容得多。
+function looseDice(a, b) {
+  const bag = (str) => {
+    const m = new Map()
+    for (const c of str) m.set(c, (m.get(c) || 0) + 1)
+    return m
+  }
+  const A = bag(a), B = bag(b)
+  if (!A.size || !B.size) return 0
+  let ta = 0, tb = 0, inter = 0
+  for (const v of A.values()) ta += v
+  for (const v of B.values()) tb += v
+  for (const [c, v] of A) inter += Math.min(v, B.get(c) || 0)
+  const pre = inter / ta, rec = inter / tb
+  return pre + rec > 0 ? (2 * pre * rec) / (pre + rec) : 0
+}
+// 首尾锚点：第一条远端行应当对上本地句首，最后一条应当对上本地句尾。
+// 只靠整体相似度会把「上一句的第二段 + 本句」这种跨句拼接误判为命中，
+// 首尾锚点能把这类错位挡掉（实测错位样本首锚点恒为 0）。
+function looseAnchors(head, firstStr, lastStr) {
+  const h = [...head]
+  const preLen = Math.min(h.length, [...firstStr].length)
+  const sufLen = Math.min(h.length, [...lastStr].length)
+  return {
+    pre: looseDice([...firstStr].slice(0, preLen).join(''), h.slice(0, preLen).join('')),
+    suf: looseDice([...lastStr].slice(-sufLen).join(''), h.slice(h.length - sufLen).join('')),
+  }
+}
+
+// 全曲「字符袋」重叠：把两侧歌词各自拆成字符多重集，取交集 / 较小总量。
+// 用于快速判断「本地歌词与候选是不是同一首歌」——同曲异版（Live / DJ / 重制）
+// 的字符构成高度相似（实测 >=0.65），而完全不同的歌（哪怕歌名相同、时长相近）
+// 重叠通常在 0.4 以下。它比逐行文本比对更耐受分行差异与标点差异。
+function textBagOverlap(a, b) {
+  const bag = (s) => {
+    const m = new Map()
+    for (const c of normForMatch(s)) m.set(c, (m.get(c) || 0) + 1)
+    return m
+  }
+  const A = bag(a), B = bag(b)
+  if (!A.size || !B.size) return 0
+  let totalA = 0, totalB = 0, inter = 0
+  for (const v of A.values()) totalA += v
+  for (const v of B.values()) totalB += v
+  for (const [c, v] of A) inter += Math.min(v, B.get(c) || 0)
+  return inter / Math.max(1, Math.min(totalA, totalB))
+}
+// 低于此重叠视为「不同歌」，不做任何按时间的硬配（宁可少配，不产假逐字）。
+const MIN_TEXT_OVERLAP = 0.5
+
+/**
+ * 把远端逐字时间映射到本地行文本：显示内容永远来自本地 LRC 的字，
+ * 远端只贡献时间轴。字数一致时按位替换；不一致时按比例取位，
+ * 每个远端时间槽都能对应到本地文本的某个字符（不足时重复填充）。
+ */
+/**
+ * 把远端逐字时间映射成本地行文本的「逐字符时间轴」：
+ * 返回的 spans 拼接后与本地行文本完全一致（含空格与标点），
+ * 远端只贡献时间，显示内容一个字符都不改。
+ * 映射方式：按本地文本（去空白）的字符序号比例对应远端词序号。
+ */
+/**
+ * 把远端逐字时间映射成本地行文本的词级时间轴：
+ * 返回的 spans 拼接后与本地行文本完全一致（含空格），远端只贡献时间，
+ * 显示内容一个字符都不改。空格归入其后的词首（无后词时归入前词尾）。
+ *
+ * 优先「按词对齐」：本地文本的空白分词数量与远端词数一致时，一一对应。
+ * 这样 `Uh, uh huh uh huh` 这种句子不会被按字符比例切成 ` uh h` 半截词——
+ * 半截词是扫色跳变、反复铺色褪色的直接来源之一。
+ * 分词数量对不上（不同来源分行 / 断词差异）时，退回按字符比例映射。
+ */
+function localWhitespaceTokens(text) {
+  const tokens = []
+  let pending = ''
+  for (const m of String(text || '').matchAll(/\S+|\s+/g)) {
+    const chunk = m[0]
+    if (!chunk.trim()) { pending += chunk; continue }
+    tokens.push(pending + chunk)
+    pending = ''
+  }
+  if (pending && tokens.length) tokens[tokens.length - 1] += pending
+  return tokens
+}
+
+function alignCharTimeline(localText, remoteWords) {
+  const text = String(localText || '')
+  const chars = [...text]
+  // 丢掉「纯空白」的远端词：QQ QRC 会把空格作为 0ms 的独立 token 输出。
+  // 若把它留在索引空间里，按字符比例映射时真实字会被映射到空格槽、拿到 0ms 时间，
+  // 于是该字连同并入它的前导空格在 30ms 内瞬间铺满——视觉上就是「空格处一下跳几个字」。
+  // 丢掉它不影响文本：words[].text 始终由本地字符重新分桶拼成，拼接后逐字符等于原文。
+  const remote = (Array.isArray(remoteWords) ? remoteWords : []).filter((w) => String(w?.text ?? '').trim() !== '')
+  const n = remote.length
+  const solid = chars.filter((c) => /\S/.test(c)).length
+  if (!solid || !n) return null
+  const tokens = localWhitespaceTokens(text)
+  if (tokens.length === n) {
+    return tokens.map((t, i) => {
+      const w = remote[i] || {}
+      return { text: t, time: w.time, end: w.end ?? w.time }
+    })
+  }
+  let solidIdx = 0
+  const wordIndexOf = chars.map((c) => (/\S/.test(c) ? Math.min(n - 1, Math.floor((solidIdx++ * n) / solid)) : -1))
+  // 每个远端词收集自己的字符（把紧随其后的空格带上）
+  const buckets = Array.from({ length: n }, () => [])
+  chars.forEach((c, i) => {
+    let wi = wordIndexOf[i]
+    if (wi < 0) {
+      // 空格：交给下一个非空格字符所属的词；行尾空格归最后一个词
+      let k = i + 1
+      while (k < chars.length && wordIndexOf[k] < 0) k++
+      wi = k < chars.length ? wordIndexOf[k] : n - 1
+    }
+    buckets[wi].push(c)
+  })
+  return buckets
+    .map((chars2, wi) => ({ text: chars2.join(''), w: remote[wi] }))
+    .filter((s) => s.text)
+    .map(({ text, w }) => ({ text, time: w.time, end: w.end ?? w.time }))
+}
+
+// 词级时间轴清洗：源数据里常有 0 时间戳 / 倒退 / 重叠 / 零时长（实测 APT. 一行 14 处），
+// 直接用会让进度在帧与帧之间前后抖动，视觉上就是「铺色 → 褪色 → 再铺色」。
+// 这里只修正时间，不动文本：时间戳只许往前走、每词至少给一点时长，保证进度随时间单调。
+const MIN_WORD_DUR = 0.03
+// rAF 每帧都会调用 karaokeFills；同一行 words 数组引用稳定，缓存清洗结果避免每帧重复分配。
+const sanitizedCache = new WeakMap()
+function sanitizeWordTimeline(words, { start = null, end = null } = {}) {
+  if (!Array.isArray(words) || !words.length) return []
+  const cached = sanitizedCache.get(words)
+  if (cached && cached.start === start && cached.end === end) return cached.words
+  const lineStart = Number.isFinite(start) ? Number(start) : null
+  const lineEnd = Number.isFinite(end) ? Number(end) : null
+  const out = []
+  let prevEnd = null
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i] || {}
+    let t = Number(w.time)
+    let e = Number(w.end)
+    if (!Number.isFinite(t)) t = prevEnd ?? lineStart ?? 0
+    // 首词时间戳是 0 / 负数，但整行明明在几十秒处：按行起点修正
+    if (i === 0 && t <= 0 && lineStart != null && lineStart > 1) t = lineStart
+    // 时间倒退 / 与前词重叠：顺延到前词结束，只许往前走
+    if (prevEnd != null && t < prevEnd) t = prevEnd
+    if (!Number.isFinite(e) || e < t) e = t + MIN_WORD_DUR
+    if (e - t < MIN_WORD_DUR) e = t + MIN_WORD_DUR
+    out.push({ ...w, time: t, end: e })
+    prevEnd = e
+  }
+  // 末词越过行尾时收口（保留最小时长，避免二次清洗来回抖动）
+  const last = out[out.length - 1]
+  if (lineEnd != null && last.end > lineEnd && lineEnd > last.time) last.end = lineEnd
+  sanitizedCache.set(words, { start, end, words: out })
+  return out
+}
+
+// 逐字候选的覆盖率阈值（合格 / 优秀）与缓存分档，全项目唯一事实来源。
+// - 合格 90%：够用了，先交给界面显示（不阻塞后续来源）
+// - 优秀 98%：直接停止后续来源，并写入永久磁盘缓存
+const SYLLABLE_QUALIFIED = 0.90
+const SYLLABLE_EXCELLENT = 0.98
+// 覆盖率 -> 磁盘缓存分档：优秀=永久；合格=7 天；偏弱(70%+)=24 小时；其余只进内存。
+function syllableTierFor(coverage) {
+  const c = Number(coverage)
+  if (!Number.isFinite(c)) return 'memory'
+  if (c >= SYLLABLE_EXCELLENT) return 'permanent'
+  if (c >= SYLLABLE_QUALIFIED) return 'qualified'
+  if (c >= 0.70) return 'weak'
+  return 'memory'
+}
+
+/**
+ * 从多个来源候选中挑选与本地 LRC 最匹配的逐字数据。
+ * 逐个试合并，覆盖率（命中行 / 本地行）高的胜出；覆盖率相近（±2%）时，
+ * 行数比例更接近 1 的胜出。candidates 顺序即来源优先级。
+ * earlyBreak=true（默认，聚合模式）：覆盖率 ≥85% 且行数比例 ≥0.9 就锁定。
+ * earlyBreak=false（串行流式模式）：评估完全部候选，让每个源都报出真实最优，
+ * 交由上层按 90%/98% 阈值决定「先显示」还是「停止抓取」。
+ */
+// “覆盖歌词”：仅当候选通过可信门控后，用同一候选的完整正文和词级时间轴替换本地行。
+// 评分仍以本地 LRC 为基准，避免同名翻唱/片段因为“直接覆盖”绕过质量判断。
+function candidateStructureScore(localLines, cand) {
+  const local = (localLines || []).filter((l) => String(l?.text || '').trim())
+  const remote = (cand?.lines || []).filter((l) => String(l?.text || '').trim())
+  if (!local.length || !remote.length) return { coverage: 0, ratio: 0, textOverlap: 0 }
+  const merged = mergeSyllableLines(localLines, cand.lines)
+  const hit = merged.filter((l) => l.words?.length).length
+  return {
+    coverage: hit / local.length,
+    ratio: Math.min(remote.length / local.length, local.length / remote.length),
+    textOverlap: textBagOverlap(local.map((l) => l.text).join(''), remote.map((l) => l.text).join('')),
+  }
+}
+
+function isTrustedOverride(localLines, cand, score = null) {
+  const s = score || candidateStructureScore(localLines, cand)
+  const singable = (localLines || []).filter((l) => String(l?.text || '').trim()).length
+  const remote = (cand?.lines || []).filter((l) => String(l?.text || '').trim() && l?.words?.length)
+  if (!singable || !remote.length) return false
+  if (singable < 4) return s.coverage >= 0.5
+  return s.coverage >= 0.75 && s.ratio >= 0.8 && s.textOverlap >= 0.72
+}
+
+function remapEnhancementsByTime(targetLines, sourceLines) {
+  const source = (sourceLines || [])
+    .map((l) => ({
+      time: Number(l?.time),
+      translation: String(l?.translation || '').trim(),
+      roman: String(l?.roman || '').trim(),
+    }))
+    .filter((l) => Number.isFinite(l.time))
+  const out = (targetLines || []).map((l) => {
+    const t = Number(l?.time)
+    let best = null
+    for (const s of source) {
+      const d = Math.abs(s.time - t)
+      if (!best || d < best.d) best = { d, source: s }
+    }
+    // 轻微错位可接受；超过 3.5 秒说明不是同一句，宁可留空也不贴错。
+    if (!best || best.d > 3.5) return { ...l }
+    return {
+      ...l,
+      ...(best.source.translation ? { translation: best.source.translation } : {}),
+      ...(best.source.roman ? { roman: best.source.roman } : {}),
+    }
+  })
+  // 逐字源把本地一句拆成多行时，后面的拆分行可能超出原匹配距离。
+  // 这类行若仍缺译文，按用户规则沿用紧邻上一行的译文；音译不做此兜底。
+  for (let i = 1; i < out.length; i++) {
+    if (String(out[i]?.translation || '').trim()) continue
+    const previous = String(out[i - 1]?.translation || '').trim()
+    if (previous) out[i] = { ...out[i], translation: previous }
+  }
+  return out
+}
+
+function overrideSyllableLines(localLines, cand) {
+  const score = candidateStructureScore(localLines, cand)
+  if (!isTrustedOverride(localLines, cand, score)) return null
+  const remote = (cand?.lines || [])
+    .filter((l) => String(l?.text || '').trim() && l?.words?.length)
+    .map((l) => {
+      const text = String(l.text)
+      const lineEnd = Number.isFinite(Number(l.end)) ? Number(l.end) : undefined
+      // 覆盖后显示正文来自候选；词级文本必须从这份正文重建，不能直接信任
+      // 源 words 的拼接。部分 QRC/YRC 候选把空格放在词外，直接用会让高亮态
+      // 变成 Helloworld（普通态来自 line.text，所以只在逐字行出现）。
+      const aligned = alignCharTimeline(text, l.words)
+      return {
+        time: Number(l.time),
+        ...(lineEnd != null ? { end: lineEnd } : {}),
+        text,
+        words: sanitizeWordTimeline(aligned || l.words, { start: Number(l.time), end: lineEnd }),
+        ...(l.translation ? { translation: l.translation } : {}),
+        ...(l.roman ? { roman: l.roman } : {}),
+      }
+    })
+    .filter((l) => Number.isFinite(l.time) && l.words.length)
+    .sort((a, b) => a.time - b.time)
+  if (!remote.length) return null
+  return {
+    lines: remapEnhancementsByTime(remote, localLines),
+    coverage: score.coverage,
+    ratio: score.ratio,
+    textOverlap: score.textOverlap,
+    source: cand.source,
+    provider: cand.provider,
+  }
+}
+
+function pickSyllableCandidate(localLines, candidates = [], { earlyBreak = true } = {}) {
+  let best = null
+  const singableLines = localLines.filter((l) => String(l?.text || '').trim()).length
+  for (const cand of candidates) {
+    if (!cand?.lines?.length) continue
+    const merged = mergeSyllableLines(localLines, cand.lines)
+    const hit = merged.filter((l) => l.words?.length).length
+    const coverage = singableLines ? hit / singableLines : 0
+    // 行数比例：远端行数与本地可唱行数越接近，分行结构越一致，逐字对齐越可靠。
+    // 覆盖率相近（±2%）时优先选行数比例更接近 1 的候选。
+    const ratio = Math.min(cand.lines.length / Math.max(1, singableLines), singableLines / Math.max(1, cand.lines.length))
+    if (!best || coverage > best.coverage + 0.02 || (Math.abs(coverage - best.coverage) <= 0.02 && ratio > best.ratio)) {
+      best = { ...cand, merged, coverage, ratio }
+    }
+    // 早退：覆盖率达标且行数比例健康（>=0.9）才锁定；
+    // 碎行候选（比例 <0.9，分行结构差异大）即使覆盖率高也继续比较后续候选。
+    if (earlyBreak && coverage >= 0.85 && ratio >= 0.9) break
+  }
+  return best
+}
+
+
+// ---------- 候选择优 / 行合并 ----------
+function mergeSyllableLines(lines, syllables, debug = null) {
+  const stats = { matched: 0, skippedText: 0, skippedTime: 0, textMismatches: [], timeMismatches: [] }
+  if (!lines.length || !syllables?.length) {
+    if (debug) debug(stats)
+    return lines
+  }
+  const out = lines.map((l) => ({ ...l }))
+  const used = new Array(syllables.length).fill(false)
+  const norm = normForMatch
+  const loose = looseForMatch
+  // 空行（间奏 / 纯音乐段）没有可显示的文本，不参与逐字配对——
+  // 把候选浪费在空行上会错位后续配对，还会拉低覆盖率。
+  const singable = (l) => !!String(l?.text || '').trim()
+  // 某行之后「下一句真正有文本」的行起点：词时间轴收口的右边界。
+  const nextTimeAfter = (li) => {
+    for (let k = li + 1; k < out.length; k++) if (singable(out[k]) && Number.isFinite(out[k].time)) return out[k].time
+    return Infinity
+  }
+  const apply = (li, si, bucketWords = null) => {
+    const s = syllables[si]
+    const words = bucketWords || s.words
+    if (!words?.length) return false
+    const timeline = alignCharTimeline(out[li].text, words)
+    if (timeline) out[li].words = sanitizeWordTimeline(timeline, { start: out[li].time, end: Number.isFinite(s.end) ? s.end : nextTimeAfter(li) })
+    if (Number.isFinite(s.end) && !Number.isFinite(out[li].end)) out[li].end = s.end
+    stats.matched++
+    return true
+  }
+  // Pass 1：按顺序做「文本相同」锚点匹配（时间窗放宽到 3s，允许版本间整体漂移）
+  let j = 0
+  for (let li = 0; li < out.length; li++) {
+    const t = norm(out[li].text)
+    if (!t || !singable(out[li])) continue
+    while (j < syllables.length && syllables[j].time < out[li].time - 3) j++
+    for (let k = j; k < syllables.length && syllables[k].time <= out[li].time + 3; k++) {
+      if (used[k]) continue
+      if (norm(syllables[k].text) === t) { apply(li, k); used[k] = true; break }
+    }
+  }
+
+  // Pass 1.5：处理「远端一行 = 本地连续多句」的分行差异。
+  // 酷狗 / QQ 常把相邻两句并成一行（如「I see this life like a swinging vine」）。
+  // Pass 1 的整行文本相等匹配不到第二句，它便落到 Pass 2 按时间硬配、吃掉下一行的
+  // 逐字数据，于是之后每句整体错位一行，表现为大段「永远不会铺色」。
+  // 这里在整行文本可逐字拼合时，按有效字符数把远端那行的词时间切给组成它的本地句。
+  for (let li = 0; li < out.length; li++) {
+    if (out[li].words || !singable(out[li])) continue
+    const head = loose(out[li].text)
+    if (!head) continue
+    for (let k = 0; k < syllables.length; k++) {
+      if (used[k]) continue
+      const rl = syllables[k]
+      if (!rl.words?.length) continue
+      if (!Number.isFinite(rl.time) || Math.abs(rl.time - out[li].time) > 5) continue
+      const rt = loose(rl.text)
+      if (rt.length <= head.length || !rt.startsWith(head)) continue
+      // 向后拼接本地连续句，直到与远端整行逐字相等；拼接不上就放弃
+      let acc = head
+      let lj = li
+      while (acc.length < rt.length && lj + 1 < out.length) {
+        lj++
+        if (!singable(out[lj])) continue
+        acc += loose(out[lj].text)
+      }
+      if (acc !== rt) continue
+      const segs = []
+      for (let m = li; m <= lj; m++) if (singable(out[m])) segs.push({ li: m, len: loose(out[m].text).length })
+      if (segs.length < 2) continue
+      // 远端词的有效字符累计长度：按「最接近目标字数」找切分点，
+      // 避免某个词跨在两句边界上时整词被并进前一句。
+      const cum = [0]
+      for (const w of rl.words) cum.push(cum[cum.length - 1] + loose(w.text).length)
+      const bounds = [0]
+      const lastWi = rl.words.length
+      for (let si = 0; si < segs.length - 1; si++) {
+        const target = cum[bounds[bounds.length - 1]] + segs[si].len
+        let bestWi = bounds[bounds.length - 1]
+        let bestD = Infinity
+        for (let wi = bounds[bounds.length - 1]; wi <= lastWi; wi++) {
+          const d = Math.abs(cum[wi] - target)
+          if (d < bestD) { bestD = d; bestWi = wi }
+        }
+        bounds.push(bestWi)
+      }
+      bounds.push(lastWi)
+      let appliedSplit = 0
+      for (let si = 0; si < segs.length; si++) {
+        const bucket = rl.words.slice(bounds[si], bounds[si + 1])
+        if (!bucket.length) continue
+        const li2 = segs[si].li
+        const timeline = alignCharTimeline(out[li2].text, bucket)
+        if (timeline) out[li2].words = sanitizeWordTimeline(timeline, { start: out[li2].time, end: nextTimeAfter(li2) })
+        stats.matched++
+        appliedSplit++
+      }
+      if (appliedSplit) { stats.matchedSplit = (stats.matchedSplit || 0) + appliedSplit; used[k] = true }
+      break
+    }
+  }
+  // Pass 1.4：处理「本地一行 = 远端连续多句」的分行差异（Pass 1.5 的反向）。
+  // 本地 LRC 常把相邻两个短句写在同一个时间戳里（例：水瀬いのり - アイマイモコ
+  // 「些細な出来事さえも 特別だって思うよ」），而远端逐字源把它们拆成两行。
+  // 若不合并，Pass 2 只会把第一段的词挂上去，第二段整块被压进最后一格，
+  // 表现为「铺完之后干等几秒」和「结尾瞬间跳完」。
+  for (let li = 0; li < out.length; li++) {
+    if (out[li].words || !singable(out[li])) continue
+    const head = loose(out[li].text)
+    if (!head) continue
+    const winEnd = nextTimeAfter(li)
+    for (let k = 0; k < syllables.length; k++) {
+      if (used[k]) continue
+      const first = syllables[k]
+      if (!first?.words?.length) continue
+      if (!Number.isFinite(first.time) || Math.abs(first.time - out[li].time) > 5) continue
+      // 从 k 起向后拼接远端连续行；远端行起点必须落在本行窗口内，
+      // 否则它属于下一句，不能并进来（这是防「误并重复句 / 回声句」的结构护栏）。
+      let acc = ''
+      let picked = []
+      let last = -1
+      for (let m = k; m < syllables.length; m++) {
+        const rl = syllables[m]
+        if (used[m] || !rl?.words?.length || !Number.isFinite(rl.time)) break
+        if (m > k && Number(rl.time) - Number(syllables[m - 1].time) > 8) break
+        if (Number.isFinite(winEnd) && Number(rl.time) >= winEnd + 0.3) break
+        acc += loose(rl.text)
+        picked.push(m)
+        last = m
+        if (acc.length >= head.length) break
+      }
+      if (last < 0 || picked.length < 2) continue
+      // 先按「逐字完全相等」判定；不等时再按宽松相似度判定（措施 A），
+      // 容忍 儚く/はかなく、君/キミ、優/优 这类同义或异体写法差异。
+      if (acc !== head) {
+        const ratio = acc.length / Math.max(1, head.length)
+        if (ratio < LOOSE_JOIN_MIN_RATIO || ratio > LOOSE_JOIN_MAX_RATIO) continue
+        const firstStr = loose(syllables[picked[0]].text)
+        const lastStr = loose(syllables[picked[picked.length - 1]].text)
+        const anchor = looseAnchors(head, firstStr, lastStr)
+        if (anchor.pre < LOOSE_JOIN_MIN_ANCHOR || anchor.suf < LOOSE_JOIN_MIN_ANCHOR) continue
+        if (looseDice(head, acc) < LOOSE_JOIN_MIN_DICE) continue
+        stats.looseJoined = (stats.looseJoined || 0) + 1
+      }
+      const words = []
+      for (const m of picked) for (const w of syllables[m].words) words.push(w)
+      const lastEnd = Number(words[words.length - 1].end ?? words[words.length - 1].time)
+      // 远端分行的末词常比本地下一行时间晚几十~两百毫秒（两源取整差异），
+      // 给 0.35s 容差；真正的「误并下一句」已由上面的起点护栏挡住，
+      // 越界的尾巴交给 sanitizeWordTimeline 收口到下一句起点。
+      if (Number.isFinite(winEnd) && lastEnd > winEnd + 0.35) continue
+      const timeline = alignCharTimeline(out[li].text, words)
+      if (!timeline) continue
+      out[li].words = sanitizeWordTimeline(timeline, { start: out[li].time, end: winEnd })
+      for (const m of picked) used[m] = true
+      stats.matched++
+      stats.matchedJoined = (stats.matchedJoined || 0) + 1
+      break
+    }
+  }
+  stats.matchedPass1 = stats.matched
+
+  // 结构一致性门控：候选与本地若是「不同版本 / 只有片段」，绝对时间就不可信。
+  // 典型症状是候选被截断（时间跨度远小于本地）或来自翻唱版本（整体漂移），
+  // 此时 Pass 2 的「按时间就近硬配」会把毫不相干的句子配成逐字，产出整段错位。
+  // 门控不通过时只保留文本锚点匹配：宁可少配，也不产出假逐字。
+  const span = (arr) => {
+    const ts = arr.map((l) => Number(l?.time)).filter(Number.isFinite)
+    return ts.length >= 2 ? Math.max(...ts) - Math.min(...ts) : 0
+  }
+  const singableLocal = lines.filter(singable).length
+  const localSpan = span(out.filter(singable))
+  const remoteSpan = span(syllables.filter(singable))
+  const spanRatio = localSpan > 0 && remoteSpan > 0 ? Math.min(localSpan / remoteSpan, remoteSpan / localSpan) : 0
+  const anchorRatio = singableLocal ? stats.matchedPass1 / singableLocal : 0
+  // 文本证据门控：本地与候选若是「同一首歌的不同版本」，字符构成高度相似；
+  // 若歌名相同但其实是完全不同的歌（翻唱改名 / 同名词曲），字符重叠会很低。
+  // 这种情况连时间跨度都可能接近，仅凭结构门控挡不住，必须额外看文本证据。
+  const localText = out.filter(singable).map((l) => l.text).join('')
+  const remoteText = syllables.filter(singable).map((l) => l.text).join('')
+  const textOverlap = textBagOverlap(localText, remoteText)
+  // 行数太少时无法判断结构（跨度可能为 0），维持旧行为，避免误伤短片与单测。
+  const pass2 = singableLocal < 4 || (textOverlap >= MIN_TEXT_OVERLAP && (spanRatio >= 0.8 || anchorRatio >= 0.25))
+  stats.structure = { spanRatio: +spanRatio.toFixed(3), anchorRatio: +anchorRatio.toFixed(3), textOverlap: +textOverlap.toFixed(3), pass2 }
+
+  // Pass 2：剩余行做单调顺序配对（双指针，±5s），文本不一致也算命中——
+  // 不同来源对同一句的分行/标点常有差异，时间对上的词级时间轴照样可用。
+  // 顺序约束避免「全局最近」把副歌重复段配错位。
+  if (pass2) {
+  let p = 0
+  for (let li = 0; li < out.length; li++) {
+    if (out[li].words || !singable(out[li])) continue
+    while (p < syllables.length && (used[p] || syllables[p].time < out[li].time - 5)) p++
+    let best = -1
+    let bestD = Infinity
+    for (let k = p; k < syllables.length && syllables[k].time <= out[li].time + 5; k++) {
+      if (used[k]) continue
+      const d = Math.abs(syllables[k].time - out[li].time)
+      if (d < bestD) { bestD = d; best = k }
+    }
+    if (best >= 0 && bestD <= 5) {
+      apply(li, best); used[best] = true
+      if (p <= best) p = best + 1
+      if (norm(syllables[best].text) !== norm(out[li].text)) stats.skippedText++
+    } else {
+      stats.skippedTime++
+      if (stats.timeMismatches.length < 3) stats.timeMismatches.push({ local: { time: out[li].time, text: out[li].text }, remote: syllables[best] ? { time: syllables[best].time, text: syllables[best].text } : null })
+    }
+  }
+  }
+
+  // Pass 2.5（措施 B 兜底续接）：个别源与本地写法差异过大，连宽松合行也拼不上，
+  // Pass 2 就只把远端第一段挂到整句，铺色会提前扫完、后面干等。
+  // 这里把「紧接着、起点仍落在本行窗口内、时间与已挂词连续、且明显不是下一句」的
+  // 后续未使用远端行续接进来，让铺色覆盖整句。只动「词尾早于窗口结束 0.6s 以上」的行。
+  let appended = 0
+  for (let li = 0; li < out.length; li++) {
+    const l = out[li]
+    if (!l.words?.length || !singable(l)) continue
+    const t0 = Number(l.time)
+    const t1 = nextTimeAfter(li)
+    if (!Number.isFinite(t0) || !Number.isFinite(t1) || t1 <= t0) continue
+    // 本行之后「下一个本地行边界」——空行也算。续接的远端行起点必须在它之前，
+    // 否则跨过了本地行边界（如间奏空行 / 下一句），就不是本行的续接。
+    let boundary = t1
+    for (let k = li + 1; k < out.length; k++) {
+      const bt = Number(out[k].time)
+      if (Number.isFinite(bt) && bt > t0) { boundary = Math.min(boundary, bt); break }
+    }
+    // 下一句本地文本：用于「别吞掉属于下一句的远端行」的最后一道护栏
+    let nextNorm = null
+    for (let k = li + 1; k < out.length; k++) if (singable(out[k])) { nextNorm = norm(out[k].text); break }
+    const picked = []
+    for (let guard = 0; guard < 4; guard++) {
+      const last = l.words[l.words.length - 1]
+      const lastEnd = Number(last.end ?? last.time)
+      if (!Number.isFinite(lastEnd) || lastEnd >= t1 - 0.6) break
+      let m = -1
+      for (let k = 0; k < syllables.length; k++) {
+        if (used[k] || !syllables[k]?.words?.length) continue
+        const rt = Number(syllables[k].time)
+        if (!Number.isFinite(rt)) continue
+        if (rt < lastEnd - 0.3) continue
+        if (rt >= boundary - 0.05) break // 跨过本地行边界，不属于本行
+        if (rt >= t1 - 0.35) break // 起点贴到下一句，留给下一句
+        m = k
+        break
+      }
+      if (m < 0) break
+      // 这条远端行若就是下一句歌词，说明它属于下一句，不能吞
+      if (nextNorm && norm(syllables[m].text) === nextNorm) break
+      if (nextNorm && textBagOverlap(syllables[m].text, String(l.text || '')) < 0.5 && textBagOverlap(syllables[m].text, nextNorm) >= 0.5) break
+      picked.push(m)
+      used[m] = true
+    }
+    if (!picked.length) continue
+    const words = l.words.slice()
+    for (const m of picked) for (const w of syllables[m].words) words.push(w)
+    const timeline = alignCharTimeline(l.text, words)
+    if (!timeline) { for (const m of picked) used[m] = false; continue }
+    l.words = sanitizeWordTimeline(timeline, { start: t0, end: t1 })
+    appended++
+  }
+  if (appended) stats.appended = appended
+
+  // Pass 3：时间轴收口。远端词时间偶尔整体偏后（版本差异约 1s 很常见），
+  // 会让本句在自己的显示窗口里永远轮不到铺色（首词起点 >= 下一句起点），
+  // 视觉上就是整句一直不亮。这里统计这类行，并把整条时间轴按本句窗口重铺，
+  // 保证窗口内一定有进度；正常行只收口越过窗口末尾的尾巴。
+  let broken = 0
+  for (let li = 0; li < out.length; li++) {
+    const l = out[li]
+    if (!l.words?.length || !singable(l)) continue
+    const t0 = Number(l.time)
+    let t1 = nextTimeAfter(li)
+    if (!Number.isFinite(t1)) t1 = Number.isFinite(l.end) ? l.end : t0 + 4
+    if (!Number.isFinite(t0) || !Number.isFinite(t1) || t1 <= t0) continue
+    const first = l.words[0]
+    const last = l.words[l.words.length - 1]
+    let w0 = Number(first.time)
+    let wEnd = Number(last.end ?? last.time)
+    if (!Number.isFinite(w0) || !Number.isFinite(wEnd)) continue
+    // 句首对齐：首词起点略早于本行起点时，整条时间轴等量后移，让本行一出现就从 0 开始铺色，
+    // 消除「句首已经跳掉一两个字」的观感。只修小幅偏移（<=0.6s）——更大的偏差不是取整误差，
+    // 而是另一句的时间轴，留给下面的错位分支 / 审计指标处理。
+    const lead = t0 - w0
+    if (lead > 0 && lead <= 0.6) {
+      for (const w of l.words) {
+        const wt = Number(w.time)
+        const we = Number(w.end ?? w.time)
+        if (Number.isFinite(wt)) w.time = wt + lead
+        if (Number.isFinite(we)) w.end = we + lead
+      }
+      w0 += lead
+      wEnd += lead
+      stats.rebasedStart = (stats.rebasedStart || 0) + 1
+    }
+    // 容差 0.3s：词时间整体偏后时，首词可能恰好落在下句起点前一点点
+    // （实测《夜曲》偏移约 2.7s，首词落在下句前 0.05s），窗口内几乎铺不到色，
+    // 也必须按「错位」重铺。
+    if (w0 >= t1 - 0.3 || wEnd <= t0 + 0.3) {
+      broken++
+      // 仅在「像版本漂移」时兜底重铺：整体偏离本句窗口，但幅度在 +-8s 内。
+      // 偏离过大的（如行在 1s、词在 40s）不是漂移，而是选错了候选，
+      // 必须原样保留，让审计指标 outOfRange 能把它抓出来。
+      const plausible = w0 <= t1 + 8 && wEnd >= t0 - 8
+      if (plausible) {
+        const src = Math.max(0.05, wEnd - w0)
+        const scale = (t1 - t0) / src
+        l.words = l.words.map((w) => ({
+          ...w,
+          time: t0 + (Number(w.time) - w0) * scale,
+          end: t0 + (Number(w.end ?? w.time) - w0) * scale,
+        }))
+        stats.rescaled = (stats.rescaled || 0) + 1
+      }
+      continue
+    }
+    if (wEnd > t1) {
+      stats.clamped = (stats.clamped || 0) + 1
+      const tail = l.words[l.words.length - 1]
+      // 只要末词起点还在本行窗口内，就把它收口到下一句起点。
+      // 不再额外要求「至少留 MIN_WORD_DUR」——否则末词起点贴边时收不了口，
+      // 切句那一刻进度还差一点点，就是「结尾未走完就直接跳变」。
+      if (Number(tail.time) < t1) tail.end = t1
+    }
+  }
+  stats.brokenBeforeClamp = broken
+
+  if (debug) debug(stats)
+  return out
+}
+
+
+// ---------- 智能逐字补全（无词级数据时的预测） ----------
+// 参考 FeiNiuMusic 的 _generateWords：不是把整句时长按字符数平均，
+// 而是按 token 权重分配，让英文单词、中文单字、标点和停顿各拿到更自然的时间比例。
+// 只在用户显式开启「智能逐字补全」时使用；有真实词级时间的行永远优先用真实数据。
+const clampNum = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
+const isAsciiAlnum = (ch) => ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+const isCjkChar = (ch) => /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/.test(ch)
+function isPunctChar(ch) {
+  if (',.!?:;\'"()[]{}-'.includes(ch)) return true
+  return '、。，．！？：；…—'.includes(ch)
+}
+function punctPauseWeight(ch) {
+  if ('。！？!?'.includes(ch)) return 0.9
+  if ('、，．,.;:；：'.includes(ch)) return 0.55
+  if ('…—'.includes(ch)) return 0.8
+  return 0.35
+}
+function latinTokenWeight(len) {
+  if (len <= 0) return 0.6
+  return clampNum(0.55 + 0.14 * len, 0.6, 2.8)
+}
+function charTokenWeight(ch) {
+  if (isCjkChar(ch)) return 1
+  if (isAsciiAlnum(ch)) return 0.55
+  return 0.9
+}
+function tokenizeWithoutTiming(text) {
+  const chars = Array.from(String(text || ''))
+  const raw = []
+  for (let i = 0; i < chars.length;) {
+    const ch = chars[i]
+    if (/\s/.test(ch)) { raw.push({ text: ch, weight: 0 }); i++; continue }
+    if (isAsciiAlnum(ch)) {
+      let word = ''
+      while (i < chars.length && (isAsciiAlnum(chars[i]) || chars[i] === '\u0027' || chars[i] === '\u2019')) { word += chars[i]; i++ }
+      raw.push({ text: word, weight: latinTokenWeight(word.length) })
+      continue
+    }
+    raw.push({ text: ch, weight: charTokenWeight(ch) })
+    i++
+  }
+  // 空白并入前一个 token（不单独占时间）；标点并入前一个 token 并追加停顿权重。
+  // 行首空白先暂存，并到第一个 token 上，保证拼接后逐字符等于原文。
+  const tokens = []
+  let lead = ''
+  for (const t of raw) {
+    if (!t.text) continue
+    if (/\s/.test(t.text[0])) {
+      if (!tokens.length) { lead += t.text; continue }
+      tokens[tokens.length - 1].text += t.text
+      continue
+    }
+    if (lead) { t.text = lead + t.text; lead = '' }
+    if (isPunctChar(t.text)) {
+      if (!tokens.length) { tokens.push({ text: t.text, weight: Math.max(0.2, t.weight) }); continue }
+      const last = tokens[tokens.length - 1]
+      last.text += t.text
+      last.weight += punctPauseWeight(t.text)
+      continue
+    }
+    tokens.push({ ...t })
+  }
+  return tokens
+}
+/**
+ * 按 token 权重把 [start, end] 分配给一句歌词，返回与原文逐字符一致的 words。
+ * 单 token 时长做了 min/max 钳制，并做最多 8 轮再平衡，让总时长精确回到区间长度。
+ */
+function predictWordTimings(text, start, end) {
+  const tokens = tokenizeWithoutTiming(text)
+  if (!tokens.length) return null
+  const t0 = Number.isFinite(start) ? Number(start) : 0
+  let t1 = Number.isFinite(end) && end > t0 ? Number(end) : t0 + Math.max(0.6, String(text || '').length * 0.14)
+  const totalMs = Math.max(1, Math.round((t1 - t0) * 1000))
+  const count = tokens.length
+  const weightSum = tokens.reduce((n, t) => n + (Number.isFinite(t.weight) ? t.weight : 0), 0)
+  if (!(weightSum > 0)) return null
+  const minMs = clampNum(Math.floor(totalMs / (count * 3)), 20, 80)
+  const maxMs = Math.min(1600, Math.max(minMs, clampNum(Math.round(totalMs * 0.45), 120, 1600)))
+  const durations = tokens.map((t) => clampNum(Math.round(totalMs * (t.weight / weightSum)), minMs, maxMs))
+  let diff = totalMs - durations.reduce((n, d) => n + d, 0)
+  for (let iter = 0; iter < 8 && diff !== 0; iter++) {
+    if (diff > 0) {
+      const cand = durations.map((d, i) => (d < maxMs ? i : -1)).filter((i) => i >= 0)
+      const candWeight = cand.reduce((n, i) => n + tokens[i].weight, 0)
+      if (!cand.length || candWeight <= 0) break
+      for (const i of cand) {
+        if (diff <= 0) break
+        const add = Math.max(1, Math.floor(diff * (tokens[i].weight / candWeight)))
+        const applied = Math.min(add, maxMs - durations[i])
+        durations[i] += applied
+        diff -= applied
+      }
+    } else {
+      const cand = durations.map((d, i) => (d > minMs ? i : -1)).filter((i) => i >= 0)
+      const candWeight = cand.reduce((n, i) => n + tokens[i].weight, 0)
+      if (!cand.length || candWeight <= 0) break
+      for (const i of cand) {
+        if (diff >= 0) break
+        const sub = Math.max(1, Math.floor(-diff * (tokens[i].weight / candWeight)))
+        const applied = Math.min(sub, durations[i] - minMs)
+        durations[i] -= applied
+        diff += applied
+      }
+    }
+  }
+  if (diff !== 0) {
+    for (let i = 0; i < count && diff !== 0; i++) {
+      if (diff > 0 && durations[i] < maxMs) { durations[i]++; diff-- }
+      else if (diff < 0 && durations[i] > minMs) { durations[i]--; diff++ }
+    }
+  }
+  const words = []
+  let accMs = 0
+  for (let i = 0; i < count; i++) {
+    const ws = t0 + accMs / 1000
+    accMs += durations[i]
+    // 末词不强行拉到句尾：长间奏 / 歌曲末句会把最后一个 token 拉成慢爬。
+    // 提前扫完让高亮停在全亮即可，这也是正常卡拉OK的行为。
+    const we = Math.min(t1, t0 + accMs / 1000)
+    if (we > ws) words.push({ text: tokens[i].text, time: ws, end: we })
+  }
+  return words.length ? words : null
+}
+/**
+ * 有真实词级时间的行原样保留，其余可唱行按 [本行起点, 下一句起点] 预测逐字时间轴。
+ * 行尾按 FeiNiuMusic 的做法提前 clamp(行时长*8%, 60, 220)ms 收口，
+ * 避免高亮扫到下一句已起唱之后。
+ */
+function predictKaraokeLines(lines, { duration = 0 } = {}) {
+  if (!Array.isArray(lines) || !lines.length) return lines
+  const singable = (l) => !!l && Number.isFinite(l.time) && l.time >= 0 && !!String(l.text || '').trim()
+  const nextStart = new Array(lines.length).fill(null)
+  let nxt = null
+  for (let i = lines.length - 1; i >= 0; i--) {
+    nextStart[i] = nxt
+    if (singable(lines[i])) nxt = lines[i].time
+  }
+  return lines.map((line, i) => {
+    if (!singable(line) || line.words?.length) return line
+    const start = Number(line.time)
+    const following = nextStart[i]
+    let end = Number.isFinite(line.end) && line.end > start ? Number(line.end) : 0
+    if (!(end > start)) end = following ?? (Number(duration) > start ? Number(duration) : start + 3)
+    if (!(end > start)) end = start + 3
+    if (following != null) {
+      const buffer = clampNum(Math.round((end - start) * 1000 * 0.08), 60, 220) / 1000
+      end = Math.max(start + 0.001, end - buffer)
+    }
+    const words = predictWordTimings(line.text, start, end)
+    return words ? { ...line, words, end } : line
+  })
+}
+
+// ---------- 扫色平滑（速度上限） ----------
+// 词级数据里「过快」的字（外语语气词 / 日语半拍装饰假名，可达 20+ 字/s）扫一下就过去，
+// 大脑预期的匀速被打断，观感最不舒服；而「过慢」的字是真实长音 / 拖音（如 1.6 字/s），
+// 慢慢扫反而贴合演唱，不该被人为催快。
+// 所以这里只压「过快」的一端（给每个词一个速度上限），慢字一律保持原样；
+// 词起唱点（onset）也完全不动——起唱点与音乐对齐最重要，只让过快字的铺色时长变长，
+// 吃掉它后面的空隙。整句跨度不会因此超过原始歌词窗口（越界由后续收口兜底）。
+// mode: 'strict'(不平滑) | 'mild' | 'normal' | 'strong'；默认 strict 以保持库的既有语义。
+const SPEED_CAP = { mild: 3.2, normal: 2.4, strong: 1.7 }
+const smoothedCache = new WeakMap() // words 数组 -> Map(mode -> 平滑后数组)
+const charCount = (v) => [...String(v ?? '')].length
+function median(xs) {
+  if (!xs.length) return 0
+  const a = [...xs].sort((p, q) => p - q)
+  const m = a.length >> 1
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2
+}
+function smoothWordTimeline(words, mode = 'strict', limit = null) {
+  const K = SPEED_CAP[mode]
+  if (!K || !Array.isArray(words) || words.length < 2) return words
+  const key = limit == null ? mode : mode + '@' + Math.round(Number(limit) * 1000)
+  let byMode = smoothedCache.get(words)
+  if (byMode?.has(key)) return byMode.get(key)
+  const remember = (out) => {
+    if (!byMode) { byMode = new Map(); smoothedCache.set(words, byMode) }
+    byMode.set(key, out)
+    return out
+  }
+  // 参与整形的词：有文本、时间有效且时长 > 0
+  const solid = []
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]
+    const c = charCount(w?.text)
+    const t = Number(w?.time)
+    const e = Number(w?.end ?? w?.time)
+    if (c > 0 && Number.isFinite(t) && Number.isFinite(e) && e > t) solid.push({ i, c, t, e })
+  }
+  if (solid.length < 2) return remember(words)
+  // 「正常语速」锚点用逐词速度的中位数，避免被少数装饰音拉高，
+  // 使上限 = 中位速度 * K，只压真正异常的过快字。
+  const speeds = solid.map((w) => w.c / (w.e - w.t))
+  const cap = median(speeds) * K
+  if (!(cap > 0)) return remember(words)
+  // 只把超过上限的词放宽时长；慢字按原时长。起唱点保持，词间空隙按原样保留，
+  // 被拉长的部分自然向右占用空隙；若因此与下一个词重叠，则下一个词顺延。
+  // 每个词的目标时长（只增不减）：rawDur 与「速度上限对应的时长」取大
+  const want = solid.map((w) => Math.max(w.e - w.t, w.c / cap))
+  // 延长预算 = 窗口右界 - 原始末词结束；没有 limit 时视为不受限。
+  // 若原始就已越过窗口，则完全不延长（返回原始时长），避免把结尾扫过下一句。
+  const rawLast = solid[solid.length - 1].e
+  let budget = Infinity
+  if (limit != null && Number.isFinite(Number(limit))) budget = Math.max(0, Number(limit) - rawLast)
+  const totalExt = want.reduce((sum, d, k) => sum + Math.max(0, d - (solid[k].e - solid[k].t)), 0)
+  const gain = totalExt > 0 ? Math.min(1, budget / totalExt) : 0
+  const out = words.map((w) => ({ ...w }))
+  let cursor = solid[0].t
+  for (let k = 0; k < solid.length; k++) {
+    const w = solid[k]
+    const prev = k > 0 ? solid[k - 1] : null
+    const gap = prev ? Math.max(0, w.t - prev.e) : 0
+    const startAt = Math.max(w.t, cursor + gap)
+    const rawDur = w.e - w.t
+    const ext = Math.max(0, want[k] - rawDur) * gain // 只加不增，慢字 ext=0
+    const dur = rawDur + ext
+    out[w.i].time = startAt
+    out[w.i].end = startAt + dur
+    cursor = startAt + dur
+  }
+  return remember(out)
+}
+
+// ---------- 卡拉OK进度 ----------
+function karaokeFills(line, t, { smooth = 'strict', limit = null } = {}) {
+  // 防御性清洗：兼容历史 / 外部传入的脏时间轴，保证进度只随时间单调前进
+  const base = sanitizeWordTimeline(line?.words || [], { start: line?.time, end: line?.end })
+  // 非严格模式：把词速收进合理带内，抹平源数据的忽快忽慢（保留整句窗口与停顿）
+  const words = smoothWordTimeline(base, smooth, limit)
+  const text = String(line?.text || '')
+  const n = words.length
+  if (!n) return null
+  // 顺序定位每个词在整句文本中的字符区间（包含词间空格）。
+  // 必须保证区间不重叠：早期版本用 indexOf 后 cursor 只 +1，一旦词文本与整句
+  // 不能逐字对上（源数据半截词 / 预测分词差异），区间会重叠，pos 就会前后跳。
+  const spans = []
+  let cursor = 0
+  let total = 0
+  for (const w of words) {
+    const wt = String(w.text ?? '')
+    const len = Math.max(1, wt.length)
+    const idx = wt ? text.indexOf(wt, cursor) : -1
+    const start = idx >= 0 ? idx : cursor
+    spans.push({ start, len })
+    total = start + len
+    cursor = total
+  }
+  const t0 = words[0].time
+  const lastEnd = words[n - 1].end ?? (words[n - 1].time + 0.5)
+  const edge = (i, t) => spans[i].start + Math.min(1, Math.max(0, (t - words[i].time) / Math.max(0.08, (words[i].end ?? words[i + 1]?.time ?? t0 + 0.5) - words[i].time))) * spans[i].len
+  let pos = 0
+  if (t <= t0) pos = 0
+  else if (t >= lastEnd) pos = total
+  else {
+    // 找到当前所在区间：词内或词间间隙
+    let i = 0
+    while (i < n && t >= (words[i].end ?? words[i + 1]?.time ?? lastEnd)) i++
+    const w = words[i]
+    const endT = w.end ?? words[i + 1]?.time ?? lastEnd
+    if (t < endT) {
+      pos = edge(i, t)
+    } else if (i + 1 < n) {
+      // 词间间隙：从本词末尾线性推进到下一个词起点
+      const nextStartT = words[i + 1].time
+      const gapT = Math.max(0.001, nextStartT - endT)
+      const p = Math.min(1, Math.max(0, (t - endT) / gapT))
+      pos = spans[i].start + spans[i].len + p * Math.max(0, spans[i + 1].start - (spans[i].start + spans[i].len))
+    }
+  }
+  const fills = spans.map((s) => Math.min(1, Math.max(0, (pos - s.start) / s.len)))
+  return { fills, starts: spans.map((s) => s.start), spans: spans.map((s) => s.len), total, pos }
+}
+
+export {
+  parseLrc,
+  toLines,
+  mergeTranslations,
+  hasTranslation,
+  alignCharTimeline,
+  sanitizeWordTimeline,
+  normForMatch,
+  mergeSyllableLines,
+  pickSyllableCandidate,
+  candidateStructureScore,
+  isTrustedOverride,
+  remapEnhancementsByTime,
+  overrideSyllableLines,
+  karaokeFills,
+  smoothWordTimeline,
+  predictWordTimings,
+  predictKaraokeLines,
+  textBagOverlap,
+  SYLLABLE_QUALIFIED,
+  SYLLABLE_EXCELLENT,
+  syllableTierFor,
+}
+
+
+
+
+

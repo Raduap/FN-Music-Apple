@@ -30,6 +30,12 @@ export default [
     languageOptions: { ecmaVersion: 'latest', sourceType: 'commonjs', globals: globals.node },
   },
   {
+    // 跨进程共享的纯逻辑用 ESM（.mjs）：既能被 Vite（src/）原生加载，
+    // 也能被 Node / dev 工具以 ESM 方式复用，避免 dev 模式导出解析失败。
+    files: ['electron/**/*.mjs', 'dev/**/*.mjs'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'module', globals: globals.node },
+  },
+  {
     files: ['test/**/*.js', '*.config.{js,mjs}'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', globals: globals.node },
   },

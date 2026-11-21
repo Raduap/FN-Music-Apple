@@ -56,6 +56,7 @@ export default function Sidebar({ rail }) {
       '-',
       { label: '外观、主题色与壁纸…', onClick: () => ui().openAppearance() },
       { label: '歌词样式', onClick: () => ui().openLyricsSettings() },
+      { label: '实验性功能…', onClick: () => ui().openExperimental() },
       {
         label: '动画效果',
         children: [

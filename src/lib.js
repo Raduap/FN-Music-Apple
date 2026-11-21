@@ -16,24 +16,9 @@ export function fmtTotal(sec) {
 }
 
 // ---------- LRC 解析 ----------
-export function parseLrc(text) {
-  if (!text) return []
-  const lines = []
-  let offset = 0
-  for (const raw of text.split(/\r?\n/)) {
-    const off = /^\[offset:\s*(-?\d+)\]/i.exec(raw.trim())
-    if (off) { offset = +off[1] / 1000; continue }
-    const stamps = [...raw.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)]
-    if (!stamps.length) continue
-    const content = raw.replace(/\[[^\]]*\]/g, '').trim()
-    for (const m of stamps) {
-      const frac = m[3] ? +m[3] / Math.pow(10, m[3].length) : 0
-      lines.push({ time: +m[1] * 60 + +m[2] + frac - offset, text: content })
-    }
-  }
-  lines.sort((a, b) => a.time - b.time)
-  return lines
-}
+// 实现统一在 electron/lyricsMerge.mjs（纯逻辑零依赖），这里仅做再导出，
+// 保证既有 import 路径与测试不变。
+export { parseLrc } from '../electron/lyricsMerge.mjs'
 
 // ---------- 封面主色（用于全屏播放页背景） ----------
 const colorCache = new Map()
@@ -100,6 +85,20 @@ export function useAsync(fn, deps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps)
   return state
+}
+
+// 拖动排序：把 arr 中 from 位置的元素移动到 to 位置（to 为落点索引，允许等于末尾）。
+// 返回新数组，不改原数组；越界或原地移动时返回等价副本，便于调用方无脑 setState。
+export function moveItem(arr, from, to) {
+  const a = Array.isArray(arr) ? [...arr] : []
+  if (a.length < 2) return a
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return a
+  if (from < 0 || from >= a.length) return a
+  const dst = Math.max(0, Math.min(a.length - 1, to))
+  if (dst === from) return a
+  const [item] = a.splice(from, 1)
+  a.splice(dst, 0, item)
+  return a
 }
 
 export function shuffled(arr) {

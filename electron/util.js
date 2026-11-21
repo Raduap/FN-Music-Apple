@@ -46,7 +46,13 @@ function authx(method, url, body, { nonce = String(Math.floor(Math.random() * 9e
 // 长连接（音频流）在拿到响应头之后就不应再中止，否则播放中途会被切断。
 function abortAfter(ms, message = '服务器响应超时') {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(new Error(message)), ms)
+  const timer = setTimeout(() => {
+    // fetch 的 catch 分支按 e.name === 'AbortError' 区分「超时」与「连不上」，
+    // 普通 Error 会被当成网络故障，提示文案就错了。
+    const err = new Error(message)
+    err.name = 'AbortError'
+    controller.abort(err)
+  }, ms)
   return { signal: controller.signal, clear: () => clearTimeout(timer) }
 }
 

@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:e2e": "vite build && node --test --test-concurrency=1 \"e2e/**/*.test.mjs\"",
+    "test:e2e:ci": "vite build && node --test --test-concurrency=1 --test-reporter=spec \"e2e/**/*.test.mjs\"",
     "check": "npm run lint && npm test && npm run build",
     "screenshots": "vite build && node scripts/screenshots.mjs",
     "promo": "vite build && node scripts/promo/capture.mjs && node scripts/promo/render.mjs",
@@ -88,5 +89,8 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "opencc-js": "^1.4.2"
   }
 }

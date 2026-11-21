@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
-import { usePlayer, useUI, useCurrent } from '../store'
+import { api } from '../api'
+import { getAudio, usePlayer, useUI, useCurrent } from '../store'
 import { fmtTime, useCoverColor, useViewport } from '../lib'
-import { hasTranslation, lineAt, loadLyrics, peekLyrics } from '../lyrics'
+import { hasTranslation, karaokeFills, karaokeWindowEnd, lineAt, loadLyricsView, mergeSyllableLines, peekTranslationMeta, predictKaraokeLines, toLines } from '../lyrics'
+import { syllableOverrideMessage, translationDebugMessage } from '../lyricsDebug'
+import { TranslationGlyph, TransliterationGlyph } from '../lyricModeIcons'
 import { Cover, HeartIcon, Seg, Spinner, useSongMenu } from './common'
+import { smoothFills } from '../karaoke'
 import { closeFullPlayer, openFullPlayer } from '../motion'
+import { LYRICS_RESUME_DELAY, shouldFollowPlayback, shouldPinToggle } from '../lyricsScroll'
 import * as Icon from '../icons'
 
 // ---------- 滑块（进度 / 音量）：指针拖动、键盘、滚轮、悬停时间提示 ----------
@@ -264,55 +269,297 @@ export function PlayerBar() {
 // ---------- 歌词 ----------
 function useLyrics(song) {
   const id = song?.id
+  const translationEnabled = useUI((s) => s.experimental?.enabled)
+  const syllablesEnabled = useUI((s) => s.syllables)
+  const syllablePredict = useUI((s) => s.syllablePredict)
+  const syllablesDebug = useUI((s) => s.syllablesDebug)
+  const syllableOverwrite = useUI((s) => s.syllableOverwrite)
+  const translationDebug = useUI((s) => s.translationDebug)
+  const sourceEnabled = useUI((s) => s.experimental?.sourceEnabled)
+  const aiFallback = useUI((s) => s.experimental?.aiFallback)
+  const romanizationEnabled = useUI((s) => s.experimental?.romanization)
   const [state, setState] = useState({ lines: [], loading: false })
+  const prevId = useRef(null)
+  const meta = [song?.title, song?.artist, song?.album].join('\u0000')
   useEffect(() => {
-    if (!id) return setState({ lines: [], loading: false })
-    const cached = peekLyrics(id)
-    if (cached) return setState({ lines: cached, loading: false })
+    if (!id) { prevId.current = null; setState({ lines: [], loading: false }); return }
     let dead = false
-    setState({ lines: [], loading: true })
-    loadLyrics(id).then((lines) => { if (!dead) setState({ lines, loading: false }) })
+    const songChanged = prevId.current !== id
+    prevId.current = id
+    if (songChanged) setState({ lines: [], loading: true })
+    const predict = (src) => (syllablePredict ? predictKaraokeLines(src, { duration: song?.duration || 0 }) : src)
+    const announced = new Set()
+    const announce = (metaInfo) => {
+      if (dead || !metaInfo || metaInfo.replayed) return
+      if (metaInfo.stage === 'enhanced' && translationDebug) {
+        const msg = translationDebugMessage(song, peekTranslationMeta(id), { translate: translationEnabled, romanize: romanizationEnabled })
+        if (!announced.has(`translation:${msg}`)) { announced.add(`translation:${msg}`); useUI.getState().showToast(msg) }
+      }
+      if (metaInfo.stage === 'final') {
+        let reason = ''
+        if (syllablesDebug) reason = metaInfo.coverage != null
+          ? `选中 ${(metaInfo.coverage * 100).toFixed(0)}%（${metaInfo.source}/${metaInfo.provider}）${metaInfo.coverage < 0.9 ? '（低于合格线，取最高）' : ''}`
+          : '所有来源都没有达到合格线的逐字数据，退回逐行歌词'
+        if (syllableOverwrite) {
+          const msg = syllableOverrideMessage(song, metaInfo.coverage != null ? metaInfo : null, { enabled: true })
+          const finalMsg = reason ? `${msg} · 逐字调试：${reason}` : msg
+          if (!announced.has(`syllables:${finalMsg}`)) { announced.add(`syllables:${finalMsg}`); useUI.getState().showToast(finalMsg) }
+        } else if (syllablesDebug && reason) {
+          const msg = `逐字调试 · ${song?.title || ''}：${reason}`
+          if (!announced.has(`syllables:${msg}`)) { announced.add(`syllables:${msg}`); useUI.getState().showToast(msg) }
+        }
+      }
+    }
+    const { promise } = loadLyricsView(song, {
+      translate: translationEnabled,
+      romanize: romanizationEnabled,
+      syllables: syllablesEnabled,
+      overwriteLyrics: syllableOverwrite,
+      sourceEnabled,
+      aiFallback,
+    }, (next, info) => {
+      if (dead) return
+      setState({ lines: predict(next), loading: false })
+      announce(info)
+    })
+    promise.then((lines) => {
+      if (dead) return
+      setState({ lines: predict(lines), loading: false })
+    }).catch(() => { if (!dead) setState((s) => ({ ...s, loading: false })) })
     return () => { dead = true }
-  }, [id])
+  }, [id, translationEnabled, romanizationEnabled, syllablesEnabled, syllablePredict, syllablesDebug, syllableOverwrite, translationDebug, sourceEnabled, aiFallback, meta]) // eslint-disable-line react-hooks/exhaustive-deps
   return state
 }
 
 export function LyricsView({ song, big = false }) {
   const { lines, loading } = useLyrics(song)
+  const syllablesDebug = useUI((s) => s.syllablesDebug)
   const time = usePlayer((s) => s.currentTime)
   const seek = usePlayer((s) => s.seek)
+  const playing = usePlayer((s) => s.playing)
   const translation = useUI((s) => s.translation)
   const toggleTranslation = useUI((s) => s.toggleTranslation)
+  const showRomanizationOn = useUI((s) => s.showRomanization)
+  const toggleRomanization = useUI((s) => s.toggleRomanization)
   const ref = useRef(null)
   const userScroll = useRef(0)
-  const anchor = useRef(null) // 切换翻译时，当前句原文的视口位置
+  const anchor = useRef(null) // 切换翻译或补入译文时，当前句原文的视口位置
+  const focus = useRef(null) // 当前关注句原文的实测视口位置（滚动时持续更新）
+  const prevLines = useRef(lines)
+  const prevShow = useRef(false)
+  const prevRoman = useRef(false)
+  const prevSong = useRef(song?.id)
   const raf = useRef(0)
+  const scrollRaf = useRef(0)
+  const idleTimer = useRef(0)
+  const returnRaf = useRef(0)
+  const returning = useRef(false)
   const synced = lines.length && lines[0].time >= 0
 
   const active = useMemo(() => lineAt(lines, time + 0.25), [time, lines])
+  const activeRef = useRef(-1)
+  activeRef.current = active
+  const syllablesEnabled = useUI((s) => s.syllables)
+  const syllableStrict = useUI((s) => s.syllableStrict)
+  const syllableSmooth = useUI((s) => s.syllableSmooth)
+  const smoothMode = syllableStrict ? 'strict' : (syllableSmooth || 'normal')
+  // 逐字扫色的丝滑关键：store 的 currentTime 只有 50~200ms 粒度，这里用
+  // requestAnimationFrame 本地插值——以上次已知时间和 audio 实际流逝速度推进
+  // 进度边，每帧重算 karaokeFills。暂停 / seek / 切歌时直接贴齐真实时间。
   const hasTrans = useMemo(() => hasTranslation(lines), [lines])
+  const hasRoman = useMemo(() => lines.some((line) => String(line?.roman || '').trim()), [lines])
   const showTrans = translation && hasTrans
+  const showRoman = showRomanizationOn && hasRoman
+
+  // 当前关注句：优先用正在播放的那句；没有同步歌词或尚未到时，退回第一个可见句。
+  const measureFocus = () => {
+    const el = ref.current
+    if (!el) return null
+    let i = activeRef.current
+    if (i < 0) {
+      for (const k of el.querySelectorAll('.lyric-line')) {
+        if (k.offsetTop + k.offsetHeight > el.scrollTop) { i = +k.dataset.i; break }
+      }
+    }
+    const line = i >= 0 ? el.querySelector(`[data-i="${i}"] .lt-main`) : null
+    return line ? { i, top: line.getBoundingClientRect().top } : null
+  }
+
+  // 滚动过程中持续记录关注句位置，译文补入时才能拿到“变化前”的实测基准。
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const onScroll = () => {
+      if (scrollRaf.current) return
+      scrollRaf.current = requestAnimationFrame(() => {
+        scrollRaf.current = 0
+        const box = measureFocus()
+        if (box) focus.current = box
+      })
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      cancelAnimationFrame(scrollRaf.current)
+      scrollRaf.current = 0
+    }
+  }, [])
 
   useEffect(() => {
     const el = ref.current
-    if (!el || active < 0 || Date.now() - userScroll.current < 3000) return
+    cancelAnimationFrame(raf.current)
+    raf.current = 0
+    if (!el || active < 0 || !shouldFollowPlayback(Date.now(), userScroll.current)) return
     const line = el.querySelector(`[data-i="${active}"]`)
     if (line) el.scrollTo({ top: line.offsetTop - el.clientHeight * (big ? 0.38 : 0.32), behavior: 'smooth' })
   }, [active, big])
 
-  // 翻译显隐时译文行高度会连续变化，其余歌词随之平移。
-  // 这里在动画全程逐帧补偿滚动，把当前句原文锚定在原位置。
+  // 切歌时清掉上一首的手动滚动宽限期与回滚动画，避免把新歌拉回旧句。
+  useEffect(() => {
+    clearTimeout(idleTimer.current)
+    cancelAnimationFrame(returnRaf.current)
+    returnRaf.current = 0
+    returning.current = false
+    userScroll.current = 0
+  }, [song?.id])
+
+  useEffect(() => () => {
+    clearTimeout(idleTimer.current)
+    cancelAnimationFrame(returnRaf.current)
+    cancelAnimationFrame(raf.current)
+  }, [])
+
+  // 用户停止滚动三秒后，主动回到当前播放句；不依赖下一句切换。
+  const onUserScroll = () => {
+    returning.current = false
+    cancelAnimationFrame(returnRaf.current)
+    returnRaf.current = 0
+    cancelAnimationFrame(raf.current)
+    raf.current = 0
+    userScroll.current = Date.now()
+    clearTimeout(idleTimer.current)
+    idleTimer.current = setTimeout(() => {
+      userScroll.current = 0
+      returning.current = true
+      const el = ref.current
+      const index = activeRef.current
+      if (!el || index < 0) { returning.current = false; return }
+      const line = el.querySelector(`[data-i="${index}"]`)
+      if (!line) { returning.current = false; return }
+      const target = line.offsetTop - el.clientHeight * (big ? 0.38 : 0.32)
+      const from = el.scrollTop
+      const started = performance.now()
+      const tick = () => {
+        const box = ref.current
+        if (!box) { returning.current = false; return }
+        const progress = Math.min(1, (performance.now() - started) / 450)
+        box.scrollTop = from + (target - from) * (1 - (1 - progress) ** 3)
+        if (progress < 1) { returnRaf.current = requestAnimationFrame(tick); return }
+        returnRaf.current = 0
+        returning.current = false
+      }
+      tick()
+    }, LYRICS_RESUME_DELAY)
+  }
+
+  // 逐字扫色：rAF 每帧读 audio.currentTime（真实音频时钟，无 tick 粒度问题），
+  // 用连续进度边直接写当前句每个词的铺色宽度。切句 / 无词数据时清理为普通文本。
+  // 这是 AMLL Player / Apple Music Web 的成熟做法：结构交给 React，逐帧样式走 DOM。
+  const karaokeActive = syllablesEnabled && active >= 0 && !!lines[active]?.words?.length
+  const karaokeStart = useRef(null) // 当前句的扫色循环启动器：暂停后恢复播放要显式重新点火
+  // 手动调试钩子：DevTools 里 await __syllablesProbe('歌名','歌手') 直接看原始返回
+  useEffect(() => {
+    if (!syllablesDebug) return
+    window.__syllablesProbe = async (title, artist) => window.fn.lyricsSyllables({ title, artist: artist || '', duration: usePlayer.getState().duration || 0 })
+    // 逐行对照：本地 LRC vs 远端逐字，Console.table 直接看哪些行没对上
+    window.__syllablesCompare = async (localOverride) => {
+      const s = usePlayer.getState()
+      const song = s.queue[s.index]
+      if (!song) return null
+      const local = toLines(localOverride || await api.lyric(song.id))
+      const r = await window.fn.lyricsSyllables({ title: song.title, artist: song.artist, duration: song.duration || 0 })
+      let stats = null
+      const merged = r?.lines ? mergeSyllableLines(local, r.lines, (x) => { stats = x }) : local
+      // 不做 console 输出：返回值在 DevTools 里可直接展开查看（避免刷屏 / 终端噪声）
+      return { song, local, remote: r?.lines, merged, stats }
+    }
+  }, [syllablesDebug])
+  useEffect(() => {
+    if (!karaokeActive) return
+    const el = ref.current
+    if (!el) return
+    let raf = 0
+    const line = lines[active]
+    const limit = karaokeWindowEnd(lines, active)
+    let shown = null
+    let lastT = null
+    const fills = [...el.querySelectorAll(`[data-i="${active}"] .kw-fill`)]
+    const step = () => {
+      if (!usePlayer.getState().playing) { raf = 0; return }
+      const now = (getAudio()?.currentTime || 0) + 0.25
+      // 拖动 / seek 导致时间回退时丢弃已显示宽度，让下一帧贴齐目标（允许回退）。
+      if (lastT != null && now < lastT - 0.05) shown = null
+      lastT = now
+      const k = karaokeFills(line, now, { smooth: smoothMode, limit })
+      // 只增不减 + 缓动：正常播放宽度绝不倒着褪色。
+      shown = smoothFills(shown, k?.fills || null)
+      fills.forEach((node, wi) => {
+        const f = shown?.[wi] ?? 0
+        // 扫色方向交给 CSS：横排用 width，竖排用 height，都读这个变量。
+        node.style.setProperty('--fill', f.toFixed(4))
+      })
+      raf = requestAnimationFrame(step)
+    }
+    // 暂停时 step 自己退出（raf 归零），而暂停不会改变本 effect 的任何依赖，
+    // 所以恢复播放必须显式重启；否则当前句要等到换句才继续扫色。
+    const start = () => { if (!raf) raf = requestAnimationFrame(step) }
+    karaokeStart.current = start
+    start()
+    return () => {
+      karaokeStart.current = null
+      cancelAnimationFrame(raf)
+      fills.forEach((node) => { node.style.setProperty('--fill', '0') })
+    }
+  }, [karaokeActive, active, lines, smoothMode])
+  useEffect(() => {
+    if (playing) karaokeStart.current?.()
+  }, [playing])
+  // 译文补入（lines 引用变化）或翻译显隐时，译文行高度会连续变化，其余歌词随之平移。
+  // 这里用变化前记录的位置做基准，在动画全程逐帧补偿滚动，把关注句锚定在原位置。
   // 注意：不能按“位移稳定”提前退出——动画启动的头一两帧高度尚未变化，
   // 会被误判为已稳定，导致后半段动画失去补偿而出现滑动。
   // 补偿时必须临时关闭 scroll-behavior: smooth，否则会被平滑滚动接管。
   useLayoutEffect(() => {
     const el = ref.current
-    const a = anchor.current
-    if (!el || !a) return
+    if (!el) return
+    if (prevSong.current !== song?.id) { // 切歌：丢弃上一首的锚点，不做跨歌补偿
+      prevSong.current = song?.id
+      prevLines.current = lines
+      prevShow.current = showTrans
+      prevRoman.current = showRoman
+      anchor.current = null
+      focus.current = null
+      return
+    }
+    const changed = prevLines.current !== lines || prevShow.current !== showTrans || prevRoman.current !== showRoman
+    prevLines.current = lines
+    prevShow.current = showTrans
+    prevRoman.current = showRoman
+    const a = changed ? (anchor.current || focus.current) : null
     anchor.current = null
+    if (!a) {
+      const box = measureFocus()
+      if (box) focus.current = box
+      return
+    }
+    cancelAnimationFrame(raf.current)
+    raf.current = 0
+    const pinActive = a.active ?? activeRef.current
     const DURATION = 340 // 略长于译文展开动画（0.26s），确保覆盖完整过渡
     const start = performance.now()
     const pin = () => {
+      // 副行补偿只服务触发它的那一句；换句后立即让位给播放自动滚动。
+      if (activeRef.current !== pinActive) { raf.current = 0; return }
       const line = el.querySelector(`[data-i="${a.i}"] .lt-main`)
       if (line) {
         const d = line.getBoundingClientRect().top - a.top
@@ -324,27 +571,25 @@ export function LyricsView({ song, big = false }) {
         }
       }
       if (performance.now() - start < DURATION) raf.current = requestAnimationFrame(pin)
-      else raf.current = 0
+      else {
+        raf.current = 0
+        const box = measureFocus()
+        if (box) focus.current = box
+      }
     }
     pin()
     return () => cancelAnimationFrame(raf.current)
-  }, [showTrans])
+  }, [showTrans, showRoman, lines, song?.id])
 
-  // 记录当前句原文的视口位置，作为切换翻译后的补偿基准
-  const onToggleTranslation = () => {
-    const el = ref.current
-    if (el) {
-      let i = active
-      if (i < 0) {
-        for (const k of el.querySelectorAll('.lyric-line')) {
-          if (k.offsetTop + k.offsetHeight > el.scrollTop) { i = +k.dataset.i; break }
-        }
-      }
-      const line = i >= 0 ? el.querySelector(`[data-i="${i}"] .lt-main`) : null
-      if (line) anchor.current = { i, top: line.getBoundingClientRect().top }
-    }
-    toggleTranslation()
+  // 连续切换副行时，取消上一轮补偿并以当前视口重新锚定，避免旧句把列表拉回。
+  const withScrollAnchor = (update) => {
+    if (!shouldPinToggle(returning.current)) return update()
+    const box = measureFocus()
+    if (box) anchor.current = { ...box, active: activeRef.current }
+    update()
   }
+  const onToggleTranslation = () => withScrollAnchor(toggleTranslation)
+  const onToggleRomanization = () => withScrollAnchor(toggleRomanization)
 
   if (!song) return <div className="lyrics-empty">未在播放</div>
   if (loading) return <div className="lyrics-empty"><Spinner /></div>
@@ -352,23 +597,39 @@ export function LyricsView({ song, big = false }) {
 
   return (
     <div className={`lyrics-wrap ${big ? 'big' : ''}`}>
-      {hasTrans && (
+      {(hasTrans || hasRoman) && (
         <div className={`lyrics-tools ${big ? 'big' : ''}`}>
-          <button
-            className={`tr-btn ${translation ? 'on' : ''}`}
-            onClick={onToggleTranslation}
-            title={translation ? '隐藏翻译' : '显示翻译'}
-            aria-label={translation ? '隐藏翻译' : '显示翻译'}
-            aria-pressed={translation}
-          >
-            <Icon.Translate size={16} /><span>翻译</span>
-          </button>
+          {hasTrans && (
+            <button
+              className={`lyrics-mode-btn ${translation ? 'on' : ''}`}
+              onClick={onToggleTranslation}
+              title={translation ? '隐藏翻译' : '显示翻译'}
+              aria-label={translation ? '隐藏翻译' : '显示翻译'}
+              aria-pressed={translation}
+            >
+              <TranslationGlyph checked={translation} size={32} />
+            </button>
+          )}
+          {hasRoman && (
+            <button
+              className={`lyrics-mode-btn ${showRomanizationOn ? 'on' : ''}`}
+              onClick={onToggleRomanization}
+              title={showRomanizationOn ? '隐藏音译' : '显示音译'}
+              aria-label={showRomanizationOn ? '隐藏音译' : '显示音译'}
+              aria-pressed={showRomanizationOn}
+            >
+              <TransliterationGlyph checked={showRomanizationOn} size={32} />
+            </button>
+          )}
         </div>
       )}
       <div
         className={`lyrics ${big ? 'big' : ''} ${synced ? 'synced' : ''}`}
         ref={ref}
-        onWheel={() => (userScroll.current = Date.now())}
+        onWheel={onUserScroll}
+        onPointerDown={onUserScroll}
+        onTouchStart={onUserScroll}
+        onKeyDown={onUserScroll}
       >
         <div className="lyrics-pad" />
         {lines.map((l, i) => {
@@ -377,12 +638,46 @@ export function LyricsView({ song, big = false }) {
             <div
               key={i}
               data-i={i}
-              className={`lyric-line ${i === active ? 'active' : ''} ${i < active ? 'past' : ''} ${l.translation ? 'translated' : ''} ${showTrans && l.translation ? 'show-sub' : ''}`}
+              className={`lyric-line ${i === active ? 'active' : ''} ${i < active ? 'past' : ''} ${(l.translation || (showRoman && l.roman)) ? 'translated' : ''}`}
               style={big && synced && i !== active ? { filter: `blur(${d * 0.6}px)` } : undefined}
-              onClick={() => synced && l.time >= 0 && (seek(l.time), (userScroll.current = 0))}
+              onClick={() => {
+                if (!synced || l.time < 0) return
+                // 点击某句是主动跳转，立即恢复正常跟随，不保留上一轮回滚动画。
+                clearTimeout(idleTimer.current)
+                cancelAnimationFrame(returnRaf.current)
+                returnRaf.current = 0
+                returning.current = false
+                userScroll.current = 0
+                seek(l.time)
+              }}
             >
-              <span className="lt-main">{l.text || '♪'}</span>
-              {l.translation && <span className="lt-sub-wrap" aria-hidden={!showTrans}><span className="lt-sub">{l.translation}</span></span>}
+              {/* 逐字高亮只在当前句渲染；past / 未到句子保持普通文本（AMLL 同款结构）。
+                  宽度不由 React 管理：rAF 每帧按 audio.currentTime 直接写 DOM，
+                  结构变化（切句）才触发 React 重渲染。 */}
+              {l.words?.length && syllablesEnabled && i === active ? (
+                <span className="lt-main karaoke" data-t0={l.words[0].time}>
+                  {l.words.map((w, wi) => (
+                    <span key={wi} className="kw">
+                      <span className="kw-fill" aria-hidden="true">{w.text}</span>
+                      {w.text}
+                    </span>
+                  ))}
+                </span>
+              ) : (
+                <span className="lt-main">{l.text || '♪'}</span>
+              )}
+              {/* 音译副行：插入在原文与译文之间，复用译文副行的结构与动画。
+                  两个副行各自展开，翻译关闭时音译不会把译文行一起撑开。 */}
+              {String(l.roman || '').trim() && (
+                <span className={`lt-sub-wrap lt-sub-wrap-roman ${showRoman ? 'on' : ''}`} aria-hidden={!showRoman}>
+                  <span className="lt-sub lt-sub-roman">{l.roman}</span>
+                </span>
+              )}
+              {l.translation && (
+                <span className={`lt-sub-wrap lt-sub-wrap-trans ${showTrans ? 'on' : ''}`} aria-hidden={!showTrans}>
+                  <span className="lt-sub">{l.translation}</span>
+                </span>
+              )}
             </div>
           )
         })}

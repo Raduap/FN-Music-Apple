@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { hasTranslation, lineAt, lyricFrame, lyricPlaceholder, toLines } from '../src/lyrics.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { clearLyricSessions, clearLyricsTranslation, detectLyricLang, hasTranslation, lineAt, lyricFrame, lyricPlaceholder, loadLyrics, loadLyricsView, toLines, translationTargets } from '../src/lyrics.js'
 
 describe('歌词', () => {
   const lines = toLines('[00:01.00]一\n[00:05.00]二\n[00:09.00]三')
@@ -45,6 +45,97 @@ describe('歌词', () => {
     expect(mono).toEqual([{ time: 1, text: '一' }, { time: 5, text: '二' }])
     expect(mono.some((l) => l.translation)).toBe(false)
     expect(hasTranslation(mono)).toBe(false)
+  })
+
+  it('识别歌词语言，避免翻译中文歌词', () => {
+    expect(detectLyricLang('Hello world')).toBe('latin')
+    expect(detectLyricLang('こんにちは世界')).toBe('ja')
+    expect(detectLyricLang('你好世界')).toBe('zh')
+    expect(detectLyricLang('안녕하세요')).toBe('ko')
+  })
+
+  it('侧栏与全屏并发加载时复用翻译结果，不用原文覆盖缓存', async () => {
+    const lyrics = '[00:01.00]Hello\n[00:05.00]World'
+    const id = 'race-song-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    let lyricCalls = 0
+    let translateCalls = 0
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => {
+      lyricCalls++
+      return { json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) }
+    }
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async ({ lines }) => {
+        translateCalls++
+        await new Promise((r) => setTimeout(r, 5))
+        return { ok: true, translations: lines.map((t) => `译:${t}`), source: 'netease', sourceCount: lines.length, aiCount: 0 }
+      },
+    }
+    try {
+      const song = { id, title: 'Race', artist: 'Tester', album: '', duration: 180 }
+      const [a, b] = await Promise.all([
+        loadLyrics(id, song, { translate: true }),
+        loadLyrics(id, song, { translate: true }),
+      ])
+      expect(lyricCalls).toBe(1)
+      expect(translateCalls).toBe(1)
+      expect(a[0].translation).toBe('译:Hello')
+      expect(b[0].translation).toBe('译:Hello')
+      expect(a).toEqual(b)
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+      else delete globalThis.window.fn
+    }
+  })
+
+  it('悬浮歌词先取原词时，晚到的翻译请求在共享加载完成后补翻译', async () => {
+    const lyrics = '[00:01.00]Hello\n[00:05.00]World'
+    const id = 'late-translate-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    let translateCalls = 0
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => ({ json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) })
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async ({ lines }) => {
+        translateCalls++
+        return { ok: true, translations: lines.map((t) => `译:${t}`), source: 'netease', sourceCount: lines.length, aiCount: 0 }
+      },
+    }
+    try {
+      const song = { id, title: 'Late', artist: 'Tester', album: '', duration: 180 }
+      // 悬浮歌词链路先发起（不翻译），主窗口歌词视图紧接着要译文
+      const originalP = loadLyrics(id, song, { translate: false })
+      const translatedP = loadLyrics(id, song, { translate: true })
+      const original = await originalP
+      const translated = await translatedP
+      expect(translateCalls).toBe(1)
+      expect(original[0].translation).toBeUndefined()
+      expect(translated[0].translation).toBe('译:Hello')
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+      else delete globalThis.window.fn
+    }
+  })
+
+  it('只为缺译文的外语行生成翻译目标', () => {
+    const lines = [
+      { time: 1, text: 'Hello' },
+      { time: 2, text: '你好', translation: '已有译文' },
+      { time: 3, text: '' },
+      { time: 4, text: 'World' },
+    ]
+    expect(translationTargets(lines)).toEqual([{ index: 0, text: 'Hello' }, { index: 3, text: 'World' }])
   })
 
   it('只有一个时间点的多行同时间歌词不合并', () => {
@@ -100,5 +191,198 @@ describe('歌词', () => {
       const mono = toLines('[00:01.00]甲\n[00:05.00]乙')
       expect(lyricFrame(mono, 2)).toMatchObject({ index: 0, lyric: '甲', lyricTrans: '', nextLyric: '乙', nextLyricTrans: '' })
     })
+    it('普通行没有 words，逐字行把词级时间轴带给悬浮窗', () => {
+      const plain = toLines('[00:01.00]甲\n[00:05.00]乙')
+      expect(lyricFrame(plain, 2).lyricWords).toBe(null)
+      const karaoke = [
+        { time: 1, text: '甲', words: [{ text: '甲', time: 1, end: 2 }] },
+        { time: 5, text: '乙', words: [{ text: '乙', time: 5, end: 6 }] },
+        { time: 9, text: '丙' },
+      ]
+      const frame = lyricFrame(karaoke, 2)
+      expect(frame.lyricWords).toEqual([{ text: '甲', time: 1, end: 2 }])
+      expect(frame.nextLyricWords).toEqual([{ text: '乙', time: 5, end: 6 }])
+      expect(lyricFrame(karaoke, 10).lyricWords).toBe(null)
+    })
+  })
+
+  it('romanization：音译与译文共用同一次源站请求，按行写入 roman', async () => {
+    const lyrics = '[00:01.00]君の名は\n[00:05.00]Hello'
+    const id = 'roman-shared-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    let calls = 0
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => ({ json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) })
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async ({ lines }) => {
+        calls++
+        return {
+          ok: true,
+          translations: lines.map((t) => (t === 'Hello' ? '你好' : '')),
+          romans: lines.map((t) => (t === '君の名は' ? 'kimi no na wa' : '')),
+          source: 'netease',
+          sourceCount: 1,
+          aiCount: 0,
+        }
+      },
+    }
+    try {
+      const song = { id, title: 'Kimi', artist: 'Tester', album: '', duration: 180 }
+      const lines = await loadLyrics(id, song, { translate: true, romanize: true })
+      expect(calls).toBe(1)
+      expect(lines[0].roman).toBe('kimi no na wa')
+      expect(lines[0].translation || '').toBe('')
+      expect(lines[1].translation).toBe('你好')
+      expect(lines[1].roman || '').toBe('')
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+    }
+  })
+
+  it('romanization 关闭时不写入 roman 字段', async () => {
+    const lyrics = '[00:01.00]君の名は'
+    const id = 'roman-off2-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => ({ json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) })
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async () => ({ ok: true, translations: ['译'], romans: ['roman'], source: 'netease', sourceCount: 0, aiCount: 0 }),
+    }
+    try {
+      const song = { id, title: 'Kimi', artist: 'Tester', album: '', duration: 180 }
+      const lines = await loadLyrics(id, song, { translate: true })
+      expect(lines[0].roman || '').toBe('')
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+    }
+  })
+
+  it('lyricFrame 携带 roman，供悬浮歌词音译副行使用', () => {
+    const lines = [
+      { time: 1, text: 'A', translation: '甲', roman: 'a' },
+      { time: 2, text: 'B', translation: '乙', roman: 'b' },
+      { time: 3, text: 'C', translation: '丙', roman: 'c' },
+    ]
+    expect(lyricFrame(lines, 1.5)).toMatchObject({ lyricRoman: 'a', nextLyricRoman: 'b', nextNextLyricRoman: 'c' })
+  })
+
+  it('只开音译（翻译关闭）：只写 roman，不写 translation、不触发 AI', async () => {
+    const lyrics = '[00:01.00]君の名は\n[00:05.00]Hello'
+    const id = 'roman-only-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    let lastPayload = null
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => ({ json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) })
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async (payload) => {
+        lastPayload = payload
+        return {
+          ok: true,
+          translations: ['', ''],
+          romans: ['kimi no na wa', 'hello'],
+          source: 'netease',
+          sourceCount: 0,
+          aiCount: 0,
+        }
+      },
+    }
+    try {
+      const song = { id, title: 'Kimi', artist: 'Tester', album: '', duration: 180 }
+      const lines = await loadLyrics(id, song, { translate: false, romanize: true })
+      expect(lastPayload.translate).toBe(false)
+      expect(lines[0].roman).toBe('kimi no na wa')
+      expect(lines[0].translation || '').toBe('')
+      expect(lines[1].roman).toBe('hello')
+      expect(lines[1].translation || '').toBe('')
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+    }
+  })
+
+  it('只开翻译（音译关闭）：只写 translation，不写 roman', async () => {
+    const lyrics = '[00:01.00]君の名は\n[00:05.00]Hello'
+    const id = 'trans-only-' + Date.now()
+    const oldFetch = globalThis.fetch
+    const oldFn = globalThis.window?.fn
+    let lastPayload = null
+    clearLyricsTranslation(id)
+    globalThis.fetch = async () => ({ json: async () => ({ code: 0, data: { list: [{ content: lyrics }] } }) })
+    globalThis.window = globalThis.window || {}
+    globalThis.window.fn = {
+      ...(oldFn || {}),
+      lyricsTranslate: async (payload) => {
+        lastPayload = payload
+        return { ok: true, translations: ['你的名字', '你好'], romans: ['kimi no na wa', 'hello'], source: 'netease', sourceCount: 2, aiCount: 0 }
+      },
+    }
+    try {
+      const song = { id, title: 'Kimi', artist: 'Tester', album: '', duration: 180 }
+      const lines = await loadLyrics(id, song, { translate: true, romanize: false })
+      expect(lastPayload.translate).toBe(true)
+      expect(lines[0].translation).toBe('你的名字')
+      expect(lines[0].roman || '').toBe('')
+      expect(lines[1].roman || '').toBe('')
+    } finally {
+      clearLyricsTranslation(id)
+      globalThis.fetch = oldFetch
+      if (oldFn) globalThis.window.fn = oldFn
+    }
+  })
+})
+
+
+
+describe('歌词视图共享会话', () => {
+  const song = { id: 'shared-session-song', title: 'Shared Session', artist: 'Tester', duration: 120 }
+
+  afterEach(() => {
+    clearLyricSessions()
+    clearLyricsTranslation(song.id)
+    delete globalThis.window
+    vi.restoreAllMocks()
+  })
+
+  it('全屏与侧栏先后挂载时只请求一次歌词与逐字', async () => {
+    let lyricCalls = 0
+    let syllableCalls = 0
+    globalThis.window = {
+      fn: {
+        lyricsSyllables: async () => {
+          syllableCalls++
+          return { ok: true, candidates: [] }
+        },
+        onLyricsSyllablesProgress: () => () => {},
+      },
+    }
+    const api = await import('../src/api.js')
+    vi.spyOn(api.api, 'lyric').mockImplementation(async () => {
+      lyricCalls++
+      return '[00:01.00]One\n[00:05.00]Two\n[00:09.00]Three\n[00:13.00]Four'
+    })
+
+    const options = { translate: false, romanize: false, syllables: true, overwriteLyrics: false }
+    const first = loadLyricsView(song, options, () => {})
+    await first.promise
+    const second = loadLyricsView(song, options, () => {})
+    await second.promise
+
+    expect(second.cached).toBe(true)
+    expect(lyricCalls).toBe(1)
+    expect(syllableCalls).toBe(1)
   })
 })
