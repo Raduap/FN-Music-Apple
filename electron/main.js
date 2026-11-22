@@ -3,6 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const { sha256, newDeviceId, normalizeBase, hostOf, authx, abortAfter, streamWithIdle, friendlyError } = require('./util')
 const { createTray, BALL_MODES } = require('./tray')
+const { createThumbar } = require('./thumbar')
 const { createBall } = require('./ball')
 const { createLyrics } = require('./lyricsWindow')
 const { createCoverCache, coverKey } = require('./coverCache')
@@ -125,6 +126,7 @@ function writePrefs(p) {
 // ---------- 主窗口、托盘与悬浮球 ----------
 let mainWindow = null
 let tray = null
+let thumbar = null
 let ball = null
 let lyricsWin = null
 let mainHidden = false // 主窗口被用户隐藏到托盘或最小化（启动时窗口还没显示出来不算）
@@ -627,7 +629,7 @@ function registerIpc() {
   ipcMain.handle('lyrics:set-style', (_e, patch) => { setLyricsStyle(patch || {}); return readPrefs().lyricsStyle || {} })
   ipcMain.handle('lyrics:reset-style', () => { if (lyricsWin) lyricsWin.resetStyle(); else writePrefs({ ...readPrefs(), lyricsStyle: {} }); return readPrefs().lyricsStyle || {} })
   ipcMain.on('lyrics:reset-position', () => lyricsWin?.resetPosition())
-  ipcMain.on('player:state', (_e, s) => { tray?.setPlayer(s); ball?.setState(s); lyricsWin?.setState(s) })
+  ipcMain.on('player:state', (_e, s) => { tray?.setPlayer(s); thumbar?.setPlayer(s); ball?.setState(s); lyricsWin?.setState(s) })
 
   ipcMain.on('win:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
   ipcMain.on('win:toggle-maximize', (e) => {
@@ -671,7 +673,11 @@ function createWindow() {
     },
   })
   if (prefs.maximized) win.maximize()
-  win.once('ready-to-show', () => win.show())
+  win.once('ready-to-show', () => {
+    win.show()
+    // 窗口有了任务栏按钮才能挂缩略图工具栏；重建窗口时由这里重新挂上
+    thumbar?.attach(win)
+  })
 
   const persist = () => {
     if (win.isDestroyed()) return
@@ -741,6 +747,7 @@ if (!gotLock) {
     covers.init()
     registerProxy()
     registerIpc()
+    thumbar = createThumbar({ command: playerCommand })
     mainWindow = createWindow()
     setupTray()
     setupBall()
