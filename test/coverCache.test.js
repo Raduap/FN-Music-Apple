@@ -176,4 +176,45 @@ describe('limiter', () => {
     await expect(run(() => { throw new Error('x') })).rejects.toThrow('x')
     await expect(run(() => 2)).resolves.toBe(2)
   })
+
+  it('prio 任务插到同级等待任务之前', async () => {
+    const run = limiter(1)
+    let release
+    const gate = new Promise((r) => (release = r))
+    const order = []
+    const a = run(async () => { order.push('a'); await gate })
+    const b = run(async () => { order.push('b') })
+    const c = run(async () => { order.push('c') }, true)
+    const d = run(async () => { order.push('d') })
+    await vi.waitFor(() => expect(order).toEqual(['a']))
+    release()
+    await Promise.all([a, b, c, d])
+    expect(order).toEqual(['a', 'c', 'b', 'd'])
+  })
+
+  it('prio 只影响排队顺序，不突破并发上限', async () => {
+    const run = limiter(2)
+    let release
+    const gate = new Promise((r) => (release = r))
+    const started = []
+    const ps = ['1', '2', '3', '4'].map((n, i) => run(async () => { started.push(n); await gate }, i === 3))
+    await vi.waitFor(() => expect(started).toEqual(['1', '2']))
+    release()
+    await Promise.all(ps)
+    expect(started).toEqual(['1', '2', '4', '3'])
+  })
+})
+
+describe('封面请求优先级', () => {
+  it('get 传 prio 时该封面先于等待中的普通封面出队', async () => {
+    const nas = fakeNas()
+    const release = nas.hold()
+    const c = createCoverCache({ dir, fetchUpstream: nas, concurrency: 2 })
+    const cold = ['1', '2', '3', '4'].map((n) => c.get(n.repeat(40), 'u' + n))
+    await vi.waitFor(() => expect(c.stats()).toMatchObject({ active: 2, waiting: 2 }))
+    const hot = c.get('5'.repeat(40), 'u5', true)
+    release()
+    await Promise.all([...cold, hot])
+    expect(nas.calls).toEqual(['u1', 'u2', 'u5', 'u3', 'u4'])
+  })
 })

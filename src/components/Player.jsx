@@ -185,7 +185,7 @@ export function PlayerBar() {
         {song ? (
           <>
             <button key={'c' + song.id} className="pb-cover swap" onClick={openFullPlayer} title="展开正在播放" aria-label="展开正在播放">
-              <Cover coverId={song.coverId} size={52} px={160} />
+              <Cover coverId={song.coverId} size={52} px={160} prio />
               <span className="pb-expand"><Icon.Expand size={16} /></span>
             </button>
             <div key={'m' + song.id} className="pb-meta swap">
@@ -530,8 +530,9 @@ export function FullPlayer() {
   return (
     <div className={`fullplayer ${open ? 'open' : ''}`} style={{ '--np-r': r, '--np-g': g, '--np-b': b }} role="dialog" aria-modal="true" aria-label="正在播放" inert={!open}>
       <div className="fp-bg">
-        {open && song?.coverId && <Cover coverId={song.coverId} px={160} className="fp-bg-img a" />}
-        {open && song?.coverId && <Cover coverId={song.coverId} px={160} className="fp-bg-img b" />}
+        {/* 背景要铺满 120vmax 再模糊，160 放大后基本糊成色块；用 600 并让 160 先垫底 */}
+        {open && song?.coverId && <Cover coverId={song.coverId} px={600} prio className="fp-bg-img a" />}
+        {open && song?.coverId && <Cover coverId={song.coverId} px={600} prio className="fp-bg-img b" />}
         <div className="fp-bg-tint" />
       </div>
       <div className="fp-top">
@@ -542,7 +543,7 @@ export function FullPlayer() {
           <div className="fp-left">
             <div className="fp-art-wrap">
               <div className={`fp-art ${playing ? 'playing' : ''}`}>
-                <Cover key={song.id} className="swap" coverId={song.coverId} px={1024} />
+                <Cover key={song.id} className="swap" coverId={song.coverId} px={1024} prio />
               </div>
             </div>
             <div className="fp-meta">

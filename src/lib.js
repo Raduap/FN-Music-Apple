@@ -44,7 +44,7 @@ export function useCoverColor(coverId) {
     if (colorCache.has(coverId)) { setColor(colorCache.get(coverId)); return }
     let dead = false
     // 与界面上的封面共用缓存（播放栏已经加载过 160 尺寸，通常无需再请求）
-    const cover = acquireCover(coverId, 160)
+    const cover = acquireCover(coverId, 160, true)
     const img = new Image()
     img.onload = () => {
       try {

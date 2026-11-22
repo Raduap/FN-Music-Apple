@@ -475,10 +475,10 @@ const proxyError = (e) => new Response(JSON.stringify({ code: -1, msg: '无法�
   headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*' },
 })
 
-async function serveCover(u, target) {
+async function serveCover(u, target, prio) {
   try {
     const q = u.searchParams
-    const r = await covers.get(coverKey(state.base, q.get('coverId') || '', q.get('size') || ''), target)
+    const r = await covers.get(coverKey(state.base, q.get('coverId') || '', q.get('size') || ''), target, prio)
     const headers = { 'content-type': r.type || 'application/octet-stream', 'access-control-allow-origin': '*', 'x-fnm-cache': r.source }
     if (r.status === 200) headers['cache-control'] = 'public, max-age=604800'
     return new Response(r.body, { status: r.status, headers })
@@ -493,7 +493,9 @@ function registerProxy() {
     if (!state.base) return new Response('not configured', { status: 503 })
     const u = new URL(request.url)
     const target = state.base + u.pathname + u.search
-    if (covers && request.method === 'GET' && u.pathname === '/api/v1/static/cover') return serveCover(u, target)
+    if (covers && request.method === 'GET' && u.pathname === '/api/v1/static/cover') {
+      return serveCover(u, target, request.headers.get('x-fnm-prio') === '1')
+    }
     const headers = new Headers()
     for (const h of ['range', 'content-type', 'accept', 'if-none-match', 'if-modified-since']) {
       const v = request.headers.get(h)

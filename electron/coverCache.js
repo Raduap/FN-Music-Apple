@@ -23,18 +23,21 @@ function coverKey(base, coverId, size) {
   return crypto.createHash('sha1').update(`${base}|${coverId}|${size || ''}`).digest('hex')
 }
 
-// 简单的并发限制
+// 简单的并发限制，支持两级优先级（正在播放的封面走 hot 队列，先于列表卡片出队）
 function limiter(max) {
   let active = 0
+  const hot = []
   const waiting = []
   const next = () => {
-    if (active >= max || !waiting.length) return
+    if (active >= max) return
+    const q = hot.length ? hot : waiting
+    if (!q.length) return
     active++
-    const { fn, resolve, reject } = waiting.shift()
+    const { fn, resolve, reject } = q.shift()
     Promise.resolve().then(fn).then(resolve, reject).finally(() => { active--; next() })
   }
-  const run = (fn) => new Promise((resolve, reject) => { waiting.push({ fn, resolve, reject }); next() })
-  run.stats = () => ({ active, waiting: waiting.length })
+  const run = (fn, prio = false) => new Promise((resolve, reject) => { (prio ? hot : waiting).push({ fn, resolve, reject }); next() })
+  run.stats = () => ({ active, waiting: waiting.length + hot.length })
   return run
 }
 
@@ -110,13 +113,13 @@ function createCoverCache({ dir, fetchUpstream, maxBytes = 400 * 1024 * 1024, tt
   }
 
   // 向 NAS 拉取（同一张封面并发只拉一次），成功的图片写入磁盘
-  function fetchAndStore(key, url) {
+  function fetchAndStore(key, url, prio = false) {
     if (inflight.has(key)) return inflight.get(key)
     const p = limit(async () => {
       const res = await fetchUpstream(url)
       const body = Buffer.from(await res.arrayBuffer())
       return { status: res.status, type: (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase(), body }
-    })
+    }, prio)
       .then(async (r) => {
         if (r.status === 200 && r.body.length && EXT_BY_TYPE[r.type]) {
           missing.delete(key)
@@ -132,21 +135,21 @@ function createCoverCache({ dir, fetchUpstream, maxBytes = 400 * 1024 * 1024, tt
   }
 
   /** @returns {Promise<{ status: number, type: string, body: Buffer, source: 'disk' | 'net' | 'missing' }>} */
-  async function get(key, url) {
+  async function get(key, url, prio = false) {
     await init()
     const hit = index.get(key)
     if (hit) {
       try {
         const body = await fsp.readFile(file(key, hit.ext))
         hit.used = now()
-        if (now() - hit.fetched > ttl) fetchAndStore(key, url).catch(() => {}) // 过期：先返回旧图，后台更新
+        if (now() - hit.fetched > ttl) fetchAndStore(key, url, prio).catch(() => {}) // 过期：先返回旧图，后台更新
         return { status: 200, type: TYPE_BY_EXT[hit.ext], body, source: 'disk' }
       } catch {
         remove(key) // 文件被删或损坏，当作未缓存
       }
     }
     if (missing.has(key)) return { status: 404, type: 'text/plain', body: Buffer.alloc(0), source: 'missing' }
-    return fetchAndStore(key, url)
+    return fetchAndStore(key, url, prio)
   }
 
   async function clear() {
