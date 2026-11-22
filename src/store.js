@@ -3,6 +3,8 @@ import { api, streamUrl, invalidate } from './api'
 import { acquireCover, prefetchCover } from './covers'
 import { lineAt, loadLyrics } from './lyrics'
 import { shuffled, stripSourceTitle } from './lib'
+import { hasNextLyric, hasTranslation, lyricFrame, loadLyrics } from './lyrics'
+import { shuffled } from './lib'
 import { applyMotion } from './motion'
 import { DEFAULT_WALLPAPER, applyPalette, isPalette } from './appearance'
 
@@ -19,6 +21,10 @@ let pendingSeek = 0
 
 // 尚未完成的“喜欢”写请求。界面会先乐观更新，“喜欢的歌曲”页面读取列表前要等这些请求完成，否则会读到旧数据
 const favoriteWrites = new Set()
+
+// 当前这次播放是否已上报过 track_play。切歌 / 重播时由 _load 重置，避免缓冲反复触发
+// playing 事件时重复上报；上报走官方 event/report，fnmusic-ext 插件据此写在线播放历史。
+let reportedPlayId = ''
 function trackFavorite(p) {
   favoriteWrites.add(p)
   p.catch(() => {}).finally(() => favoriteWrites.delete(p))
@@ -50,8 +56,14 @@ export const useUI = create((set, get) => ({
   wallpaper: { ...DEFAULT_WALLPAPER, ...LS.get('wallpaper', {}) },
   wallpaperUrl: '', // 自选图片的 blob URL（图片本身存在主进程的 userData 里）
   appearanceOpen: false,
+  lyricsSettingsOpen: false,
+  floatingLyrics: false, // 悬浮歌词窗口是否开启（真实状态以主进程 prefs 为准）
+  lyricsStyle: {}, // 悬浮歌词样式（主进程 prefs.lyricsStyle）
+  lyricsStyleSeq: 0, // 丢弃过期样式写入响应，避免快速拖动滑块时旧值覆盖新值
+  lyricsBackgroundUrl: '', // 悬浮歌词自定义背景的 blob URL（图片本身存在主进程 userData 里）
   motion: LS.get('motion', 'on'),
   sidebarCollapsed: LS.get('sbCollapsed', false),
+  translation: LS.get('translation', true), // 双语歌词是否显示译文
   pageTitle: '', // 当前页面标题，滚动后显示在顶部导航条里
   scrolled: false,
 
@@ -67,6 +79,7 @@ export const useUI = create((set, get) => ({
   togglePanel: (p) => set((s) => ({ panel: s.panel === p ? null : p })),
   closePanel: () => set({ panel: null }),
   toggleSidebar: () => set((s) => { LS.set('sbCollapsed', !s.sidebarCollapsed); return { sidebarCollapsed: !s.sidebarCollapsed } }),
+  toggleTranslation: () => set((s) => { LS.set('translation', !s.translation); return { translation: !s.translation } }),
   setPageTitle: (pageTitle) => set({ pageTitle }),
   setScrolled: (scrolled) => set((s) => (s.scrolled === scrolled ? s : { scrolled })),
   setFullPlayer: (v) => set({ fullPlayer: v }),
@@ -119,6 +132,61 @@ export const useUI = create((set, get) => ({
   },
   openAppearance: () => set({ appearanceOpen: true }),
   closeAppearance: () => set({ appearanceOpen: false }),
+  openLyricsSettings: () => set({ lyricsSettingsOpen: true }),
+  closeLyricsSettings: () => set({ lyricsSettingsOpen: false }),
+  async loadLyricsPrefs() {
+    const r = await window.fn.lyricsGet?.().catch(() => null)
+    if (!r) return
+    set({ floatingLyrics: !!r.on, lyricsStyle: r.style || {} })
+    get().loadLyricsBackground()
+  },
+  async loadLyricsBackground() {
+    const r = await window.fn.getLyricsBackground?.().catch(() => null)
+    const old = get().lyricsBackgroundUrl
+    if (!r?.data) {
+      if (old) URL.revokeObjectURL(old)
+      set({ lyricsBackgroundUrl: '' })
+      if (get().lyricsStyle?.customImage) get().setLyricsStyle({ customImage: false })
+      return
+    }
+    const next = URL.createObjectURL(new Blob([r.data], { type: r.type }))
+    set({ lyricsBackgroundUrl: next })
+    if (old) URL.revokeObjectURL(old)
+  },
+  async chooseLyricsBackground() {
+    const r = await window.fn.chooseLyricsBackground?.()
+    if (r?.cancelled) return false
+    if (!r?.ok) { get().showToast(r?.error || '无法使用这张图片'); return false }
+    await get().loadLyricsBackground()
+    return true
+  },
+  async removeLyricsBackground() {
+    await window.fn.clearLyricsBackground?.()
+    const old = get().lyricsBackgroundUrl
+    if (old) URL.revokeObjectURL(old)
+    set({ lyricsBackgroundUrl: '' })
+  },
+  async setFloatingLyrics(on) {
+    set({ floatingLyrics: !!on })
+    const v = await window.fn.lyricsSetOn?.(!!on).catch(() => !!on)
+    set({ floatingLyrics: !!v })
+  },
+  async setLyricsStyle(patch) {
+    const lyricsStyle = { ...get().lyricsStyle, ...patch }
+    set({ lyricsStyle })
+    const seq = (get().lyricsStyleSeq || 0) + 1
+    set({ lyricsStyleSeq: seq })
+    const saved = await window.fn.lyricsSetStyle?.(patch).catch(() => lyricsStyle)
+    if (get().lyricsStyleSeq !== seq) return
+    set({ lyricsStyle: saved || lyricsStyle })
+  },
+  async resetLyricsStyle() {
+    const seq = (get().lyricsStyleSeq || 0) + 1
+    set({ lyricsStyle: {}, lyricsStyleSeq: seq })
+    const saved = await window.fn.lyricsResetStyle?.().catch(() => ({}))
+    if (get().lyricsStyleSeq !== seq) return
+    set({ lyricsStyle: saved || {} })
+  },
 
   async loadPlaylists() {
     try { set({ playlists: await api.playlists() }) } catch {}
@@ -210,6 +278,7 @@ export const usePlayer = create((set, get) => ({
 
   _load(song, autoplay = true, start = 0) {
     pendingSeek = 0
+    reportedPlayId = '' // 新的一首：首次真正出声时再上报播放
     audio.src = streamUrl(song.id)
     audio.currentTime = 0
     if (start > 0) {
@@ -399,7 +468,14 @@ window.addEventListener('beforeunload', saveCurrentPosition)
 audio.volume = usePlayer.getState().volume
 audio.addEventListener('play', () => usePlayer.setState({ playing: true }))
 audio.addEventListener('pause', () => usePlayer.setState({ playing: false }))
-audio.addEventListener('playing', () => usePlayer.setState({ loading: false, playing: true }))
+audio.addEventListener('playing', () => {
+  usePlayer.setState({ loading: false, playing: true })
+  const song = usePlayer.getState().queue[usePlayer.getState().index]
+  if (song && song.id && song.id !== reportedPlayId) {
+    reportedPlayId = song.id
+    api.reportPlay(song, Date.now()).catch(() => {}) // 历史上报失败不影响播放
+  }
+})
 audio.addEventListener('waiting', () => usePlayer.setState({ loading: true }))
 audio.addEventListener('ended', () => usePlayer.getState().next(true))
 audio.addEventListener('loadedmetadata', () => {
@@ -463,6 +539,7 @@ if ('mediaSession' in navigator) {
 // 歌曲、播放状态、歌词行等变化时立即发送；进度只在跳转或每秒同步一次，悬浮球自己按时间推算进度
 let lyricFor = ''
 let lyricLines = []
+let lyricsReady = true
 let lastKey = ''
 let lastSync = { at: 0, time: 0, playing: false }
 function broadcast() {
@@ -471,12 +548,19 @@ function broadcast() {
   if ((song?.id || '') !== lyricFor) {
     lyricFor = song?.id || ''
     lyricLines = []
+    lyricsReady = !song
     if (song) {
       const id = song.id
-      loadLyrics(id).then((lines) => { if (lyricFor === id) { lyricLines = lines; broadcast() } })
+      loadLyrics(id).then((lines) => {
+        if (lyricFor === id) {
+          lyricLines = lines
+          lyricsReady = true
+          broadcast()
+        }
+      })
     }
   }
-  const line = lineAt(lyricLines, s.currentTime + 0.25)
+  const frame = lyricFrame(lyricLines, s.currentTime + 0.25)
   const state = {
     title: song?.title || '',
     artist: song?.artist || '',
@@ -487,7 +571,17 @@ function broadcast() {
     loading: s.loading,
     duration: s.duration || song?.duration || 0,
     volume: s.muted ? 0 : s.volume,
-    lyric: line >= 0 ? lyricLines[line].text : '',
+    lyric: frame.lyric,
+    lyricsReady,
+    hasLyrics: lyricLines.length > 0,
+    hasTranslation: hasTranslation(lyricLines),
+    hasNext: hasNextLyric(lyricLines),
+    lyricIndex: frame.index,
+    lyricTrans: frame.lyricTrans,
+    nextLyric: frame.nextLyric,
+    nextLyricTrans: frame.nextLyricTrans,
+    nextNextLyric: frame.nextNextLyric,
+    nextNextLyricTrans: frame.nextNextLyricTrans,
     motion: useUI.getState().motion,
     palette: useUI.getState().palette,
   }
@@ -512,6 +606,9 @@ window.fn?.onPlayerCommand?.((cmd, arg) => {
   else if (cmd === 'favorite' && song) p.toggleFavorite(song)
   else if (cmd === 'volume' && Number.isFinite(arg)) p.setVolume((p.muted ? 0 : p.volume) + arg)
 })
+
+// 悬浮歌词可能在浮窗 X 按钮 / 托盘 / 右键菜单里被开关，主进程广播后同步播放栏按钮状态
+window.fn?.onLyricsOnChanged?.((on) => useUI.setState({ floatingLyrics: !!on }))
 
 audio.addEventListener('play', () => { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing' })
 audio.addEventListener('pause', () => { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused' })

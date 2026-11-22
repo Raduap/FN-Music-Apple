@@ -9,8 +9,54 @@ const pending = new Map() // id -> Promise<lines>
 // LRC 解析；没有时间戳的纯文本歌词也保留（time = -1，不滚动）
 export function toLines(text) {
   const lines = parseLrc(text)
-  if (lines.length || !text) return lines
-  return text.split(/\r?\n/).map((t) => t.replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean).map((t) => ({ time: -1, text: t }))
+  if (!lines.length) {
+    if (!text) return []
+    return text.split(/\r?\n/).map((t) => t.replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean).map((t) => ({ time: -1, text: t }))
+  }
+  return mergeTranslations(lines)
+}
+
+// 双语歌词的常见写法：原文与译文使用相同的时间戳（连续两行）。
+// 只有至少 3 个不同时间点都出现同时间歌词组时，才按该格式合并；
+// 避免普通重复歌词被误判成双语。
+const SAME_TIME = 0.005
+const hasText = (line) => !!String(line?.text || '').trim()
+function sameTimeGroups(lines) {
+  const groups = []
+  for (const l of lines) {
+    const prev = groups[groups.length - 1]
+    if (prev && Math.abs(prev.time - l.time) < SAME_TIME) prev.lines.push(l)
+    else groups.push({ time: l.time, lines: [l] })
+  }
+  return groups
+}
+function mergeTranslations(lines) {
+  const groups = sameTimeGroups(lines)
+  const translationGroups = groups.filter((g) => g.lines.filter(hasText).length >= 2)
+  if (translationGroups.length < 3) return lines.map((l) => ({ ...l }))
+  const out = []
+  for (const g of groups) {
+    const [first, ...rest] = g.lines
+    const translation = rest.map((l) => l.text).filter((t) => String(t || '').trim()).join('\n')
+    out.push(translation ? { ...first, translation } : { ...first })
+  }
+  return out
+}
+
+const hasLyricText = (line) => !!String(line?.text || '').trim()
+
+/** 歌词里是否含译文（用于决定要不要显示翻译开关） */
+export const hasTranslation = (lines) => lines.some((l) => l.translation)
+
+/** 是否存在“下一句”（用于让胶囊尺寸在一首歌内保持恒定，避免伴奏句跳变） */
+export function hasNextLyric(lines) {
+  let found = false
+  for (const line of lines) {
+    if (!hasLyricText(line)) continue
+    if (found) return true
+    found = true
+  }
+  return false
 }
 
 export const peekLyrics = (id) => done.get(id)
@@ -37,4 +83,44 @@ export function lineAt(lines, t) {
     if (lines[mid].time <= t) { ans = mid; lo = mid + 1 } else hi = mid - 1
   }
   return ans
+}
+
+/** 从 from 之后找下一句真正有文本的歌词，跳过纯伴奏 / 间隔空行 */
+function nextLyricLine(lines, from) {
+  for (let i = from + 1; i < lines.length; i++) {
+    if (hasLyricText(lines[i])) return { line: lines[i], index: i }
+  }
+  return { line: null, index: -1 }
+}
+
+/**
+ * 悬浮歌词没有当前句 / 下一句时的兜底文案。
+ * 关键点：歌词未加载完不能当作“纯音乐”；只有确实加载完且没有歌词时才显示纯音乐。
+ */
+export function lyricPlaceholder({ lyric, nextLyric, lyricsReady, hasLyrics, title } = {}) {
+  if (lyric || nextLyric) return ''
+  if (lyricsReady === true && !hasLyrics && title) return '纯音乐，请欣赏'
+  return title || '未在播放'
+}
+
+/**
+ * 悬浮歌词用的“一帧”：当前句原文 + 译文 + 下一句原文。
+ * “下一句”会跳过伴奏 / 间隔空行；前奏时把首句作为“待播放”预告返回。
+ * 同时带下一句的再下一句，方便伴奏期间仍显示真正的后续歌词而不是空行。
+ * 纯函数，便于单测；当前句下标沿用 lineAt 的语义。
+ */
+export function lyricFrame(lines, t) {
+  const i = lineAt(lines, t)
+  const cur = i >= 0 ? lines[i] : null
+  const next = nextLyricLine(lines, i)
+  const afterNext = next.index >= 0 ? nextLyricLine(lines, next.index) : { line: null }
+  return {
+    index: i,
+    lyric: cur?.text || '',
+    lyricTrans: cur?.translation || '',
+    nextLyric: next.line?.text || '',
+    nextLyricTrans: next.line?.translation || '',
+    nextNextLyric: afterNext.line?.text || '',
+    nextNextLyricTrans: afterNext.line?.translation || '',
+  }
 }

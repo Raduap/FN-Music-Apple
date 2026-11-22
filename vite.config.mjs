@@ -29,8 +29,8 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    // 主窗口与悬浮球是两个页面
-    rollupOptions: { input: { main: 'index.html', ball: 'ball.html' } },
+    // 主窗口、悬浮球与悬浮歌词是三个页面
+    rollupOptions: { input: { main: 'index.html', ball: 'ball.html', lyrics: 'lyrics.html' } },
   },
   // 单元测试；e2e/ 下的端到端测试需要 Electron，单独用 npm run test:e2e 运行
   test: { include: ['test/**/*.test.js'] },
