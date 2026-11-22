@@ -10,6 +10,12 @@ export class ApiError extends Error {
 
 let reloginPromise = null
 
+// token 失效时静默重登一次，并发请求共享同一次重登。封面等非 JSON 请求也走这里。
+export function reloginOnce() {
+  reloginPromise ||= window.fn.relogin().finally(() => (reloginPromise = null))
+  return reloginPromise
+}
+
 // 渲染进程侧的超时兜底：即使主进程的代理卡住，前端也不会无限等待。
 const REQUEST_TIMEOUT = 20000
 
@@ -44,8 +50,7 @@ async function call(path, opts) {
   let json = await raw(path, opts)
   if (json.code === 99999) {
     // token 失效：静默重登一次，并发请求共享同一次重登
-    reloginPromise ||= window.fn.relogin().finally(() => (reloginPromise = null))
-    const r = await reloginPromise
+    const r = await reloginOnce()
     if (!r.ok) {
       window.dispatchEvent(new CustomEvent('fn:auth-lost'))
       throw new ApiError('登录已失效，请重新登录', 99999)

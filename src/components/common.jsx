@@ -13,13 +13,17 @@ export const SONG_DRAG_TYPE = 'application/x-fnmusic-songs'
 
 // ---------- 封面（加载、排队与缓存见 src/covers.js） ----------
 // size：显示尺寸（px，用于布局）；px：向服务器请求的图片尺寸（160 / 600 / 1024），列表小图用 160 可大幅减少流量
-export function Cover({ coverId, size, px = 600, round, className = '', alt = '', icon = 'note' }) {
+export function Cover({ coverId, size, px = 600, round, className = '', alt = '', icon = 'note', prio = false }) {
   const ref = useRef(null)
-  const { status, url, placeholder } = useCover(ref, coverId, px)
-  // 已在内存中的图片直接显示，不做淡入（例如返回上一页时）
-  const [shown, setShown] = useState(() => status === 'done')
-  const firstUrl = useRef(url)
-  useEffect(() => { if (url !== firstUrl.current) setShown(false) }, [url])
+  const { status, url, placeholder } = useCover(ref, coverId, px, prio)
+  const [shown, setShown] = useState(false)
+  const imgRef = useRef(null)
+  // 图片可能在我们挂上 onLoad 之前就已经解码完成（blob 命中内存缓存时不会再触发 load），
+  // 所以挂载后要直接读 complete/naturalWidth，否则会永远停在 opacity:0 的骨架屏上
+  useLayoutEffect(() => {
+    const img = imgRef.current
+    setShown(!!(img && img.complete && img.naturalWidth > 0))
+  }, [url])
 
   const Fallback = icon === 'person' ? Icon.Person : Icon.Note
   const failed = !coverId || status === 'missing' || status === 'fail'
@@ -33,7 +37,7 @@ export function Cover({ coverId, size, px = 600, round, className = '', alt = ''
       {!failed && !shown && !placeholder && <div className="cover-skeleton" />}
       {placeholder && <img src={placeholder} alt="" decoding="async" draggable={false} className="ph" />}
       {url && (
-        <img src={url} alt={alt} decoding="async" draggable={false} className={shown ? 'loaded' : ''} onLoad={() => setShown(true)} />
+        <img ref={imgRef} src={url} alt={alt} decoding="async" draggable={false} className={shown ? 'loaded' : ''} onLoad={() => setShown(true)} />
       )}
     </div>
   )

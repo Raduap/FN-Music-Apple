@@ -502,7 +502,7 @@ function updateMediaSession(song) {
   const meta = { title: song.title, artist: song.artist, album: song.album }
   navigator.mediaSession.metadata = new MediaMetadata(meta)
   art?.release()
-  art = song.coverId ? acquireCover(song.coverId, 600) : null
+  art = song.coverId ? acquireCover(song.coverId, 600, true) : null
   art?.promise.then((url) => {
     if (!url || usePlayer.getState().queue[usePlayer.getState().index]?.id !== song.id) return
     navigator.mediaSession.metadata = new MediaMetadata({ ...meta, artwork: [{ src: url, sizes: '600x600' }] })

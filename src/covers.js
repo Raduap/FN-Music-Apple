@@ -1,14 +1,18 @@
 // 封面加载（渲染进程）
 //
 // - 每张图（coverId + 尺寸）只请求一次，结果缓存为 blob URL；主进程另有磁盘缓存，重启后不必再找 NAS 要
-// - 排队加载，屏幕内的封面优先于预加载（屏幕外 400px 内）的封面；已滚出范围、无人等待的请求直接放弃
+// - 排队加载：当前歌曲（prio）最先，其次屏幕内，最后是预加载（屏幕外 400px 内）；已滚出范围、无人等待的请求直接放弃
 // - 内存里已有同一封面更大的尺寸时直接用它；只有更小的尺寸时先拿来垫底，清晰版加载完再替换
-// - 封面不存在（4xx）本次运行内不再请求；网络错误重试两次，之后有组件重新挂载时再试
+// - 只有 400/404/410 才算"封面不存在"（本次运行内不再请求）；401/403 静默重登一次；其余错误（含 429、超时、
+//   返回非图片）按可重试处理：失败后仍会在 5s / 10s / 15s 自动重试，组件重新挂载时立即重试
 import { useEffect, useReducer, useRef, useState } from 'react'
-import { coverUrl } from './api'
+import { coverUrl, reloginOnce } from './api'
 
 const CONCURRENCY = 6 // 主进程会把同时访问 NAS 的封面请求限制在 3 个，这里多出的部分多为磁盘缓存命中
 const MAX_ENTRIES = 600
+const MISSING = new Set([400, 404, 410]) // 封面不存在 / coverId 无效
+const AUTH = new Set([401, 403]) // 凭证失效，重登后可以再试
+const TIMEOUT = 20000 // 单次尝试的上限（主进程 30s，这里先放弃并重试，命中的图片仍会落盘）
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const sizeOf = (size) => size || Infinity // 不传尺寸 = 原图
 
@@ -18,12 +22,12 @@ const queue = new Set()
 let active = 0
 let seq = 0
 
-/** entry: { id, size, refs, vis, seq, status: idle|queued|loading|done|fail|missing, url, subs } */
+/** entry: { id, size, refs, vis, prio, seq, retry, reauth, status: idle|queued|loading|done|fail|missing, url, subs } */
 function entryOf(id, size) {
   const k = `${id}@${size || ''}`
   let e = entries.get(k)
   if (!e) {
-    entries.set(k, (e = { k, id, size, refs: 0, vis: 0, seq: 0, status: 'idle', url: '', subs: new Set() }))
+    entries.set(k, (e = { k, id, size, refs: 0, vis: 0, prio: 0, seq: 0, retry: 0, reauth: false, status: 'idle', url: '', subs: new Set() }))
     if (!byId.has(id)) byId.set(id, new Set())
     byId.get(id).add(e)
   }
@@ -31,11 +35,14 @@ function entryOf(id, size) {
 }
 function drop(e) {
   if (e.url) URL.revokeObjectURL(e.url)
+  clearTimeout(e.retryTimer)
+  e.retryTimer = null
   entries.delete(e.k)
   const set = byId.get(e.id)
   set?.delete(e)
   if (set && !set.size) byId.delete(e.id)
 }
+const clearRetry = (e) => { clearTimeout(e.retryTimer); e.retryTimer = null }
 
 // 内存中已加载好的、尺寸不小于 size 的同一封面（取最小的那个）
 function doneAtLeast(id, size) {
@@ -57,6 +64,7 @@ function doneSmaller(id, size) {
 const notify = (e) => e.subs.forEach((f) => f())
 
 function request(e) {
+  clearRetry(e)
   if (e.status === 'fail') e.status = 'idle'
   if (e.status !== 'idle') return
   e.status = 'queued'
@@ -65,13 +73,26 @@ function request(e) {
   pump()
 }
 
-// 取下一个：屏幕内的优先，其次按请求先后
+// 失败后自动重试，避免"这一首就是不出图"只能靠切歌 / 重启
+function scheduleRetry(e) {
+  if (e.refs === 0 || e.retry >= 3) return
+  const wait = 5000 * (e.retry + 1)
+  e.retry++
+  clearRetry(e)
+  e.retryTimer = setTimeout(() => {
+    e.retryTimer = null
+    if (e.refs > 0 && e.status === 'fail') request(e)
+  }, wait)
+}
+
+// 取下一个：当前歌曲 > 屏幕内 > 预加载，同级按请求先后
+const tier = (e) => (e.prio > 0 ? 2 : e.vis > 0 ? 1 : 0)
 function pump() {
   while (active < CONCURRENCY && queue.size) {
     let best = null
     for (const e of queue) {
       if (e.refs === 0) { queue.delete(e); e.status = 'idle'; continue } // 已无人等待，放弃
-      if (!best || (e.vis > 0 && best.vis === 0) || ((e.vis > 0) === (best.vis > 0) && e.seq < best.seq)) best = e
+      if (!best || tier(e) > tier(best) || (tier(e) === tier(best) && e.seq < best.seq)) best = e
     }
     if (!best) return
     queue.delete(best)
@@ -80,24 +101,48 @@ function pump() {
   }
 }
 
+async function fetchCover(e) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TIMEOUT)
+  try {
+    // prio 透传到主进程：那里对 NAS 的并发是 3，正在播放的封面也要排在卡片前面
+    return await fetch(coverUrl(e.id, e.size), { signal: controller.signal, headers: e.prio > 0 ? { 'x-fnm-prio': '1' } : undefined })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function load(e) {
   e.status = 'loading' // 重试期间保持 loading，避免别处再发起一次
   let result = 'fail'
   for (let i = 0; i < 3 && result === 'fail'; i++) {
     if (i) await sleep(700 * i)
+    if (e.refs === 0) { result = 'idle'; break } // 已经没人等了，别再占着并发位
     try {
-      const r = await fetch(coverUrl(e.id, e.size))
-      if (r.status >= 400 && r.status < 500) { result = 'missing'; break } // 封面不存在 / ID 无效，重试也没用
+      let r = await fetchCover(e)
+      if (AUTH.has(r.status) && !e.reauth) {
+        // token 失效 / 网关拒绝：重登一次再试，不能当成"封面不存在"
+        e.reauth = true
+        const ok = await reloginOnce().catch(() => null)
+        if (ok?.ok) r = await fetchCover(e)
+      }
+      if (MISSING.has(r.status)) { result = 'missing'; break } // 封面不存在 / ID 无效，重试也没用
       if (!r.ok) throw new Error('HTTP ' + r.status)
       const blob = await r.blob()
       // 登录失效时服务器可能返回 JSON 错误，不能当成图片
       if (!blob.size || !blob.type.startsWith('image/')) throw new Error('not an image')
+      if (e.url) URL.revokeObjectURL(e.url)
       e.url = URL.createObjectURL(blob)
       result = 'done'
     } catch {}
   }
   e.status = result
-  if (result === 'done') evict()
+  if (result === 'done') {
+    e.retry = 0
+    e.reauth = false
+    clearRetry(e)
+    evict()
+  } else if (result === 'fail') scheduleRetry(e)
   notify(e)
 }
 
@@ -114,16 +159,26 @@ const touch = (e) => { entries.delete(e.k); entries.set(e.k, e) }
 
 /**
  * 加载封面并占用它，返回 { url, release }；url 为空串表示没有封面。
+ * prio：当前歌曲等必须尽快显示的封面，排队时排在最前。
  * 用完调用 release()，之后 url 可能被回收。
  */
-export function acquireCover(id, size) {
+export function acquireCover(id, size, prio = false) {
   if (!id) return { promise: Promise.resolve(''), release() {} }
   const ready = doneAtLeast(id, size)
   const e = ready || entryOf(id, size)
   e.refs++
   e.vis++ // 主动请求的封面（当前歌曲等）按屏幕内处理，优先加载
+  if (prio) e.prio++
   let released = false
-  const release = () => { if (!released) { released = true; e.refs--; e.vis--; e.subs.delete(check) } }
+  const release = () => {
+    if (released) return
+    released = true
+    e.refs--
+    e.vis--
+    if (prio) e.prio--
+    e.subs.delete(check)
+    if (e.refs === 0) clearRetry(e)
+  }
   let resolve
   const promise = new Promise((r) => (resolve = r))
   const check = () => {
@@ -162,7 +217,7 @@ function observe(el, rootMargin, cb) {
  * 供 <Cover> 使用：只在元素接近屏幕时加载，屏幕内的优先。
  * 返回 { status, url, placeholder }；placeholder 是内存中已有的较小尺寸，可先显示。
  */
-export function useCover(ref, coverId, size) {
+export function useCover(ref, coverId, size, prio = false) {
   const [, force] = useReducer((n) => n + 1, 0)
   const [near, setNear] = useState(false)
   const [visible, setVisible] = useState(false)
@@ -182,16 +237,19 @@ export function useCover(ref, coverId, size) {
     const ph = target.status === 'done' ? null : doneSmaller(coverId, size)
     const held = ph ? [target, ph] : [target]
     held.forEach((e) => { e.refs++; touch(e) })
+    if (prio) target.prio++
     target.subs.add(force)
     plan.current = { target, ph }
     request(target)
     force()
     return () => {
       held.forEach((e) => e.refs--)
+      if (prio) target.prio--
       target.subs.delete(force)
+      if (target.refs === 0) clearRetry(target)
       plan.current = null
     }
-  }, [coverId, size, near])
+  }, [coverId, size, near, prio])
 
   useEffect(() => {
     const t = plan.current?.target
