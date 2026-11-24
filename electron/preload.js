@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('fn', {
   setOverlay: (o) => ipcRenderer.send('overlay:set', o),
   trayInfo: () => ipcRenderer.invoke('tray:info'),
   setPlayerState: (s) => ipcRenderer.send('player:state', s),
+  onStreamFailed: (cb) => { const h = (_e, d) => cb(d); ipcRenderer.on('stream:failed', h); return () => ipcRenderer.removeListener('stream:failed', h) },
   lyricsGet: () => ipcRenderer.invoke('lyrics:get'),
   lyricsSetOn: (on) => ipcRenderer.invoke('lyrics:set-on', !!on),
   lyricsSetStyle: (patch) => ipcRenderer.invoke('lyrics:set-style', patch || {}),

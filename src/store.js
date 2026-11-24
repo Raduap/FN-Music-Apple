@@ -17,6 +17,23 @@ audio.preload = 'auto'
 // 尚未加载音频（启动后恢复的队列）时记下的起始位置，真正开始播放时再跳转过去
 let pendingSeek = 0
 
+// 音频流失效自愈：暂停较久后，音频流（尤其网易云插件边缓冲边播的源）会失效，
+// 恢复时服务器返回 409，audio 卡在 buffering 永远转圈（既不 error 也不 playing）。
+// 主进程检测到非 2xx 会立即发 stream:failed，我们据此重建流、从暂停位置续播——
+// 等同用户手动切歌再切回，但不换歌、不从头播。
+let lastRebuildAt = 0
+function rebuildStream() {
+  const p = usePlayer.getState()
+  const song = p.queue[p.index]
+  if (!song || !audio.src) return
+  // 防抖：一次失效可能连带多个失败信号，5 秒内只重建一次，避免反复重建
+  const now = Date.now()
+  if (now - lastRebuildAt < 5000) return
+  lastRebuildAt = now
+  const at = audio.currentTime
+  p._load(song, true, at)
+}
+
 // 尚未完成的“喜欢”写请求。界面会先乐观更新，“喜欢的歌曲”页面读取列表前要等这些请求完成，否则会读到旧数据
 const favoriteWrites = new Set()
 
@@ -586,6 +603,14 @@ function broadcast() {
 }
 usePlayer.subscribe(broadcast)
 useUI.subscribe((s, prev) => { if (s.motion !== prev.motion || s.palette !== prev.palette) broadcast() })
+
+// 主进程检测到音频流返回非 2xx（如插件缓冲失效的 409）时立即重建续播。
+// 只在"当前正在播放/恢复的这首歌"上生效，避免旧的失败信号误伤已切走的歌。
+window.fn?.onStreamFailed?.(({ guid }) => {
+  const p = usePlayer.getState()
+  if (p.queue[p.index]?.id !== guid) return
+  rebuildStream()
+})
 
 window.fn?.onPlayerCommand?.((cmd, arg) => {
   const p = usePlayer.getState()

@@ -34,6 +34,7 @@ const state = {
   deviceId: '',
   username: '',
   password: '',
+  playing: false, // 由 player:state 同步，供音频流空闲判定：用户暂停时不掐断流
 }
 
 const storeFile = () => path.join(app.getPath('userData'), 'session.bin')
@@ -147,6 +148,8 @@ function quitApp() {
 
 // 播放控制命令统一由主窗口的渲染进程执行（播放器在那里）
 const playerCommand = (cmd, arg) => mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.send('player:command', cmd, arg)
+// 音频流返回非 2xx（如插件缓冲失效时的 409）时立即通知渲染层重建续播
+const streamFailed = (guid) => mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.send('stream:failed', { guid })
 
 // 悬浮球显示方式：always 始终显示｜hidden 主窗口隐藏或最小化时显示（默认）｜off 关闭
 const ballMode = () => (BALL_MODES.some(([m]) => m === readPrefs().ballMode) ? readPrefs().ballMode : 'hidden')
@@ -508,6 +511,7 @@ function registerProxy() {
     // 永久占住 Chromium 对同一主机的连接池，拖垮其它所有请求。
     const isStream = u.pathname === '/api/v1/track/stream'
     if (isStream) {
+      const guid = u.searchParams.get('guid') || ''
       const controller = new AbortController()
       const headerTimer = setTimeout(() => controller.abort(new Error('音频流响应超时')), TIMEOUT.stream)
       try {
@@ -516,7 +520,21 @@ function registerProxy() {
         const out = new Headers(upstream.headers)
         out.set('access-control-allow-origin', '*')
         out.delete('content-encoding')
-        const stream = streamWithIdle(upstream.body, { idleMs: TIMEOUT.streamIdle, abort: (reason) => controller.abort(reason) })
+        // 非 2xx（如插件缓冲失效的 409）：立即通知渲染层重建续播，并直接返回错误响应。
+        // 注意不能把已读取/锁定的 body 再交给 streamWithIdle，否则抛 "ReadableStream is locked"。
+        if (!upstream.ok) {
+          let bodyText = ''
+          try { bodyText = await upstream.text() } catch (e) { bodyText = '' }
+          streamFailed(guid)
+          return new Response(bodyText, { status: upstream.status, statusText: upstream.statusText, headers: out })
+        }
+        // 用户暂停时 state.playing=false，空闲超时不应掐断这条流，否则恢复播放会卡在
+        // 一条已 error 的流上转圈圈（只有切歌重建 src 才能恢复）。
+        const stream = streamWithIdle(upstream.body, {
+          idleMs: TIMEOUT.streamIdle,
+          abort: (reason) => controller.abort(reason),
+          isPaused: () => state.playing === false,
+        })
         return new Response(stream, { status: upstream.status, statusText: upstream.statusText, headers: out })
       } catch (e) {
         clearTimeout(headerTimer)
@@ -627,7 +645,10 @@ function registerIpc() {
   ipcMain.handle('lyrics:set-style', (_e, patch) => { setLyricsStyle(patch || {}); return readPrefs().lyricsStyle || {} })
   ipcMain.handle('lyrics:reset-style', () => { if (lyricsWin) lyricsWin.resetStyle(); else writePrefs({ ...readPrefs(), lyricsStyle: {} }); return readPrefs().lyricsStyle || {} })
   ipcMain.on('lyrics:reset-position', () => lyricsWin?.resetPosition())
-  ipcMain.on('player:state', (_e, s) => { tray?.setPlayer(s); ball?.setState(s); lyricsWin?.setState(s) })
+  ipcMain.on('player:state', (_e, s) => {
+    state.playing = !!s?.playing
+    tray?.setPlayer(s); ball?.setState(s); lyricsWin?.setState(s)
+  })
 
   ipcMain.on('win:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
   ipcMain.on('win:toggle-maximize', (e) => {
