@@ -17,6 +17,31 @@ audio.preload = 'auto'
 // 尚未加载音频（启动后恢复的队列）时记下的起始位置，真正开始播放时再跳转过去
 let pendingSeek = 0
 
+// 音频流失效自愈：暂停较久后，音频流（尤其网易云插件边缓冲边播的源）会失效，
+// 恢复时服务器返回 409，audio 卡在 buffering 永远转圈（既不 error 也不 playing）。
+// 主进程检测到非 2xx 会立即发 stream:failed，我们据此重建流、从暂停位置续播——
+// 等同用户手动切歌再切回，但不换歌、不从头播。
+let lastRebuildAt = 0
+function rebuildStream() {
+  const p = usePlayer.getState()
+  const song = p.queue[p.index]
+  if (!song || !audio.src) return
+  // 防抖：一次失效可能连带多个失败信号，5 秒内只重建一次，避免反复重建
+  const now = Date.now()
+  if (now - lastRebuildAt < 5000) return
+  lastRebuildAt = now
+  const at = audio.currentTime
+  clearResumeWatchdog()
+  p._load(song, true, at)
+}
+
+// 看门狗：仅作兜底——若服务器没返回非 2xx（例如直接挂起不响应），没有 stream:failed
+// 信号可用，此时靠 3 秒未出声来兜底重建。有明确失败信号时 rebuildStream 会立即执行。
+let resumeWatchdog = null
+function clearResumeWatchdog() {
+  if (resumeWatchdog) { clearTimeout(resumeWatchdog); resumeWatchdog = null }
+}
+
 // 尚未完成的“喜欢”写请求。界面会先乐观更新，“喜欢的歌曲”页面读取列表前要等这些请求完成，否则会读到旧数据
 const favoriteWrites = new Set()
 
@@ -270,6 +295,7 @@ export const usePlayer = create((set, get) => ({
   },
 
   _load(song, autoplay = true, start = 0) {
+    clearResumeWatchdog() // 切歌/重建时取消旧的恢复看门狗，避免误触发
     pendingSeek = 0
     reportedPlayId = '' // 新的一首：首次真正出声时再上报播放
     audio.src = streamUrl(song.id)
@@ -352,8 +378,19 @@ export const usePlayer = create((set, get) => ({
     const { queue, index } = get()
     if (!queue[index]) return
     if (!audio.src) get()._load(queue[index], true, pendingSeek)
-    else if (audio.paused) audio.play().catch(() => {})
-    else audio.pause()
+    else if (audio.paused) {
+      const song = queue[index]
+      clearResumeWatchdog()
+      audio.play().catch(() => {})
+      resumeWatchdog = setTimeout(() => {
+        resumeWatchdog = null
+        // 看门狗能跑到触发 = playing 事件一直没来 = play() 卡在失效流上没真正出声。
+        // （若出声，playing 事件会先清掉这个定时器，不会走到这里。）
+        const p = usePlayer.getState()
+        if (p.queue[p.index]?.id !== song.id) return // 用户已切歌，交给新流程处理
+        rebuildStream()
+      }, 3000)
+    } else audio.pause()
   },
 
   next(auto = false) {
@@ -457,8 +494,12 @@ window.addEventListener('beforeunload', saveCurrentPosition)
 // ---------- audio 事件 ----------
 audio.volume = usePlayer.getState().volume
 audio.addEventListener('play', () => usePlayer.setState({ playing: true }))
-audio.addEventListener('pause', () => usePlayer.setState({ playing: false }))
+audio.addEventListener('pause', () => {
+  clearResumeWatchdog()
+  usePlayer.setState({ playing: false })
+})
 audio.addEventListener('playing', () => {
+  clearResumeWatchdog() // 真正出声了，说明流正常，取消重建续播的看门狗
   usePlayer.setState({ loading: false, playing: true })
   const song = usePlayer.getState().queue[usePlayer.getState().index]
   if (song && song.id && song.id !== reportedPlayId) {
@@ -586,6 +627,14 @@ function broadcast() {
 }
 usePlayer.subscribe(broadcast)
 useUI.subscribe((s, prev) => { if (s.motion !== prev.motion || s.palette !== prev.palette) broadcast() })
+
+// 主进程检测到音频流返回非 2xx（如插件缓冲失效的 409）时立即重建续播。
+// 只在"当前正在播放/恢复的这首歌"上生效，避免旧的失败信号误伤已切走的歌。
+window.fn?.onStreamFailed?.(({ guid }) => {
+  const p = usePlayer.getState()
+  if (p.queue[p.index]?.id !== guid) return
+  rebuildStream()
+})
 
 window.fn?.onPlayerCommand?.((cmd, arg) => {
   const p = usePlayer.getState()

@@ -90,6 +90,40 @@ describe('streamWithIdle（音频流保护）', () => {
   it('没有 body 时原样返回', () => {
     expect(streamWithIdle(null, { idleMs: 1, abort: () => {} })).toBe(null)
   })
+
+  it('用户暂停态下空闲超时不掐断流，而是重新计时', async () => {
+    let aborted = null
+    const wrapped = streamWithIdle(stuckStream(), {
+      idleMs: 20,
+      abort: (e) => { aborted = e },
+      isPaused: () => true, // 始终暂停
+    })
+    const reader = wrapped.getReader()
+    await reader.read() // 拿到第一块
+    const hanging = reader.read() // 继续索取 → 上游挂起。暂停时它应保持挂起、不 resolve、不 error
+    await new Promise((r) => setTimeout(r, 65)) // 跨过 3 个 idle 周期
+    expect(aborted).toBe(null) // 从未掐断上游
+    reader.cancel('测试结束').catch(() => {})
+    await hanging.catch(() => {}) // cancel 后才会结束，吞掉预期的 rejection
+  })
+
+  it('解除暂停后空闲超时恢复掐断', async () => {
+    let aborted = null
+    let paused = true
+    const wrapped = streamWithIdle(stuckStream(), {
+      idleMs: 20,
+      abort: (e) => { aborted = e },
+      isPaused: () => paused,
+    })
+    const reader = wrapped.getReader()
+    await reader.read()
+    const hanging = reader.read()
+    await new Promise((r) => setTimeout(r, 65))
+    expect(aborted).toBe(null) // 暂停期间不掐断
+    paused = false // 恢复播放
+    await hanging.catch(() => {}) // idle 触发后掐断，流的 error 会让这个 read reject
+    expect(aborted).toBeTruthy()
+  })
 })
 
 describe('其他', () => {

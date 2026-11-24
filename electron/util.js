@@ -55,13 +55,21 @@ function abortAfter(ms, message = '服务器响应超时') {
 //   我们就在这里计时：超过 idleMs 仍拿不到数据 → 中止上游，释放连接。
 // - 只有在“消费者正在索取数据却拿不到”时才计时。消费者停止索取（例如播放器缓冲已满、
 //   不再 pull）时不计时，否则会误杀正常播放。
+// - 用户主动暂停时，下游同样会停止 pull， idle 会被误判为“死流”。isPaused() 返回 true
+//   时不掐断、只是重新计时——流保持存活，恢复播放时 play() 才有数据可读。
 // - 下游取消（切歌 / 换源）时把取消传播给上游，立即释放连接。
-function streamWithIdle(body, { idleMs, abort }) {
+function streamWithIdle(body, { idleMs, abort, isPaused }) {
   if (!body || typeof body.getReader !== 'function') return body
   const reader = body.getReader()
   let ctrlRef = null
   let timer = null
   const idle = () => {
+    // 用户暂停导致的空闲是合法的：不掐断流，重新计时，等恢复播放。
+    // 注意这里不调用 abort / ctrl.error，下游流保持存活。
+    if (typeof isPaused === 'function' && isPaused()) {
+      timer = setTimeout(idle, idleMs)
+      return
+    }
     const err = new Error('音频流空闲超时')
     try { abort?.(err) } catch {}
     try { ctrlRef?.error(err) } catch {} // 同时让下游停止等待，避免消费端悬挂
