@@ -31,15 +31,7 @@ function rebuildStream() {
   if (now - lastRebuildAt < 5000) return
   lastRebuildAt = now
   const at = audio.currentTime
-  clearResumeWatchdog()
   p._load(song, true, at)
-}
-
-// 看门狗：仅作兜底——若服务器没返回非 2xx（例如直接挂起不响应），没有 stream:failed
-// 信号可用，此时靠 3 秒未出声来兜底重建。有明确失败信号时 rebuildStream 会立即执行。
-let resumeWatchdog = null
-function clearResumeWatchdog() {
-  if (resumeWatchdog) { clearTimeout(resumeWatchdog); resumeWatchdog = null }
 }
 
 // 尚未完成的“喜欢”写请求。界面会先乐观更新，“喜欢的歌曲”页面读取列表前要等这些请求完成，否则会读到旧数据
@@ -295,7 +287,6 @@ export const usePlayer = create((set, get) => ({
   },
 
   _load(song, autoplay = true, start = 0) {
-    clearResumeWatchdog() // 切歌/重建时取消旧的恢复看门狗，避免误触发
     pendingSeek = 0
     reportedPlayId = '' // 新的一首：首次真正出声时再上报播放
     audio.src = streamUrl(song.id)
@@ -378,19 +369,8 @@ export const usePlayer = create((set, get) => ({
     const { queue, index } = get()
     if (!queue[index]) return
     if (!audio.src) get()._load(queue[index], true, pendingSeek)
-    else if (audio.paused) {
-      const song = queue[index]
-      clearResumeWatchdog()
-      audio.play().catch(() => {})
-      resumeWatchdog = setTimeout(() => {
-        resumeWatchdog = null
-        // 看门狗能跑到触发 = playing 事件一直没来 = play() 卡在失效流上没真正出声。
-        // （若出声，playing 事件会先清掉这个定时器，不会走到这里。）
-        const p = usePlayer.getState()
-        if (p.queue[p.index]?.id !== song.id) return // 用户已切歌，交给新流程处理
-        rebuildStream()
-      }, 3000)
-    } else audio.pause()
+    else if (audio.paused) audio.play().catch(() => {})
+    else audio.pause()
   },
 
   next(auto = false) {
@@ -494,12 +474,8 @@ window.addEventListener('beforeunload', saveCurrentPosition)
 // ---------- audio 事件 ----------
 audio.volume = usePlayer.getState().volume
 audio.addEventListener('play', () => usePlayer.setState({ playing: true }))
-audio.addEventListener('pause', () => {
-  clearResumeWatchdog()
-  usePlayer.setState({ playing: false })
-})
+audio.addEventListener('pause', () => usePlayer.setState({ playing: false }))
 audio.addEventListener('playing', () => {
-  clearResumeWatchdog() // 真正出声了，说明流正常，取消重建续播的看门狗
   usePlayer.setState({ loading: false, playing: true })
   const song = usePlayer.getState().queue[usePlayer.getState().index]
   if (song && song.id && song.id !== reportedPlayId) {
